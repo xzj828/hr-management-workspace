@@ -5,7 +5,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from recruitment.models import BossAccount, RpaTask, RpaWorker
+from recruitment.models import BossAccount, RecruitmentJob, RpaTask, RpaWorker
 
 
 @override_settings(RPA_WORKER_TOKEN="test-worker-secret")
@@ -111,3 +111,29 @@ class WorkerApiTests(APITestCase):
         self.assertEqual(self.task.status, RpaTask.Status.WAITING_HUMAN)
         self.assertEqual(self.account.verification_status, "token_invalid")
 
+    def test_successful_position_task_persists_only_normalized_jobs(self):
+        self.task.action = RpaTask.Action.SYNC_POSITIONS
+        self.task.save(update_fields=["action"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+            {
+                "worker_key": "local-worker",
+                "status": "succeeded",
+                "result": {"positions": [{
+                    "external_id": "job-201", "title": "测试工程师", "status": "open", "raw": "原始 CLI 行"
+                }]},
+            },
+            format="json", **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(RecruitmentJob.objects.filter(boss_account=self.account, external_id="job-201").exists())
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.result["sync"]["created"], 1)
+        self.assertNotIn("positions", self.task.result)

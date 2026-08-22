@@ -1,5 +1,6 @@
 import secrets
 from datetime import timedelta
+from dataclasses import asdict
 
 from django.conf import settings
 from django.db import transaction
@@ -12,6 +13,7 @@ from rest_framework import status
 
 from .models import BossAccount, RecruitmentAuditLog, RpaTask, RpaWorker
 from .rpa.tasks import append_event
+from .rpa.sync import sync_positions
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -124,6 +126,14 @@ def complete_task_view(request, task_id):
     if completed_status not in terminal:
         return Response({"detail": "任务完成状态无效"}, status=status.HTTP_400_BAD_REQUEST)
     result = request.data.get("result") if isinstance(request.data.get("result"), dict) else {}
+    if task.action == RpaTask.Action.SYNC_POSITIONS and completed_status == RpaTask.Status.SUCCEEDED:
+        rows = result.get("positions")
+        if not isinstance(rows, list):
+            return Response({"detail": "职位同步结果无效"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = {"sync": asdict(sync_positions(account=task.boss_account, owner=task.created_by, rows=rows))}
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     task.status = completed_status
     task.result = result
     task.error_code = str(request.data.get("error_code", ""))[:64]
