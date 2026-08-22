@@ -9,7 +9,7 @@ onMounted(() => auth.restore())
 <template>
   <div v-if="auth.loading" class="app-loading">
     <div class="loading-mark">XM</div>
-    <p>正在进入考勤系统…</p>
+    <p>正在进入人事管理系统…</p>
   </div>
   <router-view v-else />
 </template>

@@ -2,22 +2,16 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { modules, moduleForRoute, navigationForModule } from '@/navigation'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
 
-const navigation = [
-  { name: 'dashboard', label: '考勤看板', icon: '⌁' },
-  { name: 'employees', label: '人员管理', icon: '◎' },
-  { name: 'imports', label: '导入中心', icon: '⇧' },
-  { name: 'results', label: '核算结果', icon: '✓' },
-  { name: 'suspicions', label: '异常审核', icon: '!' },
-  { name: 'settings', label: '规则与标签', icon: '⚙' },
-]
-
-const currentTitle = computed(() => navigation.find((item) => item.name === route.name)?.label || '考勤管理')
+const currentModule = computed(() => moduleForRoute(route))
+const navigation = computed(() => navigationForModule(currentModule.value))
+const currentTitle = computed(() => route.meta?.title || '人事管理')
 
 async function signOut() {
   await auth.logout()
@@ -31,8 +25,8 @@ async function signOut() {
       <div class="brand">
         <div class="brand__mark">XM</div>
         <div class="brand__text">
-          <strong>西鸣考勤</strong>
-          <span>Attendance OS</span>
+          <strong>西鸣人事</strong>
+          <span>People OS</span>
         </div>
       </div>
       <nav class="nav-list">
@@ -54,6 +48,14 @@ async function signOut() {
           <h1>{{ currentTitle }}</h1>
         </div>
         <div class="topbar__actions">
+          <nav class="module-switcher" aria-label="业务模块">
+            <router-link
+              v-for="module in modules"
+              :key="module.id"
+              :to="{ name: module.routeName }"
+              :class="{ active: currentModule === module.id }"
+            >{{ module.label }}</router-link>
+          </nav>
           <div class="user-chip">
             <span class="avatar">{{ auth.user?.username?.slice(0, 1)?.toUpperCase() }}</span>
             <div><strong>{{ auth.user?.first_name || auth.user?.username }}</strong><span>{{ auth.user?.role_label }}</span></div>
