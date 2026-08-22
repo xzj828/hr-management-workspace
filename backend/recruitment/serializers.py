@@ -3,7 +3,7 @@ import uuid
 from django.db import transaction
 from rest_framework import serializers
 
-from .models import BossAccount, Candidate, JobApplication, RecruitmentJob, RpaTask, RpaTaskEvent
+from .models import BossAccount, Candidate, JobApplication, RecruitmentJob, Resume, RpaTask, RpaTaskEvent
 from .rpa.browser import browser_configuration, port_is_available
 from .rpa.tasks import create_task
 
@@ -46,25 +46,99 @@ class BossAccountSerializer(serializers.ModelSerializer):
         )
 
 
-class RecruitmentJobSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RecruitmentJob
-        fields = ["id", "boss_account", "external_id", "title", "department", "jd", "owner", "headcount", "status", "created_at", "updated_at"]
-
-
-class CandidateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Candidate
-        fields = ["id", "identity_key", "external_id", "name", "phone", "email", "current_title", "current_city", "created_at", "updated_at"]
-
-
-class JobApplicationSerializer(serializers.ModelSerializer):
-    candidate = CandidateSerializer(read_only=True)
+class JobApplicationSummarySerializer(serializers.ModelSerializer):
+    job_title = serializers.CharField(source="job.title", read_only=True)
+    owner_name = serializers.CharField(source="owner.username", read_only=True, allow_null=True)
     stage_label = serializers.CharField(source="get_stage_display", read_only=True)
 
     class Meta:
         model = JobApplication
-        fields = ["id", "candidate", "job", "source", "stage", "stage_label", "owner", "priority", "last_interaction_at", "created_at", "updated_at"]
+        fields = ["id", "job", "job_title", "stage", "stage_label", "owner_name", "updated_at"]
+
+
+class CandidateSummarySerializer(serializers.ModelSerializer):
+    resume_count = serializers.SerializerMethodField()
+
+    def get_resume_count(self, obj):
+        return obj.resumes.count()
+
+    class Meta:
+        model = Candidate
+        fields = ["id", "name", "current_title", "current_city", "resume_count"]
+
+
+class RecruitmentJobSerializer(serializers.ModelSerializer):
+    owner_name = serializers.CharField(source="owner.username", read_only=True)
+    account_name = serializers.CharField(source="boss_account.name", read_only=True, allow_null=True)
+    candidate_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = RecruitmentJob
+        fields = [
+            "id", "boss_account", "account_name", "external_id", "title", "department",
+            "jd", "owner", "owner_name", "headcount", "status", "candidate_count",
+            "is_demo", "created_at", "updated_at",
+        ]
+
+
+class CandidateSerializer(serializers.ModelSerializer):
+    applications = JobApplicationSummarySerializer(many=True, read_only=True)
+    resume_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Candidate
+        fields = [
+            "id", "identity_key", "external_id", "name", "phone", "email",
+            "current_title", "current_city", "applications", "resume_count",
+            "is_demo", "created_at", "updated_at",
+        ]
+
+
+class JobApplicationSerializer(serializers.ModelSerializer):
+    candidate = CandidateSummarySerializer(read_only=True)
+    job_title = serializers.CharField(source="job.title", read_only=True)
+    owner_name = serializers.CharField(source="owner.username", read_only=True, allow_null=True)
+    stage_label = serializers.CharField(source="get_stage_display", read_only=True)
+
+    class Meta:
+        model = JobApplication
+        fields = [
+            "id", "candidate", "job", "job_title", "source", "stage", "stage_label",
+            "owner", "owner_name", "priority", "last_interaction_at", "is_demo",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "candidate", "job", "job_title", "source", "stage_label", "owner",
+            "owner_name", "priority", "last_interaction_at", "is_demo", "created_at", "updated_at",
+        ]
+
+
+class ResumeSerializer(serializers.ModelSerializer):
+    candidate_name = serializers.CharField(source="candidate.name", read_only=True)
+    job_title = serializers.CharField(source="application.job.title", read_only=True, allow_null=True)
+    status_label = serializers.CharField(source="get_processing_status_display", read_only=True)
+    source_label = serializers.CharField(source="get_source_display", read_only=True)
+    file_available = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
+
+    def get_file_available(self, obj):
+        return bool(obj.file and obj.file.storage.exists(obj.file.name))
+
+    def get_preview_url(self, obj):
+        return f"/api/recruitment/resumes/{obj.pk}/file/"
+
+    def get_download_url(self, obj):
+        return f"/api/recruitment/resumes/{obj.pk}/file/?download=1"
+
+    class Meta:
+        model = Resume
+        fields = [
+            "id", "candidate", "candidate_name", "application", "job_title", "original_name",
+            "content_type", "file_size", "source", "source_label", "processing_status",
+            "status_label", "file_available", "preview_url", "download_url", "is_demo",
+            "created_at", "updated_at",
+        ]
 
 
 class RpaTaskEventSerializer(serializers.ModelSerializer):
