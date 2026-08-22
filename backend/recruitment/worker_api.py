@@ -1,0 +1,154 @@
+import secrets
+from datetime import timedelta
+
+from django.conf import settings
+from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import BasePermission
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import BossAccount, RecruitmentAuditLog, RpaTask, RpaWorker
+from .rpa.tasks import append_event
+
+
+class HasRpaWorkerToken(BasePermission):
+    def has_permission(self, request, view):
+        supplied = request.headers.get("X-RPA-Worker-Token", "")
+        expected = settings.RPA_WORKER_TOKEN
+        return bool(supplied and expected and secrets.compare_digest(supplied, expected))
+
+
+def _worker(request):
+    key = str(request.data.get("worker_key", ""))[:100]
+    if not key:
+        return None
+    return RpaWorker.objects.filter(key=key).first()
+
+
+@api_view(["POST"])
+@permission_classes([HasRpaWorkerToken])
+def heartbeat_view(request):
+    key = str(request.data.get("worker_key", ""))[:100]
+    hostname = str(request.data.get("hostname", ""))[:255]
+    if not key or not hostname:
+        return Response({"detail": "worker_key 和 hostname 必填"}, status=status.HTTP_400_BAD_REQUEST)
+    worker, _ = RpaWorker.objects.update_or_create(
+        key=key,
+        defaults={
+            "hostname": hostname,
+            "version": str(request.data.get("version", ""))[:80],
+            "status": RpaWorker.Status.ONLINE,
+            "capabilities": request.data.get("capabilities") if isinstance(request.data.get("capabilities"), dict) else {},
+            "last_seen_at": timezone.now(),
+        },
+    )
+    return Response({"worker_key": worker.key, "status": worker.status, "last_seen_at": worker.last_seen_at})
+
+
+@api_view(["POST"])
+@permission_classes([HasRpaWorkerToken])
+@transaction.atomic
+def lease_task_view(request):
+    worker = _worker(request)
+    if worker is None:
+        return Response({"detail": "Worker 尚未注册"}, status=status.HTTP_400_BAD_REQUEST)
+    now = timezone.now()
+    task = (
+        RpaTask.objects.select_for_update()
+        .select_related("boss_account")
+        .filter(Q(status=RpaTask.Status.PENDING) | Q(status=RpaTask.Status.LEASED, lease_expires_at__lt=now))
+        .order_by("created_at")
+        .first()
+    )
+    if task is None:
+        return Response({"task": None})
+    task.status = RpaTask.Status.LEASED
+    task.worker = worker
+    task.lease_expires_at = now + timedelta(seconds=60)
+    task.save(update_fields=["status", "worker", "lease_expires_at", "updated_at"])
+    append_event(task=task, event="leased", message="任务已由本机 Worker 领取", data={"worker_key": worker.key})
+    account = task.boss_account
+    return Response({"task": {
+        "id": str(task.pk),
+        "action": task.action,
+        "open_login": bool(task.request_payload.get("open_login", False)),
+        "browser": {
+            "type": account.browser_type,
+            "executable": account.browser_executable,
+            "user_data_dir": account.user_data_dir,
+            "cdp_port": account.cdp_port,
+        },
+    }})
+
+
+def _assigned_task(request, task_id):
+    worker = _worker(request)
+    if worker is None:
+        return None, None
+    task = RpaTask.objects.select_related("boss_account").filter(pk=task_id, worker=worker).first()
+    return worker, task
+
+
+@api_view(["POST"])
+@permission_classes([HasRpaWorkerToken])
+def task_event_view(request, task_id):
+    _, task = _assigned_task(request, task_id)
+    if task is None:
+        return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    if task.status == RpaTask.Status.LEASED:
+        task.status = RpaTask.Status.RUNNING
+        task.started_at = timezone.now()
+        task.save(update_fields=["status", "started_at", "updated_at"])
+    event = append_event(
+        task=task,
+        event=str(request.data.get("event", "progress"))[:64],
+        message=str(request.data.get("message", ""))[:500],
+        data=request.data.get("data") if isinstance(request.data.get("data"), dict) else {},
+        level=str(request.data.get("level", "info"))[:16],
+    )
+    return Response({"id": event.id}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([HasRpaWorkerToken])
+@transaction.atomic
+def complete_task_view(request, task_id):
+    _, task = _assigned_task(request, task_id)
+    if task is None:
+        return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    terminal = {RpaTask.Status.WAITING_HUMAN, RpaTask.Status.SUCCEEDED, RpaTask.Status.FAILED}
+    completed_status = request.data.get("status")
+    if completed_status not in terminal:
+        return Response({"detail": "任务完成状态无效"}, status=status.HTTP_400_BAD_REQUEST)
+    result = request.data.get("result") if isinstance(request.data.get("result"), dict) else {}
+    task.status = completed_status
+    task.result = result
+    task.error_code = str(request.data.get("error_code", ""))[:64]
+    task.error_message = str(request.data.get("error_message", ""))[:2000]
+    task.completed_at = timezone.now()
+    task.lease_expires_at = None
+    task.save(update_fields=["status", "result", "error_code", "error_message", "completed_at", "lease_expires_at", "updated_at"])
+    append_event(task=task, event="completed", message="任务执行结束", data={"status": completed_status})
+
+    account = task.boss_account
+    login_status = result.get("login_status")
+    if login_status in {"token_invalid", "risk_control"}:
+        result_verification = login_status
+        login_status = BossAccount.LoginStatus.WAITING_HUMAN
+    else:
+        result_verification = result.get("verification_status", "")
+    if login_status in BossAccount.LoginStatus.values:
+        account.login_status = login_status
+        account.verification_status = str(result_verification)[:40]
+        account.last_checked_at = timezone.now()
+        account.save(update_fields=["login_status", "verification_status", "last_checked_at", "updated_at"])
+    RecruitmentAuditLog.objects.create(
+        boss_account=account,
+        action="task_completed",
+        target_id=str(task.pk),
+        detail={"status": completed_status, "error_code": task.error_code},
+    )
+    return Response({"id": str(task.pk), "status": task.status})

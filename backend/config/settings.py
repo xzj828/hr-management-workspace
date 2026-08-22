@@ -100,6 +100,16 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 RPA_PROFILE_ROOT = Path(os.getenv("RPA_PROFILE_ROOT", BASE_DIR / "rpa_profiles"))
 
+_local_worker_file = BASE_DIR / "local_worker.key"
+if os.getenv("RPA_WORKER_TOKEN"):
+    RPA_WORKER_TOKEN = os.environ["RPA_WORKER_TOKEN"]
+else:
+    if not _local_worker_file.exists():
+        _local_worker_file.write_text(secrets.token_urlsafe(48), encoding="utf-8")
+    RPA_WORKER_TOKEN = _local_worker_file.read_text(encoding="utf-8").strip()
+RPA_API_BASE_URL = os.getenv("RPA_API_BASE_URL", "http://127.0.0.1:8000/api/recruitment/worker")
+RPA_POLL_SECONDS = float(os.getenv("RPA_POLL_SECONDS", "3"))
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {

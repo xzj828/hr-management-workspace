@@ -5,6 +5,7 @@ backend/media/
 backend/staticfiles/
 backend/frontend_dist/
 backend/local_secret.key
+backend/local_worker.key
 backups/
 outputs/
 .worktrees/
