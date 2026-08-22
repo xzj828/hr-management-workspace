@@ -22,6 +22,29 @@ const navigation = {
   ],
 }
 
+const storagePrefix = 'ximing-hr:last-route:'
+
+function moduleDefinition(moduleId) {
+  return modules.find((module) => module.id === moduleId)
+}
+
+export function moduleDestination(moduleId) {
+  const module = moduleDefinition(moduleId) || modules.find((item) => item.id === 'attendance')
+  return sessionStorage.getItem(`${storagePrefix}${module.id}`) || module.routeName
+}
+
+export function rememberModuleRoute(route) {
+  const moduleId = moduleForRoute(route)
+  const allowedNames = navigationForModule(moduleId).map((item) => item.name)
+  if (allowedNames.includes(route.name)) {
+    sessionStorage.setItem(`${storagePrefix}${moduleId}`, route.name)
+  }
+}
+
+export function resetRememberedModuleRoutes() {
+  modules.forEach((module) => sessionStorage.removeItem(`${storagePrefix}${module.id}`))
+}
+
 export function moduleForRoute(route) {
   return route.meta?.module || 'attendance'
 }

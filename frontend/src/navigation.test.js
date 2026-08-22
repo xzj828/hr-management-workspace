@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { moduleForRoute, navigationForModule } from './navigation'
+import {
+  moduleDestination,
+  moduleForRoute,
+  navigationForModule,
+  rememberModuleRoute,
+  resetRememberedModuleRoutes,
+} from './navigation'
 
 describe('HR platform navigation', () => {
   it('maps recruitment routes to the recruitment module', () => {
@@ -14,5 +20,28 @@ describe('HR platform navigation', () => {
 
   it('keeps the existing six attendance entries', () => {
     expect(navigationForModule('attendance')).toHaveLength(6)
+  })
+})
+
+describe('module destinations', () => {
+  it('starts each module on its dashboard', () => {
+    resetRememberedModuleRoutes()
+    expect(moduleDestination('recruitment')).toBe('recruitment-dashboard')
+    expect(moduleDestination('attendance')).toBe('attendance-dashboard')
+  })
+
+  it('returns to the last page visited in each module', () => {
+    resetRememberedModuleRoutes()
+    rememberModuleRoute({ name: 'recruitment-candidates', meta: { module: 'recruitment' } })
+    rememberModuleRoute({ name: 'employees', meta: { module: 'attendance' } })
+
+    expect(moduleDestination('recruitment')).toBe('recruitment-candidates')
+    expect(moduleDestination('attendance')).toBe('employees')
+  })
+
+  it('ignores route names that do not belong to the declared module', () => {
+    resetRememberedModuleRoutes()
+    rememberModuleRoute({ name: 'employees', meta: { module: 'recruitment' } })
+    expect(moduleDestination('recruitment')).toBe('recruitment-dashboard')
   })
 })
