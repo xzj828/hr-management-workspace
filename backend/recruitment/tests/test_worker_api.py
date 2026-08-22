@@ -110,6 +110,14 @@ class WorkerApiTests(APITestCase):
         self.account.refresh_from_db()
         self.assertEqual(self.task.status, RpaTask.Status.WAITING_HUMAN)
         self.assertEqual(self.account.verification_status, "token_invalid")
+        self.assertEqual(self.account.status, BossAccount.Status.RISK)
+
+        replay = self.client.post(
+            f"/api/recruitment/worker/tasks/{task_id}/complete/",
+            {"worker_key": "local-worker", "status": "succeeded", "result": {}},
+            format="json", **self.token_header,
+        )
+        self.assertEqual(replay.status_code, 409)
 
     def test_successful_position_task_persists_only_normalized_jobs(self):
         self.task.action = RpaTask.Action.SYNC_POSITIONS

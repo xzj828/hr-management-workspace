@@ -71,8 +71,10 @@ def lease_task_view(request):
     task.worker = worker
     task.lease_expires_at = now + timedelta(seconds=60)
     task.save(update_fields=["status", "worker", "lease_expires_at", "updated_at"])
-    append_event(task=task, event="leased", message="任务已由本机 Worker 领取", data={"worker_key": worker.key})
     account = task.boss_account
+    account.status = BossAccount.Status.RUNNING
+    account.save(update_fields=["status", "updated_at"])
+    append_event(task=task, event="leased", message="任务已由本机 Worker 领取", data={"worker_key": worker.key})
     return Response({"task": {
         "id": str(task.pk),
         "action": task.action,
@@ -100,6 +102,8 @@ def task_event_view(request, task_id):
     _, task = _assigned_task(request, task_id)
     if task is None:
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    if task.status not in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}:
+        return Response({"detail": "任务已结束"}, status=status.HTTP_409_CONFLICT)
     if task.status == RpaTask.Status.LEASED:
         task.status = RpaTask.Status.RUNNING
         task.started_at = timezone.now()
@@ -121,6 +125,8 @@ def complete_task_view(request, task_id):
     _, task = _assigned_task(request, task_id)
     if task is None:
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    if task.status not in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}:
+        return Response({"detail": "任务已结束"}, status=status.HTTP_409_CONFLICT)
     terminal = {RpaTask.Status.WAITING_HUMAN, RpaTask.Status.SUCCEEDED, RpaTask.Status.FAILED}
     completed_status = request.data.get("status")
     if completed_status not in terminal:
@@ -154,7 +160,16 @@ def complete_task_view(request, task_id):
         account.login_status = login_status
         account.verification_status = str(result_verification)[:40]
         account.last_checked_at = timezone.now()
-        account.save(update_fields=["login_status", "verification_status", "last_checked_at", "updated_at"])
+        if account.verification_status in {"token_invalid", "risk_control"}:
+            account.status = BossAccount.Status.RISK
+        elif login_status == BossAccount.LoginStatus.READY:
+            account.status = BossAccount.Status.READY
+        elif login_status in {BossAccount.LoginStatus.BROWSER_STOPPED, BossAccount.LoginStatus.WAITING_LOGIN}:
+            account.status = BossAccount.Status.OFFLINE
+        account.save(update_fields=["login_status", "verification_status", "last_checked_at", "status", "updated_at"])
+    elif task.action == RpaTask.Action.SYNC_POSITIONS and completed_status == RpaTask.Status.SUCCEEDED:
+        account.status = BossAccount.Status.READY
+        account.save(update_fields=["status", "updated_at"])
     RecruitmentAuditLog.objects.create(
         boss_account=account,
         action="task_completed",

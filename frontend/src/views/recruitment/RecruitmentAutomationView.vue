@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api, listItems } from '@/api'
 import ModalPanel from '@/components/ModalPanel.vue'
 import {
@@ -19,6 +19,7 @@ const accountModalOpen = ref(false)
 const selectedTask = ref(null)
 const saving = ref(false)
 const form = reactive({ name: '', browser_type: 'edge' })
+let refreshTimer = null
 
 const activeTaskAccountIds = computed(() => new Set(
   tasks.value
@@ -28,9 +29,11 @@ const activeTaskAccountIds = computed(() => new Set(
 
 const completedCount = computed(() => summary.task_counts?.succeeded || 0)
 
-async function loadWorkspace() {
-  loading.value = true
-  error.value = ''
+async function loadWorkspace({ silent = false } = {}) {
+  if (!silent) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     const [summaryPayload, accountPayload, taskPayload] = await Promise.all([
       api('recruitment/automation/summary/'),
@@ -41,9 +44,9 @@ async function loadWorkspace() {
     accounts.value = listItems(accountPayload)
     tasks.value = listItems(taskPayload)
   } catch (err) {
-    error.value = err.message
+    if (!silent) error.value = err.message
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -92,7 +95,11 @@ function formatDate(value) {
   return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—'
 }
 
-onMounted(loadWorkspace)
+onMounted(async () => {
+  await loadWorkspace()
+  refreshTimer = window.setInterval(() => loadWorkspace({ silent: true }), 5000)
+})
+onUnmounted(() => window.clearInterval(refreshTimer))
 </script>
 
 <template>

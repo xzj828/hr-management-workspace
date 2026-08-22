@@ -50,7 +50,14 @@ class WorkerApiClient:
 def execute_check_status(task, account, runner):
     if task.get("open_login"):
         runner.login(account)
-    observed = inspect_boss_status(account.cdp_port)
+        observed = None
+        for attempt in range(10):
+            observed = inspect_boss_status(account.cdp_port)
+            if observed.login_status != "browser_stopped" or attempt == 9:
+                break
+            time.sleep(0.5)
+    else:
+        observed = inspect_boss_status(account.cdp_port)
     result = {
         "login_status": observed.login_status,
         "verification_status": observed.verification_status,
