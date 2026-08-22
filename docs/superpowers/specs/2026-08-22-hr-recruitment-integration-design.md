@@ -46,7 +46,7 @@ Django 统一业务后端
         ↓
 Windows RPA Worker
         ↓
-boss-cli → 独立 Chrome 配置 → BOSS 直聘
+boss-cli → 独立 Chrome/Edge 配置 → BOSS 直聘
 ```
 
 Django 和 Windows RPA Worker 第一阶段运行在同一台 Windows 电脑上，但二者保持进程隔离。浏览器或 CLI 卡死不得阻塞考勤 API 和普通招聘页面。
@@ -154,7 +154,7 @@ Django 和 Windows RPA Worker 第一阶段运行在同一台 Windows 电脑上�
 
 多个 BOSS 账号均运行在 Windows。每个账号必须拥有独立的：
 
-- Chrome 用户数据目录；
+- Chrome 或 Edge 用户数据目录；
 - CDP 调试端口；
 - 登录、验证码和风控状态；
 - 职位及候选人来源；
