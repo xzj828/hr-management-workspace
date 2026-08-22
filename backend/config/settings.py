@@ -98,6 +98,7 @@ STORAGES = {
 }
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+RPA_PROFILE_ROOT = Path(os.getenv("RPA_PROFILE_ROOT", BASE_DIR / "rpa_profiles"))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

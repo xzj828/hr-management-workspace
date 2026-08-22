@@ -13,6 +13,10 @@ class BossAccountViewSet(viewsets.ModelViewSet):
     serializer_class = BossAccountSerializer
     permission_classes = [RecruitmentWritePermission]
 
+    def perform_create(self, serializer):
+        account = serializer.save()
+        account.authorized_users.add(self.request.user)
+
 
 class RecruitmentJobViewSet(viewsets.ModelViewSet):
     queryset = RecruitmentJob.objects.select_related("boss_account", "owner").all().order_by("-updated_at")
