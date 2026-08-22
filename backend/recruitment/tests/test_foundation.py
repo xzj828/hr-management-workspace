@@ -5,7 +5,15 @@ from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
 
-from .models import BossAccount, Candidate, JobApplication, RecruitmentJob
+from recruitment.models import (
+    BossAccount,
+    Candidate,
+    JobApplication,
+    RecruitmentJob,
+    RpaTask,
+    RpaTaskEvent,
+    RpaWorker,
+)
 
 
 class RecruitmentFoundationModelTests(TestCase):
@@ -48,6 +56,34 @@ class RecruitmentFoundationModelTests(TestCase):
         JobApplication.objects.create(candidate=self.candidate, job=self.job, source="recommend")
         with self.assertRaises(IntegrityError), transaction.atomic():
             JobApplication.objects.create(candidate=self.candidate, job=self.job, source="search")
+
+    def test_boss_account_defaults_to_chrome_and_unverified(self):
+        self.assertEqual(self.account.browser_type, BossAccount.BrowserType.CHROME)
+        self.assertEqual(self.account.login_status, BossAccount.LoginStatus.UNKNOWN)
+
+    def test_account_cannot_have_two_active_tasks(self):
+        RpaTask.objects.create(
+            boss_account=self.account,
+            action=RpaTask.Action.CHECK_STATUS,
+            created_by=self.hr,
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            RpaTask.objects.create(
+                boss_account=self.account,
+                action=RpaTask.Action.SYNC_POSITIONS,
+                created_by=self.hr,
+            )
+
+    def test_task_event_records_a_timeline_entry(self):
+        worker = RpaWorker.objects.create(key="local-worker", hostname="WIN-HR")
+        task = RpaTask.objects.create(
+            boss_account=self.account,
+            action=RpaTask.Action.CHECK_STATUS,
+            created_by=self.hr,
+            worker=worker,
+        )
+        event = RpaTaskEvent.objects.create(task=task, event="leased", message="任务已领取")
+        self.assertEqual(event.task, task)
 
 
 class RecruitmentFoundationApiTests(APITestCase):
