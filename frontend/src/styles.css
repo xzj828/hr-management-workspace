@@ -425,6 +425,20 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .recruitment-application-line { display: grid; gap: 5px; margin-top: 10px; padding: 12px; background: #f8fafc; border: 1px solid var(--line); border-radius: 9px; }
 .recruitment-application-line strong { color: var(--ink); font-size: 12px; }
 .recruitment-application-line small { color: var(--muted); font-size: 10px; }
+.recruitment-board { display: grid; grid-template-columns: repeat(7, minmax(210px, 1fr)); gap: 11px; overflow-x: auto; padding-bottom: 8px; }
+.recruitment-column { min-height: 520px; padding: 12px; background: #eef3f5; border: 1px solid #dce5e8; border-radius: 13px; }
+.recruitment-column > header { display: flex; align-items: center; justify-content: space-between; padding: 2px 3px 12px; }
+.recruitment-column > header strong { color: var(--ink); font-size: 11px; }
+.recruitment-column > header span { min-width: 22px; height: 22px; display: grid; place-content: center; color: var(--muted); background: #fff; border-radius: 999px; font-size: 9px; }
+.recruitment-column__cards { display: grid; align-content: start; gap: 9px; }
+.recruitment-candidate-card { width: 100%; display: grid; gap: 5px; padding: 13px; color: inherit; background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 3px 10px rgba(15,23,42,.04); text-align: left; cursor: grab; }
+.recruitment-candidate-card:hover { border-color: #a9d7d1; box-shadow: 0 8px 20px rgba(15,23,42,.08); }
+.recruitment-candidate-card:active { cursor: grabbing; }
+.recruitment-candidate-card strong { color: var(--ink); font-size: 12px; }
+.recruitment-candidate-card span { color: var(--slate); font-size: 10px; }
+.recruitment-candidate-card small { color: var(--muted); font-size: 9px; }
+.recruitment-candidate-card i { width: fit-content; margin-top: 3px; padding: 3px 6px; color: #0d766d; background: #e5f8f4; border-radius: 5px; font-size: 8px; font-style: normal; }
+.recruitment-column__empty { margin: 18px 0; color: #9aa7b7; font-size: 9px; text-align: center; }
 
 @media (max-width: 1180px) {
   .foundation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
