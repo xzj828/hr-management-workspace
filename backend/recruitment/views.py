@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -6,7 +7,7 @@ from rest_framework.response import Response
 
 from .models import BossAccount, Candidate, JobApplication, RecruitmentJob, RpaTask, RpaWorker
 from .permissions import RecruitmentWritePermission
-from .rpa.tasks import cancel_task, retry_task
+from .rpa.tasks import cancel_task, create_task, retry_task
 from .serializers import BossAccountSerializer, CandidateSerializer, JobApplicationSerializer, RecruitmentJobSerializer, RpaTaskSerializer
 
 
@@ -21,9 +22,16 @@ class BossAccountViewSet(viewsets.ModelViewSet):
             return queryset
         return queryset.filter(authorized_users=self.request.user)
 
+    @transaction.atomic
     def perform_create(self, serializer):
         account = serializer.save()
         account.authorized_users.add(self.request.user)
+        create_task(
+            account=account,
+            action=RpaTask.Action.CHECK_STATUS,
+            actor=self.request.user,
+            request_payload={"open_login": True},
+        )
 
 
 class RecruitmentJobViewSet(viewsets.ModelViewSet):

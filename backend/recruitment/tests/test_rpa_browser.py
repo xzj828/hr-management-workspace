@@ -6,7 +6,7 @@ from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
-from recruitment.models import BossAccount
+from recruitment.models import BossAccount, RpaTask
 from recruitment.rpa.browser import (
     ProfileLock,
     ProfileLockedError,
@@ -69,3 +69,17 @@ class BossAccountConfigurationApiTests(APITestCase):
         self.assertEqual(account.user_data_dir, str(Path("C:/hr-test/profiles") / account.browser_profile))
         self.assertGreaterEqual(account.cdp_port, 53470)
         self.assertTrue(account.authorized_users.filter(pk=self.hr.pk).exists())
+
+    @override_settings(RPA_PROFILE_ROOT=Path("C:/hr-test/profiles"))
+    def test_creating_account_queues_open_login_task(self):
+        response = self.client.post(
+            "/api/recruitment/boss-accounts/",
+            {"name": "首次登录账号", "browser_type": "edge"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        task = RpaTask.objects.get(boss_account_id=response.data["id"])
+        self.assertEqual(task.action, RpaTask.Action.CHECK_STATUS)
+        self.assertEqual(task.request_payload, {"open_login": True})
+        self.assertEqual(task.created_by, self.hr)
