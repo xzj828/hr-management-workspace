@@ -205,6 +205,41 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .modal-panel__body { padding: 21px 22px; overflow: auto; }
 .modal-panel > footer { display: flex; justify-content: flex-end; gap: 9px; padding: 14px 22px; background: #f8fafc; border-top: 1px solid var(--line); }
 
+.automation-workspace { max-width: 1380px; }
+.automation-add { font-size: 13px; }
+.automation-status { min-height: 78px; display: grid; grid-template-columns: 1.1fr 1.35fr 1.35fr .7fr; align-items: stretch; overflow: hidden; }
+.automation-status > div { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 15px 20px; border-right: 1px solid var(--line); }
+.automation-status > div:last-child { border-right: 0; }
+.automation-status span { color: #8390a2; font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.automation-status strong { max-width: 100%; overflow: hidden; color: #253247; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.automation-status i { position: absolute; top: 18px; right: 18px; width: 7px; height: 7px; border-radius: 50%; background: #a8b2c0; }
+.automation-status i.is-online { background: #1ca88f; box-shadow: 0 0 0 4px rgba(28,168,143,.1); }
+.automation-table td { height: 72px; }
+.automation-mono { color: #536174; font-family: Consolas, "SFMono-Regular", monospace; font-size: 10px; }
+.automation-action-cell { width: 70px; text-align: right; }
+.automation-menu { position: relative; display: inline-block; text-align: left; }
+.automation-menu summary { width: 32px; height: 28px; display: grid; place-content: center; color: #66758a; border-radius: 7px; cursor: pointer; list-style: none; letter-spacing: .1em; }
+.automation-menu summary::-webkit-details-marker { display: none; }
+.automation-menu summary:hover { color: var(--teal-dark); background: #eef8f6; }
+.automation-menu[open] > div { position: absolute; z-index: 10; top: 32px; right: 0; width: 158px; display: grid; padding: 6px; background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 15px 35px rgba(15,23,42,.14); }
+.automation-menu button { min-height: 34px; padding: 0 10px; color: #3d4a5f; background: transparent; border: 0; border-radius: 6px; text-align: left; font-size: 11px; }
+.automation-menu button:hover { color: var(--teal-dark); background: #f0faf8; }
+.status-badge--ready, .status-badge--succeeded { color: #0d766d; background: #e5f8f4; }
+.status-badge--browser_stopped, .status-badge--unknown, .status-badge--cancelled { color: #5f6d80; background: #eef2f6; }
+.status-badge--waiting_login, .status-badge--waiting_human, .status-badge--token_invalid, .status-badge--risk_control, .status-badge--leased, .status-badge--running { color: #9a590c; background: #fff2d8; }
+.automation-task-detail { display: grid; gap: 13px; }
+.automation-task-detail > div { display: flex; align-items: center; justify-content: space-between; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
+.automation-task-detail > div span, .automation-task-detail time { color: #8a97a8; font-size: 10px; }
+.automation-task-detail > div strong { color: #2a374a; font-size: 12px; }
+.automation-task-detail ol { display: grid; gap: 0; margin: 4px 0 0; padding: 0; list-style: none; }
+.automation-task-detail li { display: grid; grid-template-columns: 125px 1fr; gap: 14px; padding: 11px 0; border-bottom: 1px solid #edf1f5; font-size: 11px; }
+
+@media (max-width: 980px) {
+  .automation-status { grid-template-columns: 1fr 1fr; }
+  .automation-status > div:nth-child(2) { border-right: 0; }
+  .automation-status > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+}
+
 .import-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 17px; }
 .upload-card { padding: 21px; }
 .drop-zone { min-height: 220px; display: grid; place-content: center; justify-items: center; margin-top: 18px; padding: 25px; color: #738095; border: 1.5px dashed #bdc8d5; border-radius: 13px; background: #f9fbfc; text-align: center; transition: .18s ease; }
