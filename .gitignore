@@ -6,6 +6,7 @@ backend/staticfiles/
 backend/frontend_dist/
 backend/local_secret.key
 backend/local_worker.key
+backend/rpa_profiles/
 backups/
 outputs/
 .worktrees/
