@@ -415,6 +415,16 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .recruitment-row:hover { background: #f8fbfb; }
 .recruitment-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; color: #0d766d; background: #e5f8f4; border-radius: 999px; font-size: 9px; font-weight: 700; }
 .recruitment-error-strip { margin: 0; padding: 10px 13px; color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 9px; font-size: 11px; }
+.recruitment-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0; }
+.recruitment-detail-grid > div { min-height: 68px; padding: 12px; background: #f8fafc; border: 1px solid var(--line); border-radius: 9px; }
+.recruitment-detail-grid dt { color: var(--muted); font-size: 9px; }
+.recruitment-detail-grid dd { margin: 6px 0 0; color: var(--ink); font-size: 12px; font-weight: 700; }
+.recruitment-detail-section { margin-top: 22px; }
+.recruitment-detail-section > span { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.recruitment-detail-section > p { margin: 10px 0 0; color: var(--slate); font-size: 12px; line-height: 1.8; white-space: pre-line; }
+.recruitment-application-line { display: grid; gap: 5px; margin-top: 10px; padding: 12px; background: #f8fafc; border: 1px solid var(--line); border-radius: 9px; }
+.recruitment-application-line strong { color: var(--ink); font-size: 12px; }
+.recruitment-application-line small { color: var(--muted); font-size: 10px; }
 
 @media (max-width: 1180px) {
   .foundation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
