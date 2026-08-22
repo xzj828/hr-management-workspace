@@ -75,7 +75,9 @@ class RecruitmentPagesApiTests(APITestCase):
         self.assertEqual(inline.status_code, 200)
         self.assertEqual(inline["Content-Type"], "application/pdf")
         self.assertTrue(inline["Content-Disposition"].startswith("inline"))
+        frame_options = inline["X-Frame-Options"]
         inline.close()
+        self.assertEqual(frame_options, "SAMEORIGIN")
 
         download = self.client.get(f"/api/recruitment/resumes/{resume.pk}/file/?download=1")
         self.assertTrue(download["Content-Disposition"].startswith("attachment"))

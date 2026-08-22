@@ -117,6 +117,7 @@ class ResumeViewSet(viewsets.ReadOnlyModelViewSet):
             as_attachment=request.query_params.get("download") == "1",
             filename=resume.original_name,
         )
+        response["X-Frame-Options"] = "SAMEORIGIN"
         return response
 
 
