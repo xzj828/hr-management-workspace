@@ -19,6 +19,7 @@ const accountModalOpen = ref(false)
 const selectedTask = ref(null)
 const saving = ref(false)
 const form = reactive({ name: '', browser_type: 'edge' })
+const actionMenu = ref(null)
 let refreshTimer = null
 
 const activeTaskAccountIds = computed(() => new Set(
@@ -73,6 +74,7 @@ async function createAccount() {
 }
 
 async function runAction(account, actionName) {
+  closeActionMenu()
   const action = actionName === 'open_login' ? 'check_status' : actionName
   const requestPayload = actionName === 'open_login' ? { open_login: true } : actionName === 'check_status' ? { open_login: false } : {}
   error.value = ''
@@ -87,6 +89,25 @@ async function runAction(account, actionName) {
   }
 }
 
+function toggleActionMenu(event, account) {
+  if (actionMenu.value?.account.id === account.id) {
+    closeActionMenu()
+    return
+  }
+  const trigger = event.currentTarget
+  const rect = trigger.getBoundingClientRect()
+  const menuHeight = actionsFor(account).length * 34 + 14
+  const below = rect.bottom + 8
+  const top = below + menuHeight > window.innerHeight - 12
+    ? Math.max(12, rect.top - menuHeight - 8)
+    : below
+  actionMenu.value = { account, left: rect.right, top }
+}
+
+function closeActionMenu() {
+  actionMenu.value = null
+}
+
 function browserLabel(type) {
   return type === 'edge' ? 'Edge' : 'Chrome'
 }
@@ -98,8 +119,16 @@ function formatDate(value) {
 onMounted(async () => {
   await loadWorkspace()
   refreshTimer = window.setInterval(() => loadWorkspace({ silent: true }), 5000)
+  window.addEventListener('click', closeActionMenu)
+  window.addEventListener('resize', closeActionMenu)
+  window.addEventListener('scroll', closeActionMenu, true)
 })
-onUnmounted(() => window.clearInterval(refreshTimer))
+onUnmounted(() => {
+  window.clearInterval(refreshTimer)
+  window.removeEventListener('click', closeActionMenu)
+  window.removeEventListener('resize', closeActionMenu)
+  window.removeEventListener('scroll', closeActionMenu, true)
+})
 </script>
 
 <template>
@@ -135,7 +164,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
       </div>
     </section>
 
-    <section class="panel table-panel">
+    <section class="panel table-panel automation-panel automation-panel--accounts">
       <header class="panel__header panel__header--padded">
         <div><span class="panel-kicker">ISOLATED ACCOUNTS</span><h3>BOSS 账号</h3></div>
         <span>{{ accounts.length }} 个独立环境</span>
@@ -151,12 +180,14 @@ onUnmounted(() => window.clearInterval(refreshTimer))
               <td><span class="automation-mono">{{ account.browser_profile }}</span><small class="block-text">CDP {{ account.cdp_port }}</small></td>
               <td>{{ formatDate(account.last_checked_at) }}</td>
               <td class="automation-action-cell">
-                <details v-if="actionsFor(account).length" class="automation-menu">
-                  <summary aria-label="账号操作">•••</summary>
-                  <div>
-                    <button v-for="actionName in actionsFor(account)" :key="actionName" type="button" @click="runAction(account, actionName)">{{ actionLabels[actionName] }}</button>
-                  </div>
-                </details>
+                <button
+                  v-if="actionsFor(account).length"
+                  class="automation-menu-trigger"
+                  type="button"
+                  aria-label="账号操作"
+                  :aria-expanded="actionMenu?.account.id === account.id"
+                  @click.stop="toggleActionMenu($event, account)"
+                >•••</button>
                 <span v-else class="block-text">任务进行中</span>
               </td>
             </tr>
@@ -166,7 +197,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
       </div>
     </section>
 
-    <section class="panel table-panel">
+    <section class="panel table-panel automation-panel automation-panel--tasks">
       <header class="panel__header panel__header--padded">
         <div><span class="panel-kicker">TASK TIMELINE</span><h3>最近任务</h3></div>
         <span>只读操作留痕</span>
@@ -187,6 +218,24 @@ onUnmounted(() => window.clearInterval(refreshTimer))
         </table>
       </div>
     </section>
+
+    <Teleport to="body">
+      <Transition name="automation-menu-fade">
+        <div
+          v-if="actionMenu"
+          class="automation-menu-popover"
+          :style="{ position: 'fixed', left: `${actionMenu.left}px`, top: `${actionMenu.top}px` }"
+          @click.stop
+        >
+          <button
+            v-for="actionName in actionsFor(actionMenu.account)"
+            :key="actionName"
+            type="button"
+            @click="runAction(actionMenu.account, actionName)"
+          >{{ actionLabels[actionName] }}</button>
+        </div>
+      </Transition>
+    </Teleport>
 
     <ModalPanel v-if="accountModalOpen" title="添加 BOSS 账号" @close="accountModalOpen = false">
       <form id="boss-account-form" class="form-grid" @submit.prevent="createAccount">

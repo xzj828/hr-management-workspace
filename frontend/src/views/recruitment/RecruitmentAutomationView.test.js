@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMock = vi.hoisted(() => vi.fn())
 
@@ -12,6 +12,8 @@ import RecruitmentAutomationView from './RecruitmentAutomationView.vue'
 
 
 describe('RecruitmentAutomationView', () => {
+  let wrapper
+
   beforeEach(() => {
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
@@ -39,8 +41,14 @@ describe('RecruitmentAutomationView', () => {
     })
   })
 
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.innerHTML = ''
+  })
+
   it('renders worker, account and read-only task state without outbound actions', async () => {
-    const wrapper = mount(RecruitmentAutomationView, {
+    wrapper = mount(RecruitmentAutomationView, {
       global: { stubs: { teleport: true } },
     })
     await flushPromises()
@@ -53,5 +61,20 @@ describe('RecruitmentAutomationView', () => {
     expect(wrapper.text()).not.toContain('发送消息')
     expect(wrapper.text()).not.toContain('打招呼')
     expect(wrapper.text()).not.toContain('采集候选人')
+  })
+
+  it('uses larger workspace panels and teleports the account menu outside the table', async () => {
+    wrapper = mount(RecruitmentAutomationView, { attachTo: document.body })
+    await flushPromises()
+
+    expect(wrapper.find('.automation-panel--accounts').exists()).toBe(true)
+    expect(wrapper.find('.automation-panel--tasks').exists()).toBe(true)
+
+    await wrapper.get('button[aria-label="账号操作"]').trigger('click')
+
+    const popover = document.body.querySelector('.automation-menu-popover')
+    expect(popover).not.toBeNull()
+    expect(popover.style.position).toBe('fixed')
+    expect(wrapper.find('.table-scroll .automation-menu-popover').exists()).toBe(false)
   })
 })
