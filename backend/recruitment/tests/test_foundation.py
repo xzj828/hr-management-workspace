@@ -10,6 +10,7 @@ from recruitment.models import (
     Candidate,
     JobApplication,
     RecruitmentJob,
+    Resume,
     RpaTask,
     RpaTaskEvent,
     RpaWorker,
@@ -84,6 +85,39 @@ class RecruitmentFoundationModelTests(TestCase):
         )
         event = RpaTaskEvent.objects.create(task=task, event="leased", message="任务已领取")
         self.assertEqual(event.task, task)
+
+    def test_demo_job_can_exist_without_boss_account(self):
+        job = RecruitmentJob.objects.create(
+            boss_account=None,
+            external_id="demo:job:frontend",
+            title="前端工程师",
+            owner=self.hr,
+            is_demo=True,
+        )
+
+        self.assertIsNone(job.boss_account)
+        self.assertTrue(job.is_demo)
+
+    def test_pdf_resume_belongs_to_candidate_and_application(self):
+        application = JobApplication.objects.create(
+            candidate=self.candidate,
+            job=self.job,
+            source="demo",
+            is_demo=True,
+        )
+        resume = Resume.objects.create(
+            candidate=self.candidate,
+            application=application,
+            original_name="candidate.pdf",
+            file="recruitment/resumes/candidate.pdf",
+            content_type="application/pdf",
+            file_size=128,
+            source=Resume.Source.DEMO,
+            is_demo=True,
+        )
+
+        self.assertEqual(resume.application, application)
+        self.assertEqual(self.candidate.resumes.get(), resume)
 
 
 class RecruitmentFoundationApiTests(APITestCase):

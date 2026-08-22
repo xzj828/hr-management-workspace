@@ -48,7 +48,13 @@ class RecruitmentJob(models.Model):
         PAUSED = "paused", "已暂停"
         CLOSED = "closed", "已关闭"
 
-    boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, related_name="jobs")
+    boss_account = models.ForeignKey(
+        BossAccount,
+        on_delete=models.PROTECT,
+        related_name="jobs",
+        null=True,
+        blank=True,
+    )
     external_id = models.CharField(max_length=120)
     title = models.CharField(max_length=120)
     department = models.CharField(max_length=100, blank=True)
@@ -56,6 +62,7 @@ class RecruitmentJob(models.Model):
     owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name="recruitment_jobs")
     headcount = models.PositiveIntegerField(default=1)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
+    is_demo = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -73,6 +80,7 @@ class Candidate(models.Model):
     email = models.EmailField(blank=True)
     current_title = models.CharField(max_length=120, blank=True)
     current_city = models.CharField(max_length=80, blank=True)
+    is_demo = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -100,6 +108,7 @@ class JobApplication(models.Model):
     owner = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="candidate_applications")
     priority = models.PositiveSmallIntegerField(default=0)
     last_interaction_at = models.DateTimeField(null=True, blank=True)
+    is_demo = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -107,6 +116,43 @@ class JobApplication(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["candidate", "job"], name="unique_candidate_job_application")
         ]
+
+
+class Resume(models.Model):
+    class Source(models.TextChoices):
+        BOSS = "boss", "BOSS 直聘"
+        UPLOAD = "upload", "人工上传"
+        DEMO = "demo", "演示数据"
+
+    class ProcessingStatus(models.TextChoices):
+        PENDING = "pending", "待处理"
+        READY = "ready", "待 AI 评估"
+        ERROR = "error", "文件不可用"
+
+    candidate = models.ForeignKey(Candidate, on_delete=models.CASCADE, related_name="resumes")
+    application = models.ForeignKey(
+        JobApplication,
+        on_delete=models.SET_NULL,
+        related_name="resumes",
+        null=True,
+        blank=True,
+    )
+    original_name = models.CharField(max_length=255)
+    file = models.FileField(upload_to="recruitment/resumes/%Y/%m")
+    content_type = models.CharField(max_length=100, default="application/pdf")
+    file_size = models.PositiveBigIntegerField(default=0)
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.BOSS)
+    processing_status = models.CharField(
+        max_length=20,
+        choices=ProcessingStatus.choices,
+        default=ProcessingStatus.READY,
+    )
+    is_demo = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
 
 
 class RpaWorker(models.Model):
