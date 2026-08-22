@@ -43,6 +43,10 @@ describe('AppLayout navigation hierarchy', () => {
       '自动化任务',
       '简历中心',
     ])
+    expect(wrapper.findAll('.module-nav .app-icon')).toHaveLength(2)
+    expect(wrapper.findAll('.top-navigation__link .app-icon')).toHaveLength(6)
+    expect(wrapper.find('.collapse-button .app-icon').exists()).toBe(true)
+    expect(wrapper.find('.copilot-entry .app-icon').exists()).toBe(true)
     expect(wrapper.find('.module-switcher').exists()).toBe(false)
     expect(wrapper.find('.topbar h1').exists()).toBe(false)
   })

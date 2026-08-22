@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  modules,
   moduleDestination,
   moduleForRoute,
   navigationForModule,
@@ -8,6 +9,19 @@ import {
 } from './navigation'
 
 describe('HR platform navigation', () => {
+  it('maps modules and pages to semantic icon names', () => {
+    expect(modules.map(({ id, icon }) => [id, icon])).toEqual([
+      ['recruitment', 'briefcase'],
+      ['attendance', 'calendar-check'],
+    ])
+    expect(navigationForModule('recruitment').map((item) => item.icon)).toEqual([
+      'dashboard', 'briefcase', 'user', 'workflow', 'refresh', 'document',
+    ])
+    expect(navigationForModule('attendance').map((item) => item.icon)).toEqual([
+      'dashboard', 'users', 'upload', 'calculator-check', 'alert-circle', 'sliders',
+    ])
+  })
+
   it('maps recruitment routes to the recruitment module', () => {
     expect(moduleForRoute({ meta: { module: 'recruitment' } })).toBe('recruitment')
   })

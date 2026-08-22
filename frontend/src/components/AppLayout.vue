@@ -11,6 +11,7 @@ import {
 } from '@/navigation'
 import RecruitmentCopilotDrawer from '@/components/RecruitmentCopilotDrawer.vue'
 import UserAccountMenu from '@/components/UserAccountMenu.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -52,13 +53,16 @@ async function signOut() {
           class="nav-item"
           :class="{ 'nav-item--active': currentModule === module.id }"
         >
-          <span class="nav-item__icon">{{ module.id === 'recruitment' ? '◇' : '⌁' }}</span>
+          <AppIcon class="nav-item__icon" :name="module.icon" :size="20" />
           <span class="nav-item__label">{{ module.label }}</span>
         </router-link>
       </nav>
       <div class="sidebar__foot">
         <div class="system-state"><i></i><span>本地服务运行中</span></div>
-        <button class="collapse-button" type="button" @click="collapsed = !collapsed">{{ collapsed ? '›' : '‹ 收起导航' }}</button>
+        <button class="collapse-button" type="button" :aria-label="collapsed ? '展开导航' : '收起导航'" @click="collapsed = !collapsed">
+          <AppIcon :name="collapsed ? 'chevron-right' : 'chevron-left'" :size="18" />
+          <span v-if="!collapsed">收起导航</span>
+        </button>
       </div>
     </aside>
 
@@ -70,11 +74,11 @@ async function signOut() {
             :key="item.name"
             :to="{ name: item.name }"
             class="top-navigation__link"
-          >{{ item.label }}</router-link>
+          ><AppIcon :name="item.icon" :size="18" /><span>{{ item.label }}</span></router-link>
         </nav>
         <div class="topbar__actions">
           <button v-if="currentModule === 'recruitment'" class="copilot-entry" type="button" @click="copilotOpen = true">
-            <span aria-hidden="true">✦</span> Copilot
+            <AppIcon name="sparkles" :size="17" /> Copilot
           </button>
           <UserAccountMenu :user="auth.user" @model-settings="copilotOpen = true" @logout="signOut" />
         </div>
