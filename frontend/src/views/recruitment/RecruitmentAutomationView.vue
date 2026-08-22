@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api, listItems } from '@/api'
 import ModalPanel from '@/components/ModalPanel.vue'
+import AppIcon from '@/components/AppIcon.vue'
 import {
   accountDisplayStatus,
   actionLabels,
@@ -139,7 +140,7 @@ onUnmounted(() => {
         <h2>自动化任务</h2>
         <p>每个账号使用独立浏览器环境；登录与安全验证始终由 HR 本人完成。</p>
       </div>
-      <button class="text-button automation-add" type="button" @click="accountModalOpen = true">添加账号</button>
+      <button class="text-button automation-add button-with-icon" type="button" @click="accountModalOpen = true"><AppIcon name="plus" :size="16" /><span>添加账号</span></button>
     </header>
 
     <p v-if="error" class="form-error">{{ error }}</p>
@@ -187,7 +188,7 @@ onUnmounted(() => {
                   aria-label="账号操作"
                   :aria-expanded="actionMenu?.account.id === account.id"
                   @click.stop="toggleActionMenu($event, account)"
-                >•••</button>
+                ><AppIcon name="more-horizontal" :size="19" /></button>
                 <span v-else class="block-text">任务进行中</span>
               </td>
             </tr>

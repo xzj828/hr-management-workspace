@@ -9,6 +9,7 @@ vi.mock('@/api', () => ({
 }))
 
 import RecruitmentResumesView from './RecruitmentResumesView.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 
 const resumes = [
@@ -37,10 +38,13 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.text()).toContain('1.5 KB')
     expect(wrapper.text()).toContain('待 AI 评估')
     expect(wrapper.get('[data-test="download-1"]').attributes('href')).toBe('/api/recruitment/resumes/1/file/?download=1')
+    expect(wrapper.get('[data-test="preview-1"]').findComponent(AppIcon).props('name')).toBe('eye')
+    expect(wrapper.get('[data-test="download-1"]').findComponent(AppIcon).props('name')).toBe('download')
 
     await wrapper.get('[data-test="preview-1"]').trigger('click')
     expect(wrapper.get('iframe').attributes('src')).toBe('/api/recruitment/resumes/1/file/')
     expect(wrapper.get('iframe').attributes('title')).toBe('周晓宁的简历')
+    expect(wrapper.get('.recruitment-download-link').findComponent(AppIcon).props('name')).toBe('download')
   })
 
   it('does not offer preview or download for a missing PDF', async () => {

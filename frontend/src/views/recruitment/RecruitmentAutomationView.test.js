@@ -9,6 +9,7 @@ vi.mock('@/api', () => ({
 }))
 
 import RecruitmentAutomationView from './RecruitmentAutomationView.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 
 describe('RecruitmentAutomationView', () => {
@@ -61,6 +62,9 @@ describe('RecruitmentAutomationView', () => {
     expect(wrapper.text()).not.toContain('发送消息')
     expect(wrapper.text()).not.toContain('打招呼')
     expect(wrapper.text()).not.toContain('采集候选人')
+    const menuTrigger = wrapper.get('button[aria-label="账号操作"]')
+    expect(menuTrigger.findComponent(AppIcon).props('name')).toBe('more-horizontal')
+    expect(menuTrigger.text()).not.toContain('•••')
   })
 
   it('uses larger workspace panels and teleports the account menu outside the table', async () => {

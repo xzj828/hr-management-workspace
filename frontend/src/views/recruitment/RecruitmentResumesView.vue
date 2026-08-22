@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { api, listItems } from '@/api'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
+import AppIcon from '@/components/AppIcon.vue'
 import { formatFileSize, formatRecruitmentDate } from '@/recruitment'
 
 const resumes = ref([])
@@ -54,8 +55,8 @@ onMounted(loadResumes)
                 <span v-else class="recruitment-chip recruitment-chip--error">文件不可用</span>
               </td>
               <td class="recruitment-resume-actions">
-                <button v-if="resume.file_available" :data-test="`preview-${resume.id}`" type="button" class="text-button" @click="selected = resume">预览</button>
-                <a v-if="resume.file_available" :data-test="`download-${resume.id}`" :href="resume.download_url">下载</a>
+                <button v-if="resume.file_available" :data-test="`preview-${resume.id}`" type="button" class="text-button button-with-icon" @click="selected = resume"><AppIcon name="eye" :size="16" /><span>预览</span></button>
+                <a v-if="resume.file_available" :data-test="`download-${resume.id}`" class="button-with-icon" :href="resume.download_url"><AppIcon name="download" :size="16" /><span>下载</span></a>
               </td>
             </tr>
             <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">暂无简历，可从“演示数据”加载 3 份 PDF。</td></tr>
@@ -79,7 +80,7 @@ onMounted(loadResumes)
       ></iframe>
       <div v-else class="recruitment-file-unavailable">简历文件不可用</div>
       <template #footer>
-        <a class="secondary-button recruitment-download-link" :href="selected.download_url">下载 PDF</a>
+        <a class="secondary-button recruitment-download-link button-with-icon" :href="selected.download_url"><AppIcon name="download" :size="16" /><span>下载 PDF</span></a>
       </template>
     </RecruitmentDetailDrawer>
   </div>
