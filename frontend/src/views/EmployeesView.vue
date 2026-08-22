@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api, listItems } from '@/api'
 import ModalPanel from '@/components/ModalPanel.vue'
 import ToastMessage from '@/components/ToastMessage.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const employees = ref([])
 const policies = ref([])
@@ -89,10 +90,10 @@ onMounted(load)
     <ToastMessage :message="toast" />
     <div class="page-hero page-hero--compact">
       <div><h2>人员档案与考勤归类</h2><p>人员标签、考勤策略和系统权限彼此独立，工号用于稳定匹配打卡记录。</p></div>
-      <button class="primary-button" @click="openForm()">＋ 新增人员</button>
+      <button class="primary-button button-with-icon" @click="openForm()"><AppIcon name="plus" :size="16" /><span>新增人员</span></button>
     </div>
     <section class="toolbar panel">
-      <label class="search-box"><span>⌕</span><input v-model="query" placeholder="搜索姓名、工号、部门或岗位" /></label>
+      <label class="search-box"><AppIcon name="search" :size="17" /><input v-model="query" placeholder="搜索姓名、工号、部门或岗位" /></label>
       <select v-model="mode"><option value="">全部考勤类型</option><option value="standard">标准考勤</option><option value="flexible">弹性工作</option><option value="exempt">免考勤</option><option value="part_time">兼职</option><option value="shift">轮班</option></select>
       <span class="toolbar__count">{{ filtered.length }} 人</span>
     </section>

@@ -5,6 +5,7 @@ import { api, listItems } from '@/api'
 import EmployeeAttendanceModal from '@/components/EmployeeAttendanceModal.vue'
 import ModalPanel from '@/components/ModalPanel.vue'
 import ToastMessage from '@/components/ToastMessage.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,10 +77,10 @@ watch(() => route.query.batch, (value) => { if (value && value !== selectedBatch
 <template>
   <div class="page-stack">
     <ToastMessage :message="toast" />
-    <div class="page-hero page-hero--compact"><div><h2>月度核算结果</h2><p>每一行都保留规则轨迹；人工调整后系统会立即重算，并在导出文件中记录。</p></div><button class="primary-button" :disabled="!selectedBatch" @click="exportWorkbook">↓ 导出考勤汇总</button></div>
+    <div class="page-hero page-hero--compact"><div><h2>月度核算结果</h2><p>每一行都保留规则轨迹；人工调整后系统会立即重算，并在导出文件中记录。</p></div><button class="primary-button button-with-icon" :disabled="!selectedBatch" @click="exportWorkbook"><AppIcon name="download" :size="16" /><span>导出考勤汇总</span></button></div>
     <section class="toolbar panel">
       <select v-model="selectedBatch" @change="selectBatch"><option value="" disabled>选择导入批次</option><option v-for="batch in batches" :key="batch.id" :value="batch.id">{{ batch.year }} 年 {{ batch.month }} 月 · {{ batch.original_filename }}</option></select>
-      <label class="search-box"><span>⌕</span><input v-model="query" placeholder="搜索姓名、工号或部门" /></label>
+      <label class="search-box"><AppIcon name="search" :size="17" /><input v-model="query" placeholder="搜索姓名、工号或部门" /></label>
       <select v-model="statusFilter"><option value="">全部状态</option><option value="normal">正常</option><option value="review">需要复核</option><option value="approved">已确认</option></select>
       <span class="toolbar__count">{{ filtered.length }} 人</span>
     </section>

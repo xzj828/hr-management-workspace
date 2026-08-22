@@ -9,12 +9,15 @@ vi.mock('@/api', () => ({
 }))
 
 vi.mock('vue-router', () => ({
+  useRoute: () => ({ query: {} }),
   useRouter: () => ({ push: vi.fn() }),
 }))
 
 import AppIcon from '@/components/AppIcon.vue'
 import DashboardView from './DashboardView.vue'
+import EmployeesView from './EmployeesView.vue'
 import ImportsView from './ImportsView.vue'
+import ResultsView from './ResultsView.vue'
 import SettingsView from './SettingsView.vue'
 import SuspicionsView from './SuspicionsView.vue'
 
@@ -33,6 +36,16 @@ function iconNames(wrapper) {
 describe('attendance page icons', () => {
   beforeEach(() => apiMock.mockReset())
 
+  it('uses add and search icons in personnel management', async () => {
+    apiMock.mockResolvedValue({ results: [] })
+    const wrapper = mount(EmployeesView, { global })
+    await flushPromises()
+
+    expect(iconNames(wrapper)).toEqual(expect.arrayContaining(['plus', 'search']))
+    expect(wrapper.text()).not.toContain('＋')
+    expect(wrapper.text()).not.toContain('⌕')
+  })
+
   it('uses an upload icon for file selection', async () => {
     apiMock.mockResolvedValue({ results: [] })
     const wrapper = mount(ImportsView, { global })
@@ -40,6 +53,16 @@ describe('attendance page icons', () => {
 
     expect(iconNames(wrapper)).toContain('upload')
     expect(wrapper.text()).not.toContain('⇧')
+  })
+
+  it('uses download and search icons in attendance results', async () => {
+    apiMock.mockResolvedValue({ results: [] })
+    const wrapper = mount(ResultsView, { global })
+    await flushPromises()
+
+    expect(iconNames(wrapper)).toEqual(expect.arrayContaining(['download', 'search']))
+    expect(wrapper.text()).not.toContain('↓')
+    expect(wrapper.text()).not.toContain('⌕')
   })
 
   it('uses distinct clock and upload icons for dashboard empty states', async () => {

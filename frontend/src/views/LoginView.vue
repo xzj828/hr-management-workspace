@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import AppIcon from '@/components/AppIcon.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -59,7 +60,7 @@ async function submit() {
         <button class="primary-button primary-button--large" :disabled="submitting">
           {{ submitting ? '正在登录…' : '进入系统' }}
         </button>
-        <p class="security-note"><span>●</span> 数据仅保存在当前设备</p>
+        <p class="security-note"><AppIcon name="shield" :size="13" /> 数据仅保存在当前设备</p>
       </form>
     </section>
   </main>
