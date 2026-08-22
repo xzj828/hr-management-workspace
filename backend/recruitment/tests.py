@@ -1,6 +1,9 @@
 from django.contrib.auth.models import User
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from rest_framework.test import APITestCase
+
+from attendance.models import AccountProfile
 
 from .models import BossAccount, Candidate, JobApplication, RecruitmentJob
 
@@ -45,3 +48,36 @@ class RecruitmentFoundationModelTests(TestCase):
         JobApplication.objects.create(candidate=self.candidate, job=self.job, source="recommend")
         with self.assertRaises(IntegrityError), transaction.atomic():
             JobApplication.objects.create(candidate=self.candidate, job=self.job, source="search")
+
+
+class RecruitmentFoundationApiTests(APITestCase):
+    def setUp(self):
+        self.hr = User.objects.create_user(username="hr-api")
+        AccountProfile.objects.create(user=self.hr, role=AccountProfile.Role.HR)
+        self.viewer = User.objects.create_user(username="viewer-api")
+        AccountProfile.objects.create(user=self.viewer, role=AccountProfile.Role.VIEWER)
+
+    def test_hr_can_create_boss_account(self):
+        self.client.force_login(self.hr)
+        response = self.client.post(
+            "/api/recruitment/boss-accounts/",
+            {"name": "主招聘账号", "browser_profile": "main-boss", "cdp_port": 53470, "daily_contact_limit": 40},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+
+    def test_viewer_cannot_create_boss_account(self):
+        self.client.force_login(self.viewer)
+        response = self.client.post(
+            "/api/recruitment/boss-accounts/",
+            {"name": "禁止创建", "browser_profile": "blocked", "cdp_port": 53471},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_authenticated_user_can_read_empty_dashboard(self):
+        self.client.force_login(self.viewer)
+        response = self.client.get("/api/recruitment/dashboard/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["open_jobs"], 0)
+        self.assertEqual(response.data["active_candidates"], 0)
