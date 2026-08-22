@@ -3,11 +3,13 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { modules, moduleForRoute, navigationForModule } from '@/navigation'
+import RecruitmentCopilotDrawer from '@/components/RecruitmentCopilotDrawer.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
+const copilotOpen = ref(false)
 
 const currentModule = computed(() => moduleForRoute(route))
 const navigation = computed(() => navigationForModule(currentModule.value))
@@ -56,6 +58,7 @@ async function signOut() {
               :class="{ active: currentModule === module.id }"
             >{{ module.label }}</router-link>
           </nav>
+          <button v-if="currentModule === 'recruitment'" class="ghost-button" @click="copilotOpen = true">Copilot</button>
           <div class="user-chip">
             <span class="avatar">{{ auth.user?.username?.slice(0, 1)?.toUpperCase() }}</span>
             <div><strong>{{ auth.user?.first_name || auth.user?.username }}</strong><span>{{ auth.user?.role_label }}</span></div>
@@ -65,6 +68,7 @@ async function signOut() {
       </header>
       <section class="page-container"><router-view /></section>
     </main>
+    <RecruitmentCopilotDrawer v-if="copilotOpen" @close="copilotOpen = false" />
   </div>
 </template>
 
