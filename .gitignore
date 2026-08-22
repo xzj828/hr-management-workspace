@@ -1,0 +1,16 @@
+.venv/
+frontend/node_modules/
+backend/db.sqlite3
+backend/media/
+backend/staticfiles/
+backend/frontend_dist/
+backend/local_secret.key
+backups/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+.coverage
+htmlcov/
+backend/*.log
+frontend/coverage/
