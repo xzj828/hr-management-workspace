@@ -23,7 +23,7 @@ const router = createRouter({
         { path: 'recruitment/candidates', name: 'recruitment-candidates', component: () => import('@/views/recruitment/RecruitmentCandidatesView.vue'), meta: { module: 'recruitment', title: '候选人' } },
         { path: 'recruitment/pipeline', name: 'recruitment-pipeline', component: () => import('@/views/recruitment/RecruitmentPipelineView.vue'), meta: { module: 'recruitment', title: '招聘流程' } },
         { path: 'recruitment/automation', name: 'recruitment-automation', component: () => import('@/views/recruitment/RecruitmentAutomationView.vue'), meta: { module: 'recruitment', title: '自动化任务' } },
-        { path: 'recruitment/resumes', name: 'recruitment-resumes', component: () => import('@/views/recruitment/RecruitmentPlaceholderView.vue'), meta: { module: 'recruitment', title: '简历中心' } },
+        { path: 'recruitment/resumes', name: 'recruitment-resumes', component: () => import('@/views/recruitment/RecruitmentResumesView.vue'), meta: { module: 'recruitment', title: '简历中心' } },
       ],
     },
   ],

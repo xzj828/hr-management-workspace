@@ -439,6 +439,14 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .recruitment-candidate-card small { color: var(--muted); font-size: 9px; }
 .recruitment-candidate-card i { width: fit-content; margin-top: 3px; padding: 3px 6px; color: #0d766d; background: #e5f8f4; border-radius: 5px; font-size: 8px; font-style: normal; }
 .recruitment-column__empty { margin: 18px 0; color: #9aa7b7; font-size: 9px; text-align: center; }
+.recruitment-file-name { max-width: 190px; display: block; overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
+.recruitment-chip--error { color: #9a3412; background: #fff1e8; }
+.recruitment-resume-actions { display: flex; align-items: center; gap: 10px; }
+.recruitment-resume-actions a { color: #0d766d; font-size: 10px; font-weight: 700; text-decoration: none; }
+.recruitment-detail-grid--resume { margin-bottom: 16px; }
+.recruitment-pdf-preview { width: 100%; height: calc(100vh - 330px); min-height: 420px; background: #f1f5f9; border: 1px solid var(--line); border-radius: 10px; }
+.recruitment-file-unavailable { min-height: 360px; display: grid; place-content: center; color: var(--muted); background: #f8fafc; border: 1px dashed var(--line); border-radius: 10px; }
+.recruitment-download-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 
 @media (max-width: 1180px) {
   .foundation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
