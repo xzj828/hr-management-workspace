@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api'
 import EChart from '@/components/EChart.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const data = ref(null)
 const loading = ref(true)
@@ -125,9 +126,9 @@ onMounted(() => load())
 
       <section class="kpi-grid">
         <article class="kpi-card kpi-card--ink"><span>纳入核算人数</span><strong>{{ data.kpis.employees }}</strong><small>{{ filters.department || '全部部门' }}去重人数</small><i>人</i></article>
-        <article class="kpi-card"><span>期间出勤率</span><strong>{{ data.kpis.attendance_rate }}%</strong><small>实际出勤 ÷ 应出勤</small><i class="trend-up">↗</i></article>
-        <article class="kpi-card"><span>需要复核</span><strong>{{ data.kpis.review_count }}</strong><small>所选范围内去重人数</small><i class="warning-dot">!</i></article>
-        <article class="kpi-card"><span>跨日待审核</span><strong>{{ data.kpis.pending_cross_day }}</strong><small>所选范围内凌晨单条打卡</small><i class="amber-dot">●</i></article>
+        <article class="kpi-card"><span>期间出勤率</span><strong>{{ data.kpis.attendance_rate }}%</strong><small>实际出勤 ÷ 应出勤</small><i class="trend-up"><AppIcon name="arrow-right" :size="16" /></i></article>
+        <article class="kpi-card"><span>需要复核</span><strong>{{ data.kpis.review_count }}</strong><small>所选范围内去重人数</small><i class="warning-dot"><AppIcon name="alert-circle" :size="15" /></i></article>
+        <article class="kpi-card"><span>跨日待审核</span><strong>{{ data.kpis.pending_cross_day }}</strong><small>所选范围内凌晨单条打卡</small><i class="amber-dot"><AppIcon name="clock" :size="15" /></i></article>
       </section>
 
       <section class="dashboard-grid">
@@ -152,7 +153,7 @@ onMounted(() => load())
           </div>
         </article>
         <article class="panel panel--wide">
-          <header class="panel__header"><div><span class="panel-kicker">REVIEW QUEUE</span><h3>待办提醒</h3></div><router-link :to="{ name: 'suspicions' }">查看全部 →</router-link></header>
+          <header class="panel__header"><div><span class="panel-kicker">REVIEW QUEUE</span><h3>待办提醒</h3></div><router-link class="button-with-icon" :to="{ name: 'suspicions' }"><span>查看全部</span><AppIcon name="arrow-right" :size="15" /></router-link></header>
           <div class="todo-strip">
             <div class="todo-card todo-card--amber"><span>01</span><div><strong>{{ data.kpis.pending_cross_day }} 条跨日记录</strong><p>需要判断归入前一天还是保留当天</p></div></div>
             <div class="todo-card"><span>02</span><div><strong>{{ data.kpis.review_count }} 人待核对</strong><p>实际出勤与默认应出勤存在差异</p></div></div>
@@ -162,10 +163,10 @@ onMounted(() => load())
       </section>
     </template>
     <div v-else-if="data?.available_periods?.length" class="empty-state empty-state--hero">
-      <div class="empty-state__icon">◷</div><strong>所选范围暂无考勤数据</strong><p>请调整起止月份，或点击“全部记录”查看已有批次。</p><button class="primary-button" @click="showAll">查看全部记录</button>
+      <div class="empty-state__icon"><AppIcon name="clock" :size="29" /></div><strong>所选范围暂无考勤数据</strong><p>请调整起止月份，或点击“全部记录”查看已有批次。</p><button class="primary-button" @click="showAll">查看全部记录</button>
     </div>
     <div v-else class="empty-state empty-state--hero">
-      <div class="empty-state__icon">⇧</div><strong>先导入第一份打卡表</strong><p>系统会自动匹配人员、识别跨日打卡并生成核算结果。</p><router-link class="primary-button" :to="{ name: 'imports' }">前往导入</router-link>
+      <div class="empty-state__icon"><AppIcon name="upload" :size="29" /></div><strong>先导入第一份打卡表</strong><p>系统会自动匹配人员、识别跨日打卡并生成核算结果。</p><router-link class="primary-button" :to="{ name: 'imports' }">前往导入</router-link>
     </div>
   </div>
 </template>

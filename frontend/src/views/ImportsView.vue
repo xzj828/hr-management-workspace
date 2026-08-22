@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import ToastMessage from '@/components/ToastMessage.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const router = useRouter()
 const batches = ref([])
@@ -75,7 +76,7 @@ onMounted(load)
         <header class="panel__header"><div><span class="panel-kicker">STEP 01</span><h3>选择打卡文件</h3></div></header>
         <label class="drop-zone" :class="{ 'drop-zone--active': dragging, 'drop-zone--selected': file }" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="drop">
           <input type="file" accept=".xlsx" @change="choose" />
-          <span class="drop-zone__icon">⇧</span>
+          <span class="drop-zone__icon"><AppIcon name="upload" :size="26" /></span>
           <strong>{{ file ? '文件已选择' : '拖入文件，或点击选择' }}</strong>
           <p>{{ selectedFileLabel || '仅支持 .xlsx，最大 10MB' }}</p>
         </label>
@@ -102,7 +103,7 @@ onMounted(load)
           <td><span :class="['count-badge', { 'count-badge--warning': batch.pending_suspicions }]">{{ batch.pending_suspicions }} 待审</span></td>
           <td><span :class="['status-badge', `status-badge--${batch.status}`]">{{ batch.status_label }}</span></td>
           <td>{{ new Date(batch.created_at).toLocaleString() }}</td>
-          <td><button class="text-button" @click="openResults(batch)">查看结果 →</button></td>
+          <td><button class="text-button button-with-icon" @click="openResults(batch)"><span>查看结果</span><AppIcon name="arrow-right" :size="15" /></button></td>
         </tr>
         <tr v-if="!batches.length"><td colspan="7"><div class="table-empty">还没有导入记录</div></td></tr>
       </tbody></table></div>

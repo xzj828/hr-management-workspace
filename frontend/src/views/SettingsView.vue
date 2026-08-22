@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { api, listItems } from '@/api'
 import ModalPanel from '@/components/ModalPanel.vue'
 import ToastMessage from '@/components/ToastMessage.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const policies = ref([])
 const tags = ref([])
@@ -58,22 +59,22 @@ onMounted(load)
     <div class="page-hero page-hero--compact"><div><h2>规则与分类</h2><p>考勤策略决定如何核算；人员标签只做归类；管理员权限在账号系统中单独维护。</p></div></div>
     <section class="settings-grid">
       <article class="panel settings-panel">
-        <header class="panel__header"><div><span class="panel-kicker">ATTENDANCE POLICY</span><h3>考勤策略</h3></div><button class="secondary-button" @click="editPolicy()">＋ 新增策略</button></header>
+        <header class="panel__header"><div><span class="panel-kicker">ATTENDANCE POLICY</span><h3>考勤策略</h3></div><button class="secondary-button button-with-icon" @click="editPolicy()"><AppIcon name="plus" :size="16" /><span>新增策略</span></button></header>
         <div class="policy-list">
           <button v-for="policy in policies" :key="policy.id" class="policy-card" @click="editPolicy(policy)">
-            <span :class="['policy-icon', `policy-icon--${policy.mode}`]">{{ policy.mode === 'exempt' ? '免' : policy.mode === 'flexible' ? '弹' : policy.mode === 'shift' ? '班' : '标' }}</span>
-            <div><strong>{{ policy.name }}</strong><p>{{ policy.description || policy.mode_label }}</p><small>{{ policy.employee_count }} 人 · 跨日截止 {{ Math.floor(policy.cross_day_cutoff_minutes / 60).toString().padStart(2, '0') }}:{{ (policy.cross_day_cutoff_minutes % 60).toString().padStart(2, '0') }}</small></div><i>›</i>
+            <span :class="['policy-icon', `policy-icon--${policy.mode}`]"><AppIcon name="sliders" :size="20" /></span>
+            <div><strong>{{ policy.name }}</strong><p>{{ policy.description || policy.mode_label }}</p><small>{{ policy.employee_count }} 人 · 跨日截止 {{ Math.floor(policy.cross_day_cutoff_minutes / 60).toString().padStart(2, '0') }}:{{ (policy.cross_day_cutoff_minutes % 60).toString().padStart(2, '0') }}</small></div><i><AppIcon name="chevron-right" :size="17" /></i>
           </button>
         </div>
       </article>
       <article class="panel settings-panel">
-        <header class="panel__header"><div><span class="panel-kicker">PEOPLE TAGS</span><h3>人员标签</h3></div><button class="secondary-button" @click="editTag()">＋ 新增标签</button></header>
+        <header class="panel__header"><div><span class="panel-kicker">PEOPLE TAGS</span><h3>人员标签</h3></div><button class="secondary-button button-with-icon" @click="editTag()"><AppIcon name="plus" :size="16" /><span>新增标签</span></button></header>
         <div class="tag-cloud">
           <button v-for="tag in tags" :key="tag.id" class="tag-manage" :style="{ '--tag-color': tag.color }" @click="editTag(tag)"><i></i><strong>{{ tag.name }}</strong><span>{{ tag.description || '暂无说明' }}</span></button>
         </div>
       </article>
     </section>
-    <section class="permission-note panel"><div class="permission-note__icon">⌘</div><div><strong>系统角色不等于人员标签</strong><p>“管理员、HR、部门主管、只读”控制系统操作权限；“领导层、弹性工作”等用于人员归类和考勤规则，请不要混用。</p></div></section>
+    <section class="permission-note panel"><div class="permission-note__icon"><AppIcon name="shield" :size="19" /></div><div><strong>系统角色不等于人员标签</strong><p>“管理员、HR、部门主管、只读”控制系统操作权限；“领导层、弹性工作”等用于人员归类和考勤规则，请不要混用。</p></div></section>
 
     <ModalPanel v-if="policyOpen" :title="editingPolicy ? '编辑考勤策略' : '新增考勤策略'" @close="policyOpen = false">
       <form class="form-grid" @submit.prevent="savePolicy">
