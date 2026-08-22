@@ -8,6 +8,7 @@ const route = useRoute()
 const router = useRouter()
 const username = ref('admin')
 const password = ref('')
+const remember = ref(true)
 const error = ref('')
 const submitting = ref(false)
 
@@ -15,7 +16,7 @@ async function submit() {
   error.value = ''
   submitting.value = true
   try {
-    await auth.login(username.value, password.value)
+    await auth.login(username.value, password.value, remember.value)
     router.replace(route.query.redirect || '/')
   } catch (err) {
     error.value = err.message
@@ -30,17 +31,17 @@ async function submit() {
     <section class="login-story">
       <div class="login-brand"><span>XM</span> 西鸣科技</div>
       <div class="story-copy">
-        <span class="story-kicker">ATTENDANCE · LOCAL SYSTEM</span>
-        <h1>把繁琐核算<br />变成一次确认。</h1>
-        <p>打卡表导入、异常识别、人工复核与汇总导出，都在本机完成。</p>
+        <span class="story-kicker">PEOPLE · RECRUITMENT · ATTENDANCE</span>
+        <h1>招聘与考勤，<br />汇成一套人事系统。</h1>
+        <p>从候选人到员工档案，再到考勤核算，全流程在统一工作台完成。</p>
         <div class="story-stats">
-          <div><strong>100%</strong><span>本地数据</span></div>
-          <div><strong>可追溯</strong><span>每条规则</span></div>
-          <div><strong>1 个文件</strong><span>完成导入</span></div>
+          <div><strong>一体化</strong><span>人事流程</span></div>
+          <div><strong>可追溯</strong><span>业务规则</span></div>
+          <div><strong>按角色</strong><span>权限隔离</span></div>
         </div>
       </div>
       <div class="story-orbit"><i></i><i></i><i></i></div>
-      <p class="story-foot">第一版 · 规则引擎模式 · 未接入 AI</p>
+      <p class="story-foot">基础版本 · 招聘与考勤统一工作台</p>
     </section>
 
     <section class="login-form-wrap">
@@ -48,11 +49,12 @@ async function submit() {
         <div class="login-card__heading">
           <span class="mobile-mark">XM</span>
           <span class="eyebrow">欢迎回来</span>
-          <h2>登录考勤管理系统</h2>
+          <h2>登录人事管理系统</h2>
           <p>使用管理员或 HR 账号继续</p>
         </div>
         <label class="field-label">账号<input v-model="username" autocomplete="username" required placeholder="请输入账号" /></label>
         <label class="field-label">密码<input v-model="password" type="password" autocomplete="current-password" required placeholder="请输入密码" /></label>
+        <label class="remember-row"><input v-model="remember" type="checkbox" /> <span>记住登录状态</span></label>
         <p v-if="error" class="form-error">{{ error }}</p>
         <button class="primary-button primary-button--large" :disabled="submitting">
           {{ submitting ? '正在登录…' : '进入系统' }}

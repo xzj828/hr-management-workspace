@@ -20,11 +20,11 @@ export const useAuthStore = defineStore('auth', {
         this.loading = false
       }
     },
-    async login(username, password) {
+    async login(username, password, remember = false) {
       await ensureCsrf()
       this.user = await api('auth/login/', {
         method: 'POST',
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, remember }),
       })
       return this.user
     },
