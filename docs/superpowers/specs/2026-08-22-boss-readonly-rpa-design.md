@@ -1,7 +1,7 @@
 # BOSS 直聘只读 RPA 第一阶段设计
 
 日期：2026-08-22  
-状态：待用户书面复核
+状态：已由用户确认
 
 ## 1. 目标
 
@@ -12,12 +12,12 @@
 ## 2. 当前前提与交付边界
 
 - 当前仓库只有招聘数据底座，没有 RPA Worker、任务队列或 `boss-cli` 适配器。
-- 当前 Windows 环境的 `PATH` 中没有 `boss` 或 `boss-cli` 命令。
-- 用户提供的压缩包包含工作台和 `boss-cli` 行为分析，但不包含可安装的 `boss-cli` 源码或可执行文件。
-- 因此本阶段可以完成业务模型、Worker 协议、浏览器隔离、任务页面、模拟适配器和自动化测试；真实 BOSS 联调必须在用户提供可运行的 `boss-cli` 后进行。
+- 当前 Windows 环境已安装 `@joohw/boss-cli 0.6.6`，入口为 `C:\Users\35059\AppData\Roaming\npm\boss.cmd`。
+- 本机同时存在 Chrome 与 Edge，可分别使用 `C:\Program Files\Google\Chrome\Application\chrome.exe` 和 `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`。
+- 已安装 CLI 原生支持通过环境变量指定浏览器路径、独立用户目录和 CDP 端口，因此本阶段可以完成 Chrome 与 Edge 的真实只读联调。
 - 不迁移、不读取、不初始化压缩包中的第三方候选人、简历或评分数据。
 
-真实联调的完成标准不能用模拟适配器代替。界面必须明确显示“CLI 未安装”，不得伪装成账号离线或同步成功。
+真实联调的完成标准不能用模拟适配器代替。CLI 后续被卸载或不可执行时，界面必须明确显示“CLI 未安装”，不得伪装成账号离线或同步成功。
 
 ## 3. 方案
 
@@ -98,14 +98,16 @@ boss positions
 boss jd <职位名称>
 ```
 
-第一阶段只调用 `login` 和 `positions`。Worker 启动时执行能力探测；如果现有 CLI 固定使用 Chrome、固定端口 `53470` 或不支持外部 CDP 参数，则：
+第一阶段只调用 `login` 和 `positions`。Worker 为每次 CLI 调用注入：
 
-- Chrome 兼容模式可按 CLI 原生行为验证；
-- Edge 账号显示“当前 CLI 不支持 Edge”，禁止创建真实执行任务；
-- 不通过伪造、代理转发或复制 Cookie 冒充支持；
-- 获得 CLI 源码或正式参数说明后再扩展端口和 Edge 参数映射。
+```text
+CHROME_PATH=<账号选择的 chrome.exe 或 msedge.exe>
+BOSS_BROWSER_USER_DATA_DIR=<账号独立目录>
+BOSS_BROWSER_REMOTE_DEBUGGING_PORT=<账号独立端口>
+BOSS_BROWSER_HEADLESS=false
+```
 
-这样保证 UI 可以配置 Edge，但不会在底层能力不存在时给出虚假成功。
+已安装的 `boss-cli 0.6.6` 会优先连接指定端口上的既有实例，否则使用上述浏览器、目录和端口启动新实例。Worker 仍执行启动能力探测；环境变量缺失、路径不可执行或端口被其他进程占用时拒绝任务，不回退到默认浏览器目录。
 
 ## 7. 登录与验证状态机
 
@@ -197,7 +199,7 @@ Worker API 使用独立的随机凭据，不复用 HR 登录 Cookie。Worker 凭
 - 浏览器类型、目录和端口校验；
 - 默认浏览器目录拒绝、目录锁和全局串行；
 - CLI 查找、缺失、超时、非零退出码和多编码输出；
-- CLI 能力不足时 Edge 任务被拒绝；
+- Chrome/Edge 路径与环境变量映射正确；
 - Worker 鉴权、心跳、领取、续租和结果提交；
 - 角色权限和账号授权；
 - 职位同步新增、更新和去重；
@@ -207,12 +209,12 @@ Worker API 使用独立的随机凭据，不复用 HR 登录 Cookie。Worker 凭
 
 真实 Windows 验收按顺序进行：
 
-1. 安装或提供 `boss-cli`，系统从“CLI 未安装”变为“可用”。
+1. 检测已安装的 `boss-cli 0.6.6`，系统显示 CLI 路径和版本。
 2. 创建一个隔离 Chrome 账号，人工扫码并重启浏览器，登录仍有效。
 3. 连续执行三次 `CHECK_STATUS`，结果稳定且没有重复浏览器进程。
 4. 执行一次 `SYNC_POSITIONS`，核对职位数量和名称。
 5. 再次同步，数据库不产生重复职位。
-6. 创建隔离 Edge 账号；只有能力探测确认 CLI 支持 Edge 后才执行相同步骤。
+6. 创建隔离 Edge 账号并执行相同的登录保持与职位同步步骤。
 7. 人为关闭浏览器、占用端口和使登录失效，确认任务给出正确状态并且考勤页面不受影响。
 
 ## 12. 交付顺序
@@ -222,4 +224,4 @@ Worker API 使用独立的随机凭据，不复用 HR 登录 Cookie。Worker 凭
 3. 实现 Windows Worker、浏览器管理器和可替换 CLI 适配器。
 4. 实现自动化任务页面和账号配置交互。
 5. 使用模拟 CLI 完成自动化测试和本机进程测试。
-6. 用户提供真实 `boss-cli` 后完成 Chrome 联调，再依据能力探测结果完成 Edge 联调。
+6. 使用已安装的真实 `boss-cli` 分别完成 Chrome 与 Edge 只读联调。
