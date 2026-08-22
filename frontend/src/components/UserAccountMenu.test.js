@@ -15,6 +15,7 @@ describe('UserAccountMenu', () => {
     const trigger = wrapper.get('[data-testid="account-trigger"]')
 
     expect(trigger.attributes('aria-expanded')).toBe('false')
+    expect(trigger.find('.app-icon').exists()).toBe(true)
     expect(wrapper.find('[role="menu"]').exists()).toBe(false)
 
     await trigger.trigger('click')

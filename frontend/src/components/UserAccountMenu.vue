@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const props = defineProps({
   user: { type: Object, default: null },
@@ -46,7 +47,7 @@ function choose(action) {
     >
       <span class="avatar">{{ initial }}</span>
       <span class="account-menu__name">{{ displayName }}</span>
-      <span class="account-menu__chevron" aria-hidden="true">⌄</span>
+      <AppIcon class="account-menu__chevron" name="chevron-down" :size="15" />
     </button>
     <div v-if="open" class="account-menu__panel" role="menu">
       <div class="account-menu__identity">
