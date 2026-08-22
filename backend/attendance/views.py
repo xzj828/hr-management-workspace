@@ -2,6 +2,7 @@ import calendar
 from datetime import date, datetime
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.db.models import Count, Q, Sum
 from django.http import FileResponse
@@ -55,6 +56,8 @@ def login_view(request):
     if not user.is_active:
         return Response({"detail": "账号已停用"}, status=status.HTTP_403_FORBIDDEN)
     login(request, user)
+    remember = bool(request.data.get("remember", False))
+    request.session.set_expiry(settings.SESSION_COOKIE_AGE if remember else 0)
     return Response(AccountSerializer(user).data)
 
 

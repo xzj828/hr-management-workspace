@@ -6,10 +6,35 @@ from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from openpyxl import Workbook, load_workbook
+from rest_framework.test import APITestCase
 
 from .exporter import build_summary_workbook
 from .models import AttendancePolicy, AttendanceResult, CrossDaySuspicion, Employee, ImportBatch, RawPunchDay
 from .services import parse_punches, process_import_batch, resolve_cross_day
+
+
+class LoginSessionTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="session-user", password="strong-password-123")
+
+    def test_normal_login_expires_at_browser_close(self):
+        response = self.client.post(
+            "/api/auth/login/",
+            {"username": self.user.username, "password": "strong-password-123", "remember": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.client.session.get_expire_at_browser_close())
+
+    def test_remembered_login_uses_thirty_day_session(self):
+        response = self.client.post(
+            "/api/auth/login/",
+            {"username": self.user.username, "password": "strong-password-123", "remember": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.client.session.get_expire_at_browser_close())
+        self.assertGreaterEqual(self.client.session.get_expiry_age(), 29 * 24 * 60 * 60)
 
 
 class AttendanceRuleTests(TestCase):
