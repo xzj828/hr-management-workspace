@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { api } from '@/api'
+import AppIcon from '@/components/AppIcon.vue'
 
 const emit = defineEmits(['changed'])
 const open = ref(false)
@@ -57,12 +58,12 @@ onMounted(loadStatus)
 <template>
   <div class="recruitment-demo-menu">
     <button
-      class="text-button recruitment-demo-menu__trigger"
+      class="text-button recruitment-demo-menu__trigger button-with-icon"
       type="button"
       data-test="demo-trigger"
       :aria-expanded="open"
       @click="open = !open"
-    >演示数据 <span aria-hidden="true">⌄</span></button>
+    ><span>演示数据</span><AppIcon name="chevron-down" :size="15" /></button>
     <div v-if="open" class="recruitment-demo-menu__popover">
       <div class="recruitment-demo-menu__summary">
         <strong>{{ status.loaded ? '演示数据已加载' : '尚未加载演示数据' }}</strong>

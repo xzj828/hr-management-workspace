@@ -6,6 +6,7 @@ const apiMock = vi.hoisted(() => vi.fn())
 vi.mock('@/api', () => ({ api: apiMock }))
 
 import RecruitmentDemoMenu from './RecruitmentDemoMenu.vue'
+import AppIcon from './AppIcon.vue'
 
 
 const loadedStatus = {
@@ -25,6 +26,8 @@ describe('RecruitmentDemoMenu', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('演示数据')
+    expect(wrapper.get('[data-test="demo-trigger"]').findComponent(AppIcon).props('name')).toBe('chevron-down')
+    expect(wrapper.get('[data-test="demo-trigger"]').text()).not.toContain('⌄')
     expect(wrapper.text()).not.toContain('10 位候选人')
     await wrapper.get('[data-test="demo-trigger"]').trigger('click')
 
