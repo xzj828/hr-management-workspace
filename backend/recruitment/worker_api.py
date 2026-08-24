@@ -19,6 +19,7 @@ from .services.discovery import sync_discoveries
 from .services.communications import complete_communication_task
 from .services.communications import sync_conversation_states
 from .services.resumes import archive_pdf
+from .services.task_recovery import recover_stale_tasks
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -63,6 +64,7 @@ def lease_task_view(request):
     if worker is None:
         return Response({"detail": "Worker 尚未注册"}, status=status.HTTP_400_BAD_REQUEST)
     now = timezone.now()
+    recover_stale_tasks(now=now)
     task = (
         RpaTask.objects.select_for_update()
         .select_related("boss_account")
@@ -110,10 +112,12 @@ def task_event_view(request, task_id):
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
     if task.status not in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}:
         return Response({"detail": "任务已结束"}, status=status.HTTP_409_CONFLICT)
+    now = timezone.now()
     if task.status == RpaTask.Status.LEASED:
         task.status = RpaTask.Status.RUNNING
-        task.started_at = timezone.now()
-        task.save(update_fields=["status", "started_at", "updated_at"])
+        task.started_at = now
+    task.lease_expires_at = now + timedelta(seconds=120)
+    task.save(update_fields=["status", "started_at", "lease_expires_at", "updated_at"])
     event = append_event(
         task=task,
         event=str(request.data.get("event", "progress"))[:64],

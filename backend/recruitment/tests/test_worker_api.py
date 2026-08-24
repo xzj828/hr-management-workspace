@@ -119,6 +119,27 @@ class WorkerApiTests(APITestCase):
         )
         self.assertEqual(replay.status_code, 409)
 
+    def test_progress_event_renews_running_task_lease(self):
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+        task_id = lease.data["task"]["id"]
+        self.task.refresh_from_db()
+        old_expiry = self.task.lease_expires_at
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{task_id}/event/",
+            {"worker_key": "local-worker", "event": "progress", "message": "仍在执行"},
+            format="json", **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, RpaTask.Status.RUNNING)
+        self.assertGreater(self.task.lease_expires_at, old_expiry)
+
     def test_successful_position_task_persists_only_normalized_jobs(self):
         self.task.action = RpaTask.Action.SYNC_POSITIONS
         self.task.save(update_fields=["action"])
