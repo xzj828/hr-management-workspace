@@ -6,6 +6,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from recruitment.rpa.candidates import deep_search_args, parse_candidate_output
+
 
 MAX_OUTPUT_CHARS = 32 * 1024
 
@@ -73,7 +75,7 @@ def parse_positions(output):
 
 
 class BossCliRunner:
-    ALLOWED = {"--version", "login", "positions"}
+    ALLOWED = {"--version", "login", "positions", "recommend", "search", "deep-search"}
 
     def __init__(self, cli_path=None):
         self.cli_path = cli_path or self._discover()
@@ -100,19 +102,22 @@ class BossCliRunner:
         })
         return env
 
-    def _run(self, command, *, env, timeout_seconds):
-        if command not in self.ALLOWED:
+    def _run(self, args, *, env, timeout_seconds):
+        args = [args] if isinstance(args, str) else [str(value) for value in args]
+        if not args or args[0] not in self.ALLOWED:
             raise BossCliError("不支持的 boss-cli 命令")
+        if any("\x00" in value or "\r" in value or "\n" in value for value in args):
+            raise BossCliError("boss-cli 参数包含非法字符")
         try:
             completed = subprocess.run(
-                [self.cli_path, command],
+                [self.cli_path, *args],
                 shell=False,
                 capture_output=True,
                 timeout=timeout_seconds,
                 env=env,
             )
         except subprocess.TimeoutExpired as exc:
-            raise BossCliTimeout(f"boss-cli 执行超时：{command}") from exc
+            raise BossCliTimeout(f"boss-cli 执行超时：{args[0]}") from exc
         except OSError as exc:
             raise BossCliError(f"boss-cli 无法启动：{exc}") from exc
 
@@ -127,12 +132,34 @@ class BossCliRunner:
         return result
 
     def version(self):
-        return self._run("--version", env=os.environ.copy(), timeout_seconds=20).stdout.strip()
+        return self._run(["--version"], env=os.environ.copy(), timeout_seconds=20).stdout.strip()
 
     def login(self, account):
-        return self._run("login", env=self._account_env(account), timeout_seconds=90)
+        return self._run(["login"], env=self._account_env(account), timeout_seconds=90)
 
     def positions(self, account):
-        result = self._run("positions", env=self._account_env(account), timeout_seconds=180)
+        result = self._run(["positions"], env=self._account_env(account), timeout_seconds=180)
         return parse_positions(result.stdout)
+
+    def recommend(self, account, job_keyword=""):
+        keyword = str(job_keyword or "").strip()
+        args = ["recommend", keyword] if keyword else ["recommend"]
+        result = self._run(args, env=self._account_env(account), timeout_seconds=180)
+        return parse_candidate_output(result.stdout, source="recommend")
+
+    def search(self, account, keyword=""):
+        keyword = str(keyword or "").strip()
+        if len(keyword) > 20:
+            raise BossCliError("常规搜索关键词最多 20 个字符")
+        args = ["search", keyword] if keyword else ["search"]
+        result = self._run(args, env=self._account_env(account), timeout_seconds=180)
+        return parse_candidate_output(result.stdout, source="search")
+
+    def deep_search(self, account, *, job="", core=None, bonus=None, match=False):
+        values = [str(job or ""), *(core or []), *(bonus or [])]
+        if any(len(str(value).strip()) > 200 for value in values):
+            raise BossCliError("深度搜索单项条件最多 200 个字符")
+        args = deep_search_args(job=job, core=core, bonus=bonus, match=match)
+        result = self._run(args, env=self._account_env(account), timeout_seconds=240)
+        return parse_candidate_output(result.stdout, source="deep_search") if match else []
 
