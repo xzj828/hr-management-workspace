@@ -172,4 +172,43 @@ describe('RecruitmentAutomationView', () => {
     expect(wrapper.get('[data-test="workflow-name"]').element.value).toBe('标准流程')
     expect(wrapper.find('[data-node-key="source-x"]').exists()).toBe(true)
   })
+
+  it('runs a saved workflow in dry mode and guards formal execution with confirmation', async () => {
+    const version = {
+      id: 21, template: 9, boss_account: 1, version: 3, status: 'enabled',
+      nodes: [{ key: 'source-x', type: 'search', label: '常规搜索', position: { x: 20, y: 40 } }, { key: 'gate-x', type: 'human_screen', label: '人工筛选', position: { x: 220, y: 40 } }],
+      edges: [{ source: 'source-x', target: 'gate-x' }],
+    }
+    const run = {
+      id: 'run-1', template_name: '标准流程', account_name: '主招聘账号', mode: 'dry_run', status: 'waiting_human',
+      node_runs: [{ id: 31, node_key: 'source-x', status: 'succeeded', attempt: 0 }, { id: 32, node_key: 'gate-x', status: 'waiting_human', attempt: 0 }], events: [],
+    }
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/automation/summary/') return Promise.resolve({ worker: null, cli_available: true, task_counts: {} })
+      if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{ id: 1, name: '主招聘账号', login_status: 'ready' }] })
+      if (path === 'recruitment/rpa-tasks/' || path === 'recruitment/execution-batches/') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/workflows/') return Promise.resolve({ results: [{ id: 9, name: '标准流程' }] })
+      if (path === 'recruitment/workflow-versions/') return Promise.resolve({ results: [version] })
+      if (path === 'recruitment/jobs/') return Promise.resolve({ results: [{ id: 51, title: 'Vue 工程师', boss_account: 1, status: 'open' }] })
+      if (path === 'recruitment/workflow-versions/21/run/' && options?.method === 'POST') return Promise.resolve({ ...run, mode: JSON.parse(options.body).mode })
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    wrapper = mount(RecruitmentAutomationView, { global: { stubs: { teleport: { template: '<div><slot /></div>' } } } })
+    await flushPromises()
+    await wrapper.get('.automation-workspace-tabs button:nth-child(3)').trigger('click')
+    await wrapper.get('[data-test="dry-run-21"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('试运行 · 不会操作 BOSS')
+    expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-versions/21/run/', expect.objectContaining({ method: 'POST' }))
+
+    await wrapper.get('[data-test="formal-run-21"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('确认正式运行')
+    expect(wrapper.get('[data-test="formal-run-job"]').element.value).toBe('51')
+    await wrapper.get('[data-test="confirm-formal-run"]').trigger('click')
+    await flushPromises()
+    const runCalls = apiMock.mock.calls.filter(([path]) => path === 'recruitment/workflow-versions/21/run/')
+    expect(JSON.parse(runCalls.at(-1)[1].body)).toMatchObject({ mode: 'formal', job: 51, confirm: true })
+  })
 })

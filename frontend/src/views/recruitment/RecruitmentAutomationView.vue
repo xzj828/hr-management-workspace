@@ -6,6 +6,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import AutomationBatchPanel from '@/components/AutomationBatchPanel.vue'
 import WorkflowCanvas from '@/components/WorkflowCanvas.vue'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
+import WorkflowRunPanel from '@/components/WorkflowRunPanel.vue'
 import {
   accountDisplayStatus,
   accountActionLabel,
@@ -30,7 +31,10 @@ const form = reactive({ name: '', browser_type: 'edge' })
 const actionMenu = ref(null)
 const lifecycleTarget = ref(null), lifecycleSaving = ref(false)
 const showArchived = ref(false)
+const activeRun = ref(null), runBusy = ref(false), formalVersion = ref(null)
+const formalJobs = ref([]), formalJobId = ref('')
 let refreshTimer = null
+let runPollTimer = null
 
 const activeTaskAccountIds = computed(() => new Set(
   tasks.value
@@ -39,6 +43,7 @@ const activeTaskAccountIds = computed(() => new Set(
 ))
 
 const completedCount = computed(() => summary.task_counts?.succeeded || 0)
+const workflowNodeStatuses = computed(() => Object.fromEntries((activeRun.value?.node_runs || []).map((node) => [node.node_key, node.status])))
 
 async function loadWorkspace({ silent = false } = {}) {
   if (!silent) {
@@ -213,6 +218,64 @@ function newWorkflow() {
   workflowEditorKey.value += 1
 }
 
+function requestId() {
+  return globalThis.crypto?.randomUUID?.() || `run-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function stopRunPolling() {
+  if (runPollTimer) window.clearTimeout(runPollTimer)
+  runPollTimer = null
+}
+
+function scheduleRunPolling() {
+  stopRunPolling()
+  if (!activeRun.value || ['succeeded', 'failed', 'cancelled'].includes(activeRun.value.status)) return
+  runPollTimer = window.setTimeout(refreshRun, 2000)
+}
+
+async function refreshRun() {
+  if (!activeRun.value) return
+  try { activeRun.value = await api(`recruitment/workflow-runs/${activeRun.value.id}/`) }
+  catch (err) { error.value = err.message }
+  scheduleRunPolling()
+}
+
+async function createWorkflowRun(version, mode, jobId = '') {
+  runBusy.value = true; error.value = ''
+  try {
+    activeRun.value = await api(`recruitment/workflow-versions/${version.id}/run/`, {
+      method: 'POST',
+      body: JSON.stringify({ mode, request_id: requestId(), job: jobId ? Number(jobId) : null, input: {}, confirm: mode === 'formal' }),
+    })
+    formalVersion.value = null
+    scheduleRunPolling()
+  } catch (err) { error.value = err.message }
+  finally { runBusy.value = false }
+}
+
+function dryRun(version) { createWorkflowRun(version, 'dry_run') }
+
+async function openFormalRun(version) {
+  formalVersion.value = version; formalJobId.value = ''; error.value = ''
+  try {
+    formalJobs.value = listItems(await api('recruitment/jobs/')).filter((job) => String(job.boss_account) === String(version.boss_account) && job.status === 'open')
+    formalJobId.value = formalJobs.value[0] ? String(formalJobs.value[0].id) : ''
+  } catch (err) { error.value = err.message }
+}
+
+async function runControl(action, payload = {}) {
+  if (!activeRun.value) return
+  runBusy.value = true; error.value = ''
+  try {
+    activeRun.value = await api(`recruitment/workflow-runs/${activeRun.value.id}/${action}/`, { method: 'POST', body: JSON.stringify(payload) })
+    scheduleRunPolling()
+  } catch (err) { error.value = err.message }
+  finally { runBusy.value = false }
+}
+
+function decideRunNode({ nodeId, approved }) { runControl('decision', { node_id: nodeId, approved, note: approved ? 'HR 在工作台确认通过' : 'HR 在工作台选择跳过' }) }
+function retryRunNode(nodeId) { runControl('retry', { node_id: nodeId }) }
+
 async function enableWorkflow(versionId) {
   error.value = ''
   try { await api(`recruitment/workflow-versions/${versionId}/enable/`, { method: 'POST' }); await loadWorkspace({ silent: true }) }
@@ -255,6 +318,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   window.clearInterval(refreshTimer)
+  stopRunPolling()
   window.removeEventListener('click', closeActionMenu)
   window.removeEventListener('resize', closeActionMenu)
   window.removeEventListener('scroll', closeActionMenu, true)
@@ -360,8 +424,11 @@ onUnmounted(() => {
     </section>
 
     <section v-else class="workflow-workspace">
-      <WorkflowCanvas v-if="!showArchived" :key="workflowEditorKey" :accounts="accounts" :saving="workflowSaving" :snapshot="workflowEditorSnapshot" @save="saveWorkflow" />
-      <aside class="workflow-versions"><header><div><span class="panel-kicker">VERSION HISTORY</span><h3>{{ showArchived ? '已归档流程' : '流程版本' }}</h3></div><button v-if="!showArchived" class="text-button" type="button" @click="newWorkflow">新建</button></header><article v-for="version in workflowVersions" :key="version.id"><div><strong>{{ workflows.find((item) => item.id === version.template)?.name || `流程 ${version.template}` }}</strong><small>版本 {{ version.version }} · {{ version.nodes.length }} 个节点</small></div><span :class="['recruitment-chip', { 'is-draft': version.status === 'draft' }]">{{ version.status === 'enabled' ? '已启用' : version.status === 'draft' ? '草稿' : '已停用' }}</span><button v-if="showArchived" class="text-button" type="button" @click="restoreLifecycle('workflows', version.template)">恢复流程</button><template v-else><button class="text-button" type="button" :data-test="`edit-workflow-version-${version.id}`" @click="editWorkflowVersion(version)">基于此版本编排</button><button v-if="version.status === 'draft'" class="text-button" @click="enableWorkflow(version.id)">校验并启用</button><button class="danger-text-button" type="button" :data-test="`dispose-workflow-version-${version.id}`" @click="requestWorkflowDisposal(version)">{{ version.status === 'draft' ? '删除草稿' : '归档流程' }}</button></template></article><p v-if="!workflowVersions.length" class="table-empty">{{ showArchived ? '暂无已归档流程' : '保存后会在这里生成不可变版本。' }}</p></aside>
+      <div class="workflow-main-column">
+        <WorkflowCanvas v-if="!showArchived" :key="workflowEditorKey" :accounts="accounts" :saving="workflowSaving" :snapshot="workflowEditorSnapshot" :node-statuses="workflowNodeStatuses" @save="saveWorkflow" />
+        <WorkflowRunPanel v-if="activeRun" :run="activeRun" :busy="runBusy" @close="activeRun = null; stopRunPolling()" @pause="runControl('pause')" @resume="runControl('resume')" @cancel="runControl('cancel')" @decision="decideRunNode" @retry="retryRunNode" />
+      </div>
+      <aside class="workflow-versions"><header><div><span class="panel-kicker">VERSION HISTORY</span><h3>{{ showArchived ? '已归档流程' : '流程版本' }}</h3></div><button v-if="!showArchived" class="text-button" type="button" @click="newWorkflow">新建</button></header><article v-for="version in workflowVersions" :key="version.id"><div><strong>{{ workflows.find((item) => item.id === version.template)?.name || `流程 ${version.template}` }}</strong><small>版本 {{ version.version }} · {{ version.nodes.length }} 个节点</small></div><span :class="['recruitment-chip', { 'is-draft': version.status === 'draft' }]">{{ version.status === 'enabled' ? '已启用' : version.status === 'draft' ? '草稿' : '已停用' }}</span><button v-if="showArchived" class="text-button" type="button" @click="restoreLifecycle('workflows', version.template)">恢复流程</button><template v-else><div class="workflow-version-run-actions"><button class="text-button" type="button" :data-test="`dry-run-${version.id}`" :disabled="runBusy" @click="dryRun(version)">试运行</button><button class="primary-button" type="button" :data-test="`formal-run-${version.id}`" :disabled="version.status !== 'enabled' || accounts.find((item) => item.id === version.boss_account)?.login_status !== 'ready' || runBusy" @click="openFormalRun(version)">正式运行</button></div><button class="text-button" type="button" :data-test="`edit-workflow-version-${version.id}`" @click="editWorkflowVersion(version)">基于此版本编排</button><button v-if="version.status === 'draft'" class="text-button" @click="enableWorkflow(version.id)">校验并启用</button><button class="danger-text-button" type="button" :data-test="`dispose-workflow-version-${version.id}`" @click="requestWorkflowDisposal(version)">{{ version.status === 'draft' ? '删除草稿' : '归档流程' }}</button></template></article><p v-if="!workflowVersions.length" class="table-empty">{{ showArchived ? '暂无已归档流程' : '保存后会在这里生成不可变版本。' }}</p></aside>
     </section>
 
     <Teleport to="body">
@@ -398,6 +465,14 @@ onUnmounted(() => {
         <ol v-if="selectedTask.events?.length"><li v-for="event in selectedTask.events" :key="event.id"><time>{{ formatDate(event.created_at) }}</time><span>{{ event.message }}</span></li></ol>
         <p v-else class="table-empty">暂无更多事件</p>
       </div>
+    </ModalPanel>
+    <ModalPanel v-if="formalVersion" title="确认正式运行" @close="formalVersion = null">
+      <div class="workflow-formal-confirm">
+        <div class="communication-intro"><i><AppIcon name="shield" :size="20" /></i><div><strong>{{ workflows.find((item) => item.id === formalVersion.template)?.name || '招聘流程' }} · 版本 {{ formalVersion.version }}</strong><p>读取节点会交给本机 Worker；打招呼、索要简历和面试邀约仍会停在 HR 确认环节。</p></div></div>
+        <label class="field-label field-label--full">执行职位<select v-model="formalJobId" data-test="formal-run-job"><option value="">请选择职位</option><option v-for="job in formalJobs" :key="job.id" :value="String(job.id)">{{ job.title }}</option></select></label>
+        <p v-if="!formalJobs.length" class="form-error">当前账号没有可用的在招职位，请先同步职位。</p>
+      </div>
+      <template #footer><button class="secondary-button" type="button" @click="formalVersion = null">取消</button><button class="primary-button" data-test="confirm-formal-run" type="button" :disabled="!formalJobId || runBusy" @click="createWorkflowRun(formalVersion, 'formal', formalJobId)">{{ runBusy ? '创建中…' : '确认并开始' }}</button></template>
     </ModalPanel>
     <ArchiveConfirmModal v-if="lifecycleTarget" :title="lifecycleTarget.title" :name="lifecycleTarget.name" :description="lifecycleTarget.description" :action-label="lifecycleTarget.actionLabel" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="confirmLifecycle" />
   </div>
