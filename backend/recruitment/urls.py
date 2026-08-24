@@ -12,6 +12,8 @@ router.register("candidate-discoveries", views.CandidateDiscoveryViewSet, basena
 router.register("automation-approvals", views.AutomationApprovalViewSet, basename="automation-approval")
 router.register("communication-actions", views.ConversationActionViewSet, basename="communication-action")
 router.register("execution-batches", views.ExecutionBatchViewSet, basename="execution-batch")
+router.register("workflows", views.WorkflowTemplateViewSet, basename="workflow")
+router.register("workflow-versions", views.WorkflowVersionViewSet, basename="workflow-version")
 router.register("applications", views.JobApplicationViewSet, basename="job-application")
 router.register("resumes", views.ResumeViewSet, basename="resume")
 router.register("rpa-tasks", views.RpaTaskViewSet, basename="rpa-task")

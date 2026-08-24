@@ -24,6 +24,8 @@ from .models import (
     Resume,
     RpaTask,
     RpaWorker,
+    WorkflowTemplate,
+    WorkflowVersion,
 )
 from .permissions import RecruitmentWritePermission
 from .rpa.tasks import cancel_task, create_task, retry_task
@@ -43,11 +45,14 @@ from .serializers import (
     RecruitmentJobSerializer,
     ResumeSerializer,
     RpaTaskSerializer,
+    WorkflowTemplateSerializer,
+    WorkflowVersionSerializer,
 )
 from .services.approvals import approve
 from .services.communications import materialize_communication_batch, prepare_communication
 from .services.communications import _identity_snapshot
 from .services.discovery import import_discoveries
+from .services.workflows import enable_version
 
 
 class BossAccountViewSet(viewsets.ModelViewSet):
@@ -392,6 +397,35 @@ class ExecutionBatchViewSet(viewsets.ReadOnlyModelViewSet):
         if not self.request.user.is_superuser:
             queryset = queryset.filter(boss_account__authorized_users=self.request.user)
         return queryset.distinct()
+
+
+class WorkflowTemplateViewSet(viewsets.ModelViewSet):
+    queryset = WorkflowTemplate.objects.select_related("active_version", "created_by").all()
+    serializer_class = WorkflowTemplateSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset if self.request.user.is_superuser else queryset.filter(created_by=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class WorkflowVersionViewSet(viewsets.ModelViewSet):
+    queryset = WorkflowVersion.objects.select_related("template", "boss_account").prefetch_related("nodes", "edges__source", "edges__target")
+    serializer_class = WorkflowVersionSerializer
+    permission_classes = [RecruitmentWritePermission]
+    http_method_names = ["get", "post", "head", "options"]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset if self.request.user.is_superuser else queryset.filter(template__created_by=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def enable(self, request, pk=None):
+        version = enable_version(version=self.get_object(), actor=request.user)
+        return Response(self.get_serializer(version).data)
 
 
 class ResumeViewSet(viewsets.ReadOnlyModelViewSet):

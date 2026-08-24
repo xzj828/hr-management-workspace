@@ -18,6 +18,8 @@ from .models import (
     RpaTask,
     RpaTaskEvent,
     StepExecution,
+    WorkflowTemplate,
+    WorkflowVersion,
 )
 from .rpa.browser import browser_configuration, port_is_available
 from .rpa.tasks import create_task
@@ -244,6 +246,53 @@ class ExecutionBatchSerializer(serializers.ModelSerializer):
             "id", "approval", "boss_account", "account_name", "action", "status", "total_items",
             "succeeded_items", "failed_items", "steps", "created_at", "updated_at",
         ]
+
+
+class WorkflowTemplateSerializer(serializers.ModelSerializer):
+    active_version_number = serializers.IntegerField(source="active_version.version", read_only=True, allow_null=True)
+
+    class Meta:
+        model = WorkflowTemplate
+        fields = ["id", "name", "description", "active_version", "active_version_number", "created_at", "updated_at"]
+        read_only_fields = ["id", "active_version", "active_version_number", "created_at", "updated_at"]
+
+
+class WorkflowVersionSerializer(serializers.ModelSerializer):
+    nodes = serializers.JSONField(write_only=True)
+    edges = serializers.JSONField(write_only=True)
+
+    class Meta:
+        model = WorkflowVersion
+        fields = ["id", "template", "version", "status", "boss_account", "nodes", "edges", "created_at"]
+        read_only_fields = ["id", "version", "status", "created_at"]
+
+    def create(self, validated_data):
+        from recruitment.services.workflows import create_version
+
+        request = self.context["request"]
+        account = _validate_authorized_account(validated_data["boss_account"], request.user)
+        template = validated_data["template"]
+        if template.created_by_id != request.user.pk and not request.user.is_superuser:
+            raise PermissionDenied("无权修改该流程")
+        return create_version(
+            template=template,
+            boss_account=account,
+            nodes=validated_data.pop("nodes"),
+            edges=validated_data.pop("edges"),
+            actor=request.user,
+        )
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["nodes"] = [
+            {"key": node.node_key, "type": node.node_type, "label": node.label, "position": node.position, "config": node.config}
+            for node in instance.nodes.all()
+        ]
+        data["edges"] = [
+            {"source": edge.source.node_key, "target": edge.target.node_key}
+            for edge in instance.edges.select_related("source", "target")
+        ]
+        return data
 
 
 class RpaTaskEventSerializer(serializers.ModelSerializer):
