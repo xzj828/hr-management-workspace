@@ -131,7 +131,7 @@ class CandidateDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [RecruitmentWritePermission]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().filter(expires_at__gt=timezone.now())
         if not self.request.user.is_superuser:
             queryset = queryset.filter(boss_account__authorized_users=self.request.user)
         for field in ("boss_account", "job", "source"):
@@ -234,6 +234,7 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
         return queryset.filter(boss_account__authorized_users=self.request.user)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def approve(self, request, pk=None):
         approval = approve(approval=self.get_object(), actor=request.user)
         task = None

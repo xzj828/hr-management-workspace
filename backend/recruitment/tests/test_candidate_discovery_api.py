@@ -131,6 +131,33 @@ class CandidateDiscoveryApiTests(APITestCase):
         self.discovery.refresh_from_db()
         self.assertIsNotNone(self.discovery.imported_candidate)
 
+    def test_deep_approval_rolls_back_when_account_is_busy(self):
+        prepared = self.client.post(
+            "/api/recruitment/candidate-discoveries/prepare-deep-match/",
+            {
+                "boss_account": self.account.pk,
+                "job": self.job.pk,
+                "core": ["Vue"],
+                "bonus": [],
+                "request_id": "44444444-4444-4444-8444-444444444444",
+            },
+            format="json",
+        )
+        approval = AutomationApproval.objects.get(pk=prepared.data["id"])
+        RpaTask.objects.create(
+            boss_account=self.account,
+            action=RpaTask.Action.CHECK_STATUS,
+            created_by=self.hr,
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/automation-approvals/{approval.pk}/approve/", {}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, AutomationApproval.Status.DRAFT)
+
     def test_other_hr_cannot_list_or_import_discovery(self):
         self.client.force_authenticate(self.other)
 
