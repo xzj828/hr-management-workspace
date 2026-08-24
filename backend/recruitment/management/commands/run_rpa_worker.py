@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from recruitment.rpa.browser import ProfileLock, ProfileLockedError
+from recruitment.rpa.capabilities import capability_payload
 from recruitment.rpa.cli import BossCliError, BossCliRunner, CliAccountConfig
 from recruitment.rpa.status import inspect_boss_status
 
@@ -127,7 +128,11 @@ class Command(BaseCommand):
         runner = BossCliRunner()
         api = WorkerApiClient(settings.RPA_API_BASE_URL, settings.RPA_WORKER_TOKEN, worker_key)
         version = runner.version().splitlines()[0]
-        heartbeat = {"hostname": socket.gethostname(), "version": version, "capabilities": {"boss_cli": True}}
+        heartbeat = {
+            "hostname": socket.gethostname(),
+            "version": version,
+            "capabilities": {"boss_cli": True, "actions": capability_payload()},
+        }
         api.heartbeat(heartbeat)
         engine = WorkerEngine(api, runner, worker_key)
         if options["once"]:

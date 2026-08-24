@@ -453,7 +453,8 @@ class PlaywrightAdapterTests(SimpleTestCase):
         sync_playwright.return_value.__enter__.return_value.chromium.connect_over_cdp.assert_called_once_with(
             "http://127.0.0.1:53470"
         )
-        browser.close.assert_called_once()
+        browser.close.assert_not_called()
+        sync_playwright.return_value.__exit__.assert_called_once()
 ```
 
 - [ ] **Step 2: Run tests and verify missing modules**
@@ -472,7 +473,7 @@ Add `playwright>=1.54,<2` to `backend/requirements.txt`. Do not add `playwright 
 
 Create a frozen `CapabilitySpec` dataclass with fields `name`, `adapter`, `read_only`, `requires_approval`, `consumes`, and `enabled`. Register `check_status` and `sync_positions` as enabled; register the approved future actions as disabled so the UI and worker cannot execute them prematurely.
 
-Implement `BrowserInventory` so its constructor accepts only ports from `53470..53569`, connects to `http://127.0.0.1:<port>`, returns `[{"url": page.url, "title": page.title()}]`, and always closes the CDP connection in `finally`.
+Implement `BrowserInventory` so its constructor accepts only ports from `53470..53569`, connects to `http://127.0.0.1:<port>`, and returns `[{"url": page.url, "title": page.title()}]`. Exit the Playwright driver context to disconnect, but never call `browser.close()` on a browser attached through CDP because that can close the HR's persistent isolated browser.
 
 - [ ] **Step 4: Report registry capabilities in worker heartbeat**
 
