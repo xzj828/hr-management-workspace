@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $backend = Join-Path $projectRoot "backend"
+$frontend = Join-Path $projectRoot "frontend"
 $venvPython = if ($env:HR_PYTHON) { $env:HR_PYTHON } else { Join-Path $projectRoot ".venv\Scripts\python.exe" }
 $database = if ($env:DATABASE_PATH) { [System.IO.Path]::GetFullPath($env:DATABASE_PATH) } else { Join-Path $backend "db.sqlite3" }
 $frontendIndex = Join-Path $backend "frontend_dist\index.html"
@@ -18,6 +19,21 @@ $env:DJANGO_DEBUG = "0"
 $env:DJANGO_ALLOWED_HOSTS = "*"
 $env:DATABASE_PATH = $database
 $env:RPA_API_BASE_URL = "http://127.0.0.1:$port/api/recruitment/worker"
+
+if ($env:HR_BUILD_FRONTEND -eq "1") {
+    Push-Location $frontend
+    try {
+        & npm.cmd run build
+        if ($LASTEXITCODE -ne 0) { throw "Frontend production build failed." }
+    } finally {
+        Pop-Location
+    }
+}
+
+& $venvPython (Join-Path $backend "manage.py") migrate --noinput
+if ($LASTEXITCODE -ne 0) { throw "Database migration failed." }
+& $venvPython (Join-Path $backend "manage.py") collectstatic --noinput
+if ($LASTEXITCODE -ne 0) { throw "Frontend static collection failed." }
 
 $localAddresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254*" } |

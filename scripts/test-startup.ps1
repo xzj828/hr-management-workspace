@@ -49,12 +49,27 @@ try {
     if (-not $webReady) { throw "Web service did not become ready on temporary port $testPort." }
     if (-not $heartbeatReady) { throw "RPA Worker heartbeat was not recorded." }
 
+    $page = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$testPort/" -TimeoutSec 5
+    $assetMatches = [regex]::Matches($page.Content, '(?:src|href)=["''](?<url>/static/assets/[^"'']+\.(?:js|css))["'']')
+    if ($assetMatches.Count -eq 0) { throw "Served HTML does not reference any built frontend assets." }
+    foreach ($assetMatch in $assetMatches) {
+        $assetPath = $assetMatch.Groups["url"].Value
+        $assetResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$testPort$assetPath" -TimeoutSec 5
+        $contentType = [string]$assetResponse.Headers["Content-Type"]
+        if ($assetPath.EndsWith(".js") -and $contentType -notmatch "javascript") {
+            throw "JavaScript asset $assetPath returned invalid Content-Type '$contentType'."
+        }
+        if ($assetPath.EndsWith(".css") -and $contentType -notmatch "text/css") {
+            throw "CSS asset $assetPath returned invalid Content-Type '$contentType'."
+        }
+    }
+
     $children = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $launcher.Id })
     $createdProcessIds = @($children | Select-Object -ExpandProperty ProcessId)
     $workerProcesses = @($children | Where-Object { $_.CommandLine -like "*run_rpa_worker*" })
     if ($workerProcesses.Count -ne 1) { throw "Expected exactly one RPA Worker process, found $($workerProcesses.Count)." }
 
-    Write-Host "Startup smoke test passed: web service and one RPA Worker are healthy." -ForegroundColor Green
+    Write-Host "Startup smoke test passed: web service, frontend assets and one RPA Worker are healthy." -ForegroundColor Green
 } finally {
     foreach ($processId in $createdProcessIds) {
         Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
