@@ -237,7 +237,6 @@ function startConnectionDrag(event, key) {
   connectionDrag.value = { source: key, ...canvasPoint(event) }
   connectingFrom.value = key
   selected.value = { kind: 'node', key }
-  event.currentTarget?.setPointerCapture?.(event.pointerId)
   event.preventDefault()
 }
 
