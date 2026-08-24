@@ -1,119 +1,183 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, listItems } from '@/api'
+import AppIcon from '@/components/AppIcon.vue'
+import CandidateDiscoveryCard from '@/components/CandidateDiscoveryCard.vue'
+import DeepMatchConfirmDrawer from '@/components/DeepMatchConfirmDrawer.vue'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
+import TaskProgressBar from '@/components/TaskProgressBar.vue'
+import { discoveryModes, discoveryPayload, discoverySyncMessage, discoveryTaskDone } from '@/candidateDiscovery'
 import { stageColumns } from '@/recruitment'
+import { createRequestId } from '@/recruitmentJobs'
 
-const candidates = ref([])
-const jobs = ref([])
-const selected = ref(null)
-const search = ref('')
-const job = ref('')
-const stage = ref('')
-const loading = ref(true)
-const error = ref('')
+const activeTab = ref('library')
+const candidates = ref([]), discoveries = ref([]), jobs = ref([]), accounts = ref([])
+const selected = ref(null), selectedDiscovery = ref(null), selectedIds = ref(new Set())
+const search = ref(''), job = ref(''), stage = ref('')
+const discoveryAccount = ref(''), discoveryJob = ref(''), discoveryMode = ref('recommend')
+const keyword = ref(''), coreText = ref(''), bonusText = ref('')
+const loading = ref(true), discoveryLoading = ref(false), error = ref('')
+const task = ref(null), taskMessage = ref(''), approval = ref(null)
+const confirming = ref(false), importing = ref(false)
+let pollTimer = null
 
-function primaryApplication(candidate) {
-  return candidate.applications?.[0] || null
-}
+const selectedCount = computed(() => selectedIds.value.size)
+const taskRunning = computed(() => task.value && !discoveryTaskDone(task.value.status))
+const filteredJobs = computed(() => jobs.value.filter((item) => !discoveryAccount.value || String(item.boss_account) === String(discoveryAccount.value)))
+const primaryApplication = (candidate) => candidate.applications?.[0] || null
+const lines = (value) => value.split('\n').map((item) => item.trim()).filter(Boolean)
 
 async function loadCandidates() {
   loading.value = true
-  error.value = ''
   const params = new URLSearchParams()
   if (search.value.trim()) params.set('search', search.value.trim())
   if (job.value) params.set('job', job.value)
   if (stage.value) params.set('stage', stage.value)
-  const query = params.toString()
+  try { candidates.value = listItems(await api(`recruitment/candidates/${params.size ? `?${params}` : ''}`)) }
+  catch (err) { error.value = err.message }
+  finally { loading.value = false }
+}
+
+async function loadDiscoveries() {
+  discoveryLoading.value = true
+  const params = new URLSearchParams({ imported: 'false' })
+  if (discoveryAccount.value) params.set('boss_account', discoveryAccount.value)
+  if (discoveryJob.value) params.set('job', discoveryJob.value)
   try {
-    candidates.value = listItems(await api(`recruitment/candidates/${query ? `?${query}` : ''}`))
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    loading.value = false
-  }
+    discoveries.value = listItems(await api(`recruitment/candidate-discoveries/?${params}`))
+    const visible = new Set(discoveries.value.map((item) => String(item.id)))
+    selectedIds.value = new Set([...selectedIds.value].filter((id) => visible.has(id)))
+  } catch (err) { error.value = err.message }
+  finally { discoveryLoading.value = false }
 }
 
 async function loadWorkspace() {
+  error.value = ''
   try {
-    const jobPayload = await api('recruitment/jobs/')
+    const [jobPayload, accountPayload] = await Promise.all([api('recruitment/jobs/'), api('recruitment/boss-accounts/')])
     jobs.value = listItems(jobPayload)
-  } catch (err) {
-    error.value = err.message
+    accounts.value = listItems(accountPayload)
+    discoveryAccount.value ||= accounts.value[0] ? String(accounts.value[0].id) : ''
+    discoveryJob.value ||= filteredJobs.value[0] ? String(filteredJobs.value[0].id) : ''
+  } catch (err) { error.value = err.message }
+  await Promise.all([loadCandidates(), loadDiscoveries()])
+}
+
+function chooseAccount() {
+  discoveryJob.value = filteredJobs.value[0] ? String(filteredJobs.value[0].id) : ''
+  loadDiscoveries()
+}
+function stopPolling() { if (pollTimer) window.clearTimeout(pollTimer); pollTimer = null }
+async function pollTask(taskId) {
+  try {
+    const current = await api(`recruitment/rpa-tasks/${taskId}/`)
+    task.value = current
+    if (current.status === 'succeeded') { taskMessage.value = discoverySyncMessage(current.result) || '候选人发现完成'; await loadDiscoveries(); return }
+    if (current.status === 'waiting_human') { taskMessage.value = '需要在隔离浏览器中完成登录或验证'; return }
+    if (['failed', 'cancelled'].includes(current.status)) { error.value = current.error_message || '候选人发现任务未完成'; return }
+    pollTimer = window.setTimeout(() => pollTask(taskId), 900)
+  } catch (err) { error.value = err.message }
+}
+
+async function startDiscovery() {
+  if (!discoveryAccount.value || !discoveryJob.value || taskRunning.value) return
+  error.value = ''; taskMessage.value = ''
+  if (discoveryMode.value === 'deep_search') {
+    try {
+      approval.value = await api('recruitment/candidate-discoveries/prepare-deep-match/', { method: 'POST', body: JSON.stringify({ boss_account: Number(discoveryAccount.value), job: Number(discoveryJob.value), core: lines(coreText.value), bonus: lines(bonusText.value), request_id: createRequestId() }) })
+    } catch (err) { error.value = err.message }
+    return
   }
-  await loadCandidates()
+  task.value = { status: 'pending' }
+  try {
+    const created = await api('recruitment/candidate-discoveries/search/', { method: 'POST', body: JSON.stringify(discoveryPayload({ accountId: discoveryAccount.value, jobId: discoveryJob.value, mode: discoveryMode.value, keyword: keyword.value })) })
+    await pollTask(created.task_id)
+  } catch (err) { task.value = { status: 'failed' }; error.value = err.message }
+}
+
+async function confirmDeepMatch() {
+  confirming.value = true; task.value = { status: 'pending' }
+  try {
+    const result = await api(`recruitment/automation-approvals/${approval.value.id}/approve/`, { method: 'POST' })
+    approval.value = null
+    await pollTask(result.task_id)
+  } catch (err) { error.value = err.message; task.value = { status: 'failed' } }
+  finally { confirming.value = false }
+}
+
+function toggleDiscovery(id) {
+  const next = new Set(selectedIds.value), key = String(id)
+  next.has(key) ? next.delete(key) : next.add(key)
+  selectedIds.value = next
+}
+async function importSelected() {
+  if (!selectedCount.value) return
+  importing.value = true; error.value = ''
+  try {
+    const result = await api('recruitment/candidate-discoveries/import-selected/', { method: 'POST', body: JSON.stringify({ ids: [...selectedIds.value] }) })
+    taskMessage.value = `已入库 ${result.total} 人 · 新建候选人 ${result.created_candidates} 人`
+    selectedIds.value = new Set()
+    await Promise.all([loadDiscoveries(), loadCandidates()])
+    activeTab.value = 'library'
+  } catch (err) { error.value = err.message }
+  finally { importing.value = false }
 }
 
 onMounted(loadWorkspace)
+onUnmounted(stopPolling)
 </script>
 
 <template>
-  <div class="page-stack">
+  <div class="page-stack candidate-workspace">
     <header class="page-hero page-hero--compact recruitment-toolbar">
-      <div>
-        <span class="eyebrow">Candidate Directory</span>
-        <h2>候选人</h2>
-        <p>按职位和招聘阶段查找候选人，点击行查看完整资料。</p>
-      </div>
+      <div><span class="eyebrow">Candidate Workspace</span><h2>候选人</h2><p>从 BOSS 发现人才，确认后再纳入正式招聘流程。</p></div>
       <RecruitmentDemoMenu @changed="loadWorkspace" />
     </header>
-
+    <nav class="candidate-tabs" aria-label="候选人页面">
+      <button data-test="candidate-tab-library" :class="{ active: activeTab === 'library' }" @click="activeTab = 'library'">候选人库 <span>{{ candidates.length }}</span></button>
+      <button data-test="candidate-tab-discovery" :class="{ active: activeTab === 'discovery' }" @click="activeTab = 'discovery'">发现候选人 <span>{{ discoveries.length }}</span></button>
+    </nav>
     <p v-if="error" class="recruitment-error-strip">{{ error }}</p>
+    <section v-if="task" class="job-sync-feedback"><TaskProgressBar :status="task.status" /><p>{{ taskMessage || '正在读取 BOSS 候选人…' }}</p></section>
 
-    <section class="recruitment-data-shell">
+    <section v-if="activeTab === 'library'" class="recruitment-data-shell">
       <div class="recruitment-filter-row">
         <input v-model="search" data-test="candidate-search" type="search" placeholder="搜索姓名、岗位或城市" @input="loadCandidates" />
-        <select v-model="job" aria-label="职位" @change="loadCandidates">
-          <option value="">全部职位</option>
-          <option v-for="item in jobs" :key="item.id" :value="item.id">{{ item.title }}</option>
-        </select>
-        <select v-model="stage" data-test="candidate-stage" aria-label="招聘阶段" @change="loadCandidates">
-          <option value="">全部阶段</option>
-          <option v-for="item in stageColumns" :key="item.key" :value="item.key">{{ item.label }}</option>
-        </select>
+        <select v-model="job" aria-label="职位" @change="loadCandidates"><option value="">全部职位</option><option v-for="item in jobs" :key="item.id" :value="item.id">{{ item.title }}</option></select>
+        <select v-model="stage" data-test="candidate-stage" aria-label="招聘阶段" @change="loadCandidates"><option value="">全部阶段</option><option v-for="item in stageColumns" :key="item.key" :value="item.key">{{ item.label }}</option></select>
         <span class="toolbar__count">{{ candidates.length }} 位候选人</span>
       </div>
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead><tr><th>候选人</th><th>当前岗位 / 城市</th><th>应聘职位</th><th>阶段</th><th>负责人</th><th>简历</th></tr></thead>
-          <tbody>
-            <tr
-              v-for="candidate in candidates"
-              :key="candidate.id"
-              class="recruitment-row"
-              tabindex="0"
-              @click="selected = candidate"
-              @keydown.enter="selected = candidate"
-            >
-              <td><strong>{{ candidate.name }}</strong></td>
-              <td>{{ candidate.current_title || '—' }}<small class="block-text">{{ candidate.current_city || '—' }}</small></td>
-              <td>{{ primaryApplication(candidate)?.job_title || '—' }}</td>
-              <td><span class="recruitment-chip">{{ primaryApplication(candidate)?.stage_label || '—' }}</span></td>
-              <td>{{ primaryApplication(candidate)?.owner_name || '—' }}</td>
-              <td>{{ candidate.resume_count ? `${candidate.resume_count} 份简历` : '暂无简历' }}</td>
-            </tr>
-            <tr v-if="!loading && !candidates.length"><td colspan="6" class="table-empty">没有符合条件的候选人</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <div class="table-scroll"><table class="data-table"><thead><tr><th>候选人</th><th>当前岗位 / 城市</th><th>应聘职位</th><th>阶段</th><th>负责人</th><th>简历</th></tr></thead><tbody>
+        <tr v-for="candidate in candidates" :key="candidate.id" class="recruitment-row" tabindex="0" @click="selected = candidate" @keydown.enter="selected = candidate"><td><strong>{{ candidate.name }}</strong></td><td>{{ candidate.current_title || '—' }}<small class="block-text">{{ candidate.current_city || '—' }}</small></td><td>{{ primaryApplication(candidate)?.job_title || '—' }}</td><td><span class="recruitment-chip">{{ primaryApplication(candidate)?.stage_label || '—' }}</span></td><td>{{ primaryApplication(candidate)?.owner_name || '—' }}</td><td>{{ candidate.resume_count ? `${candidate.resume_count} 份简历` : '暂无简历' }}</td></tr>
+        <tr v-if="!loading && !candidates.length"><td colspan="6" class="table-empty">没有符合条件的候选人</td></tr>
+      </tbody></table></div>
     </section>
 
-    <RecruitmentDetailDrawer v-if="selected" :title="selected.name" @close="selected = null">
-      <dl class="recruitment-detail-grid">
-        <div><dt>当前岗位</dt><dd>{{ selected.current_title || '—' }}</dd></div>
-        <div><dt>所在城市</dt><dd>{{ selected.current_city || '—' }}</dd></div>
-        <div><dt>电话</dt><dd>{{ selected.phone || '—' }}</dd></div>
-        <div><dt>邮箱</dt><dd>{{ selected.email || '—' }}</dd></div>
-        <div><dt>简历</dt><dd>{{ selected.resume_count ? `${selected.resume_count} 份简历` : '暂无简历' }}</dd></div>
-      </dl>
-      <section class="recruitment-detail-section">
-        <span>应聘记录</span>
-        <article v-for="application in selected.applications" :key="application.id" class="recruitment-application-line">
-          <strong>{{ application.job_title }}</strong>
-          <small>{{ application.stage_label }} · 负责人 {{ application.owner_name || '未分配' }}</small>
-        </article>
+    <template v-else>
+      <section class="discovery-console">
+        <div class="discovery-console__top">
+          <label><span>BOSS 账号</span><select v-model="discoveryAccount" data-test="discovery-account" @change="chooseAccount"><option v-for="item in accounts" :key="item.id" :value="String(item.id)">{{ item.name }}</option></select></label>
+          <label><span>来源职位</span><select v-model="discoveryJob" data-test="discovery-job" @change="loadDiscoveries"><option v-for="item in filteredJobs" :key="item.id" :value="String(item.id)">{{ item.title }}</option></select></label>
+          <div class="discovery-mode-switch"><button v-for="mode in discoveryModes" :key="mode.key" :class="{ active: discoveryMode === mode.key }" :data-test="`discovery-mode-${mode.key}`" @click="discoveryMode = mode.key">{{ mode.label }}</button></div>
+        </div>
+        <div class="discovery-query-row">
+          <label v-if="discoveryMode === 'search'" class="discovery-keyword"><AppIcon name="search" :size="16" /><input v-model="keyword" maxlength="20" placeholder="输入技能或岗位关键词" /></label>
+          <template v-else-if="discoveryMode === 'deep_search'"><label><span>核心要求（每行一项）</span><textarea v-model="coreText" rows="2" placeholder="Vue 3&#10;复杂后台系统经验"></textarea></label><label><span>加分项（每行一项）</span><textarea v-model="bonusText" rows="2" placeholder="ToB 项目经验"></textarea></label></template>
+          <p v-else>读取当前职位的推荐人才，不会发送任何消息。</p>
+          <button class="primary-button button-with-icon" data-test="start-discovery" :disabled="taskRunning || !discoveryJob" @click="startDiscovery"><AppIcon name="search" :size="15" />{{ discoveryMode === 'deep_search' ? '预览并确认' : '开始发现' }}</button>
+        </div>
       </section>
-    </RecruitmentDetailDrawer>
+      <section class="discovery-results">
+        <header><div><span class="eyebrow">Discovery Pool</span><h3>临时候选人池</h3></div><small>结果保留 7 天 · 正式入库前不会污染候选人库</small></header>
+        <div v-if="discoveries.length" class="discovery-grid"><CandidateDiscoveryCard v-for="item in discoveries" :key="item.id" :candidate="item" :selected="selectedIds.has(String(item.id))" @toggle="toggleDiscovery" @open="selectedDiscovery = item" /></div>
+        <div v-else-if="!discoveryLoading" class="discovery-empty"><AppIcon name="users" :size="26" /><strong>还没有发现结果</strong><span>选择账号、职位和发现方式后开始读取。</span></div>
+      </section>
+    </template>
+
+    <Transition name="batch-bar"><aside v-if="selectedCount" class="discovery-batch-bar" data-test="discovery-batch-bar"><div><strong>已选择 {{ selectedCount }} 人</strong><span>只写入本地候选人库，不会联系候选人</span></div><button class="text-button" @click="selectedIds = new Set()">取消选择</button><button class="primary-button" data-test="import-selected" :disabled="importing" @click="importSelected">{{ importing ? '正在入库…' : '加入候选人库' }}</button></aside></Transition>
+    <RecruitmentDetailDrawer v-if="selected" :title="selected.name" @close="selected = null"><dl class="recruitment-detail-grid"><div><dt>当前岗位</dt><dd>{{ selected.current_title || '—' }}</dd></div><div><dt>所在城市</dt><dd>{{ selected.current_city || '—' }}</dd></div><div><dt>电话</dt><dd>{{ selected.phone || '—' }}</dd></div><div><dt>邮箱</dt><dd>{{ selected.email || '—' }}</dd></div><div><dt>简历</dt><dd>{{ selected.resume_count ? `${selected.resume_count} 份简历` : '暂无简历' }}</dd></div></dl><section class="recruitment-detail-section"><span>应聘记录</span><article v-for="application in selected.applications" :key="application.id" class="recruitment-application-line"><strong>{{ application.job_title }}</strong><small>{{ application.stage_label }} · 负责人 {{ application.owner_name || '未分配' }}</small></article></section></RecruitmentDetailDrawer>
+    <RecruitmentDetailDrawer v-if="selectedDiscovery" :title="selectedDiscovery.display_name" @close="selectedDiscovery = null"><dl class="recruitment-detail-grid"><div><dt>当前岗位</dt><dd>{{ selectedDiscovery.current_title || '—' }}</dd></div><div><dt>城市</dt><dd>{{ selectedDiscovery.city || '—' }}</dd></div><div><dt>工作经历</dt><dd>{{ selectedDiscovery.experience || '—' }}</dd></div><div><dt>学历</dt><dd>{{ selectedDiscovery.education || '—' }}</dd></div><div><dt>身份依据</dt><dd>{{ selectedDiscovery.identity_quality_label }}</dd></div><div><dt>来源职位</dt><dd>{{ selectedDiscovery.job_title }}</dd></div></dl><section class="recruitment-detail-section"><span>候选人优势</span><p>{{ selectedDiscovery.advantage || '暂无' }}</p></section></RecruitmentDetailDrawer>
+    <DeepMatchConfirmDrawer v-if="approval" :approval="approval" :confirming="confirming" @close="approval = null" @confirm="confirmDeepMatch" />
   </div>
 </template>
