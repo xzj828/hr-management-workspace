@@ -20,6 +20,9 @@ from .models import (
     StepExecution,
     WorkflowTemplate,
     WorkflowVersion,
+    WorkflowNodeRun,
+    WorkflowRun,
+    WorkflowRunEvent,
 )
 from .rpa.browser import browser_configuration, port_is_available
 from .rpa.tasks import create_task
@@ -293,10 +296,46 @@ class WorkflowVersionSerializer(serializers.ModelSerializer):
             for node in instance.nodes.all()
         ]
         data["edges"] = [
-            {"source": edge.source.node_key, "target": edge.target.node_key}
+            {"source": edge.source.node_key, "target": edge.target.node_key, "order": edge.order}
             for edge in instance.edges.select_related("source", "target")
         ]
         return data
+
+
+class WorkflowRunEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WorkflowRunEvent
+        fields = ["id", "node_run", "level", "event", "message", "data", "created_at"]
+
+
+class WorkflowNodeRunSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = WorkflowNodeRun
+        fields = [
+            "id", "node_key", "node_type", "status", "status_label", "config_snapshot",
+            "input_snapshot", "output", "attempt", "error_code", "error_message",
+            "started_at", "completed_at", "created_at", "updated_at",
+        ]
+
+
+class WorkflowRunSerializer(serializers.ModelSerializer):
+    node_runs = WorkflowNodeRunSerializer(many=True, read_only=True)
+    events = WorkflowRunEventSerializer(many=True, read_only=True)
+    account_name = serializers.CharField(source="boss_account.name", read_only=True)
+    version_number = serializers.IntegerField(source="version.version", read_only=True)
+    template_name = serializers.CharField(source="version.template.name", read_only=True)
+
+    class Meta:
+        model = WorkflowRun
+        fields = [
+            "id", "version", "version_number", "template_name", "boss_account", "account_name",
+            "job", "actor", "mode", "status", "idempotency_key", "graph_snapshot", "input_snapshot",
+            "result", "error_code", "error_message", "started_at", "completed_at", "created_at",
+            "updated_at", "node_runs", "events",
+        ]
+        read_only_fields = fields
 
 
 class RpaTaskEventSerializer(serializers.ModelSerializer):

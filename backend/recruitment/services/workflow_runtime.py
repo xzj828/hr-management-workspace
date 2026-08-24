@@ -1,6 +1,6 @@
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 
 from recruitment.models import WorkflowNodeRun, WorkflowRun, WorkflowRunEvent
 
@@ -9,6 +9,11 @@ HUMAN_NODE_TYPES = {"human_screen", "human_approval", "human_review"}
 SUCCESS_STATES = {WorkflowNodeRun.Status.SUCCEEDED, WorkflowNodeRun.Status.SKIPPED}
 NODE_TERMINAL_STATES = SUCCESS_STATES | {WorkflowNodeRun.Status.FAILED, WorkflowNodeRun.Status.CANCELLED}
 RUN_TERMINAL_STATES = {WorkflowRun.Status.SUCCEEDED, WorkflowRun.Status.FAILED, WorkflowRun.Status.CANCELLED}
+
+
+class WorkflowConflict(APIException):
+    status_code = 409
+    default_code = "workflow_state_conflict"
 
 
 def _event(run, event, message, *, node=None, data=None, actor=None):
@@ -156,7 +161,7 @@ def advance_run(run, *, executor=None):
 def decide_node(node, *, approved, actor, note=""):
     locked = WorkflowNodeRun.objects.select_for_update().select_related("run").get(pk=node.pk)
     if locked.status != WorkflowNodeRun.Status.WAITING_HUMAN:
-        raise ValidationError("该节点当前不等待人工决定")
+        raise WorkflowConflict("该节点当前不等待人工决定")
     locked.status = WorkflowNodeRun.Status.SUCCEEDED if approved else WorkflowNodeRun.Status.SKIPPED
     locked.output = {"approved": bool(approved), "note": note}
     locked.completed_at = timezone.now()
@@ -169,7 +174,7 @@ def decide_node(node, *, approved, actor, note=""):
 def pause_run(run, *, actor):
     locked = WorkflowRun.objects.select_for_update().get(pk=run.pk)
     if locked.status in RUN_TERMINAL_STATES:
-        raise ValidationError("已结束的流程不能暂停")
+        raise WorkflowConflict("已结束的流程不能暂停")
     locked.status = WorkflowRun.Status.PAUSED
     locked.save(update_fields=["status", "updated_at"])
     _event(locked, "run.paused", "流程已暂停", actor=actor)
@@ -180,7 +185,7 @@ def pause_run(run, *, actor):
 def resume_run(run, *, actor):
     locked = WorkflowRun.objects.select_for_update().get(pk=run.pk)
     if locked.status != WorkflowRun.Status.PAUSED:
-        raise ValidationError("只有暂停中的流程可以恢复")
+        raise WorkflowConflict("只有暂停中的流程可以恢复")
     locked.status = WorkflowRun.Status.RUNNING
     locked.save(update_fields=["status", "updated_at"])
     _event(locked, "run.resumed", "流程已恢复", actor=actor)
@@ -207,7 +212,7 @@ def cancel_run(run, *, actor):
 def retry_node(node, *, actor):
     locked = WorkflowNodeRun.objects.select_for_update().select_related("run").get(pk=node.pk)
     if locked.status != WorkflowNodeRun.Status.FAILED:
-        raise ValidationError("只有失败节点可以重试")
+        raise WorkflowConflict("只有失败节点可以重试")
     locked.status = WorkflowNodeRun.Status.READY
     locked.attempt += 1
     locked.error_code = ""

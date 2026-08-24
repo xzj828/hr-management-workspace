@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.utils.http import content_disposition_header
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -27,6 +28,7 @@ from .models import (
     RpaWorker,
     WorkflowTemplate,
     WorkflowVersion,
+    WorkflowRun,
 )
 from .permissions import RecruitmentWritePermission
 from .rpa.tasks import cancel_task, create_task, retry_task
@@ -49,6 +51,7 @@ from .serializers import (
     RpaTaskSerializer,
     WorkflowTemplateSerializer,
     WorkflowVersionSerializer,
+    WorkflowRunSerializer,
 )
 from .services.approvals import approve
 from .services.communications import materialize_communication_batch, prepare_communication
@@ -58,6 +61,8 @@ from .services.workflows import enable_version
 from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
 from .services.lifecycle import LifecycleConflict, archive_object, restore_object
+from .services.workflow_nodes import execute_workflow_node
+from .services.workflow_runtime import advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
 
 
 class ArchivableViewSetMixin:
@@ -489,6 +494,84 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
     def enable(self, request, pk=None):
         version = enable_version(version=self.get_object(), actor=request.user)
         return Response(self.get_serializer(version).data)
+
+    @action(detail=True, methods=["post"])
+    def run(self, request, pk=None):
+        version = self.get_object()
+        mode = request.data.get("mode", WorkflowRun.Mode.DRY_RUN)
+        request_id = str(request.data.get("request_id", "")).strip()
+        if not request_id:
+            raise ValidationError({"request_id": "运行请求标识必填"})
+        if mode == WorkflowRun.Mode.FORMAL:
+            if version.status != WorkflowVersion.Status.ENABLED:
+                raise ValidationError("正式运行只能使用已启用版本")
+            if request.data.get("confirm") is not True:
+                raise ValidationError("正式运行前必须明确确认")
+            if version.boss_account.login_status != BossAccount.LoginStatus.READY:
+                raise ValidationError("BOSS 账号尚未登录或需要人工验证")
+        job = None
+        job_id = request.data.get("job")
+        if job_id:
+            job = RecruitmentJob.objects.filter(pk=job_id, boss_account=version.boss_account).first()
+            if job is None:
+                raise ValidationError({"job": "职位不属于当前 BOSS 账号"})
+        idempotency_key = f"workflow-run:{version.pk}:{request_id}"
+        existed = WorkflowRun.objects.filter(idempotency_key=idempotency_key).exists()
+        run = create_run(
+            version=version, actor=request.user, mode=mode, idempotency_key=idempotency_key,
+            input_snapshot=request.data.get("input") if isinstance(request.data.get("input"), dict) else {}, job=job,
+        )
+        run = advance_run(run, executor=execute_workflow_node)
+        return Response(WorkflowRunSerializer(run, context=self.get_serializer_context()).data, status=status.HTTP_200_OK if existed else status.HTTP_201_CREATED)
+
+
+class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = WorkflowRun.objects.select_related("version__template", "boss_account", "job", "actor").prefetch_related("node_runs", "events")
+    serializer_class = WorkflowRunSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset if self.request.user.is_superuser else queryset.filter(boss_account__authorized_users=self.request.user)
+
+    def retrieve(self, request, *args, **kwargs):
+        run = self.get_object()
+        if run.status not in {WorkflowRun.Status.SUCCEEDED, WorkflowRun.Status.FAILED, WorkflowRun.Status.CANCELLED, WorkflowRun.Status.PAUSED}:
+            run = advance_run(run, executor=execute_workflow_node)
+        return Response(self.get_serializer(run).data)
+
+    @action(detail=True, methods=["post"])
+    def pause(self, request, pk=None):
+        return Response(self.get_serializer(pause_run(self.get_object(), actor=request.user)).data)
+
+    @action(detail=True, methods=["post"])
+    def resume(self, request, pk=None):
+        run = resume_run(self.get_object(), actor=request.user)
+        return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        return Response(self.get_serializer(cancel_run(self.get_object(), actor=request.user)).data)
+
+    @action(detail=True, methods=["post"])
+    def decision(self, request, pk=None):
+        run = self.get_object()
+        node = run.node_runs.filter(pk=request.data.get("node_id")).first()
+        if node is None:
+            raise ValidationError({"node_id": "运行节点不存在"})
+        if not isinstance(request.data.get("approved"), bool):
+            raise ValidationError({"approved": "必须明确通过或跳过"})
+        decide_node(node, approved=request.data["approved"], actor=request.user, note=str(request.data.get("note", ""))[:500])
+        return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
+
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        run = self.get_object()
+        node = run.node_runs.filter(pk=request.data.get("node_id")).first()
+        if node is None:
+            raise ValidationError({"node_id": "运行节点不存在"})
+        retry_node(node, actor=request.user)
+        return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
 
 
 class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
