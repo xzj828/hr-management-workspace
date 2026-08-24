@@ -13,6 +13,11 @@ export const actionLabels = {
   open_login: '打开登录浏览器',
   check_status: '检查状态',
   sync_positions: '同步职位',
+  sync_conversations: '同步沟通状态',
+  greet: '打招呼',
+  request_resume: '索要简历',
+  send_interview: '面试邀约',
+  view_online_resume: '保存在线简历',
 }
 
 export const taskStatusLabels = {
@@ -31,7 +36,7 @@ export function loginStatusLabel(status) {
 
 export function availableActions(account) {
   if (!account?.active || account.has_active_task) return []
-  return ['open_login', 'check_status', 'sync_positions']
+  return ['open_login', 'check_status', 'sync_positions', 'sync_conversations']
 }
 
 export function accountDisplayStatus(account) {

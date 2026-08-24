@@ -13,7 +13,7 @@ import AppIcon from '@/components/AppIcon.vue'
 
 
 const resumes = [
-  { id: 1, candidate_name: '周晓宁', job_title: 'Vue 前端工程师', original_name: 'zhou-xiaoning.pdf', content_type: 'application/pdf', file_size: 1536, source_label: '演示数据', processing_status: 'ready', status_label: '待 AI 评估', file_available: true, preview_url: '/api/recruitment/resumes/1/file/', download_url: '/api/recruitment/resumes/1/file/?download=1', updated_at: '2026-08-22T10:00:00Z' },
+  { id: 1, candidate_name: '周晓宁', job_title: 'Vue 前端工程师', original_name: 'zhou-xiaoning.pdf', content_type: 'application/pdf', file_size: 1536, source_label: '演示数据', processing_status: 'ready', status_label: '待 AI 评估', file_available: true, preview_url: '/api/recruitment/resumes/1/file/', download_url: '/api/recruitment/resumes/1/file/?download=1', version: 2, sha256: 'abcdef1234567890', acquired_at: '2026-08-22T10:00:00Z', updated_at: '2026-08-22T10:00:00Z' },
   { id: 2, candidate_name: '徐雯', job_title: '人事产品经理', original_name: 'xu-wen.pdf', content_type: 'application/pdf', file_size: 2048, source_label: '演示数据', processing_status: 'ready', status_label: '待 AI 评估', file_available: true, preview_url: '/api/recruitment/resumes/2/file/', download_url: '/api/recruitment/resumes/2/file/?download=1', updated_at: '2026-08-22T10:00:00Z' },
   { id: 3, candidate_name: '宋怡', job_title: '实施顾问', original_name: 'song-yi.pdf', content_type: 'application/pdf', file_size: 1024, source_label: '演示数据', processing_status: 'ready', status_label: '待 AI 评估', file_available: true, preview_url: '/api/recruitment/resumes/3/file/', download_url: '/api/recruitment/resumes/3/file/?download=1', updated_at: '2026-08-22T10:00:00Z' },
 ]
@@ -36,6 +36,7 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.text()).toContain('徐雯')
     expect(wrapper.text()).toContain('宋怡')
     expect(wrapper.text()).toContain('1.5 KB')
+    expect(wrapper.text()).toContain('V2')
     expect(wrapper.text()).toContain('待 AI 评估')
     expect(wrapper.get('[data-test="download-1"]').attributes('href')).toBe('/api/recruitment/resumes/1/file/?download=1')
     expect(wrapper.get('[data-test="preview-1"]').findComponent(AppIcon).props('name')).toBe('eye')

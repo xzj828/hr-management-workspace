@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api, listItems } from '@/api'
 import ModalPanel from '@/components/ModalPanel.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import AutomationBatchPanel from '@/components/AutomationBatchPanel.vue'
+import WorkflowCanvas from '@/components/WorkflowCanvas.vue'
 import {
   accountDisplayStatus,
   actionLabels,
@@ -14,6 +16,8 @@ import {
 const summary = reactive({ worker: null, cli_available: false, task_counts: {}, has_active_task: false })
 const accounts = ref([])
 const tasks = ref([])
+const batches = ref([]), workflows = ref([]), workflowVersions = ref([])
+const workspaceTab = ref('accounts'), workflowSaving = ref(false)
 const loading = ref(true)
 const error = ref('')
 const accountModalOpen = ref(false)
@@ -37,14 +41,20 @@ async function loadWorkspace({ silent = false } = {}) {
     error.value = ''
   }
   try {
-    const [summaryPayload, accountPayload, taskPayload] = await Promise.all([
+    const [summaryPayload, accountPayload, taskPayload, batchPayload, workflowPayload, versionPayload] = await Promise.all([
       api('recruitment/automation/summary/'),
       api('recruitment/boss-accounts/'),
       api('recruitment/rpa-tasks/'),
+      api('recruitment/execution-batches/'),
+      api('recruitment/workflows/'),
+      api('recruitment/workflow-versions/'),
     ])
     Object.assign(summary, summaryPayload)
     accounts.value = listItems(accountPayload)
     tasks.value = listItems(taskPayload)
+    batches.value = listItems(batchPayload)
+    workflows.value = listItems(workflowPayload)
+    workflowVersions.value = listItems(versionPayload)
   } catch (err) {
     if (!silent) error.value = err.message
   } finally {
@@ -88,6 +98,26 @@ async function runAction(account, actionName) {
   } catch (err) {
     error.value = err.message
   }
+}
+
+async function saveWorkflow(snapshot) {
+  workflowSaving.value = true; error.value = ''
+  try {
+    const template = await api('recruitment/workflows/', {
+      method: 'POST', body: JSON.stringify({ name: snapshot.name, description: '由招聘自动化工作台创建' }),
+    })
+    await api('recruitment/workflow-versions/', {
+      method: 'POST', body: JSON.stringify({ template: template.id, boss_account: snapshot.accountId, nodes: snapshot.nodes, edges: snapshot.edges }),
+    })
+    await loadWorkspace({ silent: true })
+  } catch (err) { error.value = err.message }
+  finally { workflowSaving.value = false }
+}
+
+async function enableWorkflow(versionId) {
+  error.value = ''
+  try { await api(`recruitment/workflow-versions/${versionId}/enable/`, { method: 'POST' }); await loadWorkspace({ silent: true }) }
+  catch (err) { error.value = err.message }
 }
 
 function toggleActionMenu(event, account) {
@@ -136,9 +166,9 @@ onUnmounted(() => {
   <div class="page-stack automation-workspace">
     <header class="page-hero page-hero--compact">
       <div>
-        <span class="eyebrow">BOSS Read-only Automation</span>
+        <span class="eyebrow">BOSS Recruitment Automation</span>
         <h2>自动化任务</h2>
-        <p>每个账号使用独立浏览器环境；登录与安全验证始终由 HR 本人完成。</p>
+        <p>账号隔离、人工确认、逐人执行与结果留痕集中在同一工作区。</p>
       </div>
       <button class="text-button automation-add button-with-icon" type="button" @click="accountModalOpen = true"><AppIcon name="plus" :size="16" /><span>添加账号</span></button>
     </header>
@@ -157,7 +187,7 @@ onUnmounted(() => {
       </div>
       <div>
         <span>本次接入范围</span>
-        <strong>状态检查 · 职位同步</strong>
+        <strong>发现 · 沟通 · 简历 · 流程</strong>
       </div>
       <div>
         <span>已完成任务</span>
@@ -165,6 +195,9 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <nav class="automation-workspace-tabs" aria-label="自动化工作区"><button :class="{ active: workspaceTab === 'accounts' }" @click="workspaceTab = 'accounts'">账号与任务</button><button :class="{ active: workspaceTab === 'batches' }" @click="workspaceTab = 'batches'">确认执行 <span>{{ batches.length }}</span></button><button :class="{ active: workspaceTab === 'workflows' }" @click="workspaceTab = 'workflows'">流程编排 <span>{{ workflowVersions.length }}</span></button></nav>
+
+    <template v-if="workspaceTab === 'accounts'">
     <section class="panel table-panel automation-panel automation-panel--accounts">
       <header class="panel__header panel__header--padded">
         <div><span class="panel-kicker">ISOLATED ACCOUNTS</span><h3>BOSS 账号</h3></div>
@@ -201,7 +234,7 @@ onUnmounted(() => {
     <section class="panel table-panel automation-panel automation-panel--tasks">
       <header class="panel__header panel__header--padded">
         <div><span class="panel-kicker">TASK TIMELINE</span><h3>最近任务</h3></div>
-        <span>只读操作留痕</span>
+        <span>全部自动化操作留痕</span>
       </header>
       <div class="table-scroll">
         <table class="data-table data-table--dense">
@@ -218,6 +251,18 @@ onUnmounted(() => {
           </tbody>
         </table>
       </div>
+    </section>
+    </template>
+
+    <section v-else-if="workspaceTab === 'batches'" class="automation-batch-workspace">
+      <header><div><span class="panel-kicker">HUMAN APPROVED</span><h3>确认执行队列</h3></div><p>每位候选人独立执行；部分失败不会重复发送已成功项。</p></header>
+      <div v-if="batches.length" class="automation-batch-grid"><AutomationBatchPanel v-for="batch in batches" :key="batch.id" :batch="batch" /></div>
+      <div v-else class="automation-empty-state"><AppIcon name="shield" :size="25" /><strong>暂无待执行批次</strong><span>在候选人库勾选候选人后创建沟通批次。</span></div>
+    </section>
+
+    <section v-else class="workflow-workspace">
+      <WorkflowCanvas :accounts="accounts" :saving="workflowSaving" @save="saveWorkflow" />
+      <aside class="workflow-versions"><header><span class="panel-kicker">VERSION HISTORY</span><h3>流程版本</h3></header><article v-for="version in workflowVersions" :key="version.id"><div><strong>{{ workflows.find((item) => item.id === version.template)?.name || `流程 ${version.template}` }}</strong><small>版本 {{ version.version }} · {{ version.nodes.length }} 个节点</small></div><span :class="['recruitment-chip', { 'is-draft': version.status === 'draft' }]">{{ version.status === 'enabled' ? '已启用' : version.status === 'draft' ? '草稿' : '已停用' }}</span><button v-if="version.status === 'draft'" class="text-button" @click="enableWorkflow(version.id)">校验并启用</button></article><p v-if="!workflowVersions.length" class="table-empty">保存后会在这里生成不可变版本。</p></aside>
     </section>
 
     <Teleport to="body">

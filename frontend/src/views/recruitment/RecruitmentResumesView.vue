@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, listItems } from '@/api'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
@@ -10,6 +10,7 @@ const resumes = ref([])
 const selected = ref(null)
 const loading = ref(true)
 const error = ref('')
+const selectedVersions = computed(() => selected.value ? resumes.value.filter((item) => item.candidate === selected.value.candidate || item.candidate_name === selected.value.candidate_name) : [])
 
 async function loadResumes() {
   loading.value = true
@@ -47,7 +48,7 @@ onMounted(loadResumes)
             <tr v-for="resume in resumes" :key="resume.id">
               <td><strong>{{ resume.candidate_name }}</strong></td>
               <td>{{ resume.job_title || '—' }}</td>
-              <td><strong class="recruitment-file-name">{{ resume.original_name }}</strong><small class="block-text">PDF · {{ formatFileSize(resume.file_size) }}</small></td>
+              <td><strong class="recruitment-file-name">{{ resume.original_name }}</strong><small class="block-text">PDF · {{ formatFileSize(resume.file_size) }} · V{{ resume.version || 1 }}</small></td>
               <td>{{ resume.source_label }}</td>
               <td>{{ formatRecruitmentDate(resume.updated_at) }}</td>
               <td>
@@ -71,7 +72,10 @@ onMounted(loadResumes)
         <div><dt>文件大小</dt><dd>{{ formatFileSize(selected.file_size) }}</dd></div>
         <div><dt>数据来源</dt><dd>{{ selected.source_label }}</dd></div>
         <div><dt>处理状态</dt><dd>{{ selected.status_label }}</dd></div>
+        <div><dt>版本</dt><dd>V{{ selected.version || 1 }}</dd></div>
+        <div><dt>文件指纹</dt><dd class="resume-hash">{{ selected.sha256 ? selected.sha256.slice(0, 12) : '历史文件' }}</dd></div>
       </dl>
+      <section v-if="selectedVersions.length > 1" class="resume-version-list"><span>历史版本</span><button v-for="version in selectedVersions" :key="version.id" type="button" :class="{ active: version.id === selected.id }" @click="selected = version"><strong>V{{ version.version || 1 }}</strong><small>{{ formatRecruitmentDate(version.acquired_at || version.updated_at) }}</small></button></section>
       <iframe
         v-if="selected.file_available"
         class="recruitment-pdf-preview"

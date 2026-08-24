@@ -38,6 +38,9 @@ describe('RecruitmentAutomationView', () => {
         id: 'task-1', account_name: '主招聘账号', action: 'check_status', status: 'succeeded',
         created_at: '2026-08-22T12:00:00Z', events: [],
       }] })
+      if (path === 'recruitment/execution-batches/') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/workflows/') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/workflow-versions/') return Promise.resolve({ results: [] })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
   })

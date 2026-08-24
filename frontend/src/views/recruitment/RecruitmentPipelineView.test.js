@@ -28,16 +28,18 @@ describe('RecruitmentPipelineView', () => {
   })
 
   it('moves a candidate and persists the new stage', async () => {
-    const wrapper = mount(RecruitmentPipelineView)
+    const wrapper = mount(RecruitmentPipelineView, { global: { stubs: { teleport: true } } })
     await flushPromises()
 
     await wrapper.get('[data-application-id="11"]').trigger('dragstart')
     await wrapper.get('[data-stage="interviewing"]').trigger('drop')
+    await wrapper.get('[data-test="stage-reason"]').setValue('HR 完成人工复核')
+    await wrapper.get('[data-test="confirm-stage-change"]').trigger('click')
     await flushPromises()
 
     expect(apiMock).toHaveBeenCalledWith('recruitment/applications/11/', {
       method: 'PATCH',
-      body: JSON.stringify({ stage: 'interviewing' }),
+      body: JSON.stringify({ stage: 'interviewing', stage_reason: 'HR 完成人工复核' }),
     })
     expect(wrapper.get('[data-stage="interviewing"]').text()).toContain('周晓宁')
     expect(wrapper.get('[data-stage="new"]').text()).not.toContain('周晓宁')
@@ -50,11 +52,13 @@ describe('RecruitmentPipelineView', () => {
       if (path === 'recruitment/applications/11/') return Promise.reject(new Error('阶段保存失败'))
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
-    const wrapper = mount(RecruitmentPipelineView)
+    const wrapper = mount(RecruitmentPipelineView, { global: { stubs: { teleport: true } } })
     await flushPromises()
 
     await wrapper.get('[data-application-id="11"]').trigger('dragstart')
     await wrapper.get('[data-stage="interviewing"]').trigger('drop')
+    await wrapper.get('[data-test="stage-reason"]').setValue('HR 完成人工复核')
+    await wrapper.get('[data-test="confirm-stage-change"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.get('[data-stage="new"]').text()).toContain('周晓宁')
