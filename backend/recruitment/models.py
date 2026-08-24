@@ -40,6 +40,7 @@ class BossAccount(models.Model):
     daily_message_limit = models.PositiveIntegerField(default=50)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OFFLINE)
     active = models.BooleanField(default=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     authorized_users = models.ManyToManyField(User, blank=True, related_name="boss_accounts")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -66,6 +67,7 @@ class RecruitmentJob(models.Model):
     headcount = models.PositiveIntegerField(default=1)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
     is_demo = models.BooleanField(default=False, db_index=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -84,6 +86,7 @@ class Candidate(models.Model):
     current_title = models.CharField(max_length=120, blank=True)
     current_city = models.CharField(max_length=80, blank=True)
     is_demo = models.BooleanField(default=False, db_index=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -155,6 +158,7 @@ class Resume(models.Model):
     external_id = models.CharField(max_length=160, blank=True)
     acquired_at = models.DateTimeField(null=True, blank=True)
     is_demo = models.BooleanField(default=False, db_index=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -324,6 +328,7 @@ class RpaTask(models.Model):
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -614,6 +619,7 @@ class WorkflowTemplate(models.Model):
     active_version = models.ForeignKey(
         "WorkflowVersion", on_delete=models.SET_NULL, null=True, blank=True, related_name="active_for_templates"
     )
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

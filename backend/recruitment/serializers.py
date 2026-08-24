@@ -35,6 +35,7 @@ class BossAccountSerializer(serializers.ModelSerializer):
             "id", "name", "browser_type", "browser_profile", "browser_executable",
             "user_data_dir", "cdp_port", "daily_contact_limit", "status", "status_label",
             "login_status", "login_status_label", "verification_status", "last_checked_at", "active",
+            "archived_at",
         ]
         read_only_fields = [
             "browser_profile", "browser_executable", "user_data_dir", "cdp_port", "status",
@@ -95,6 +96,7 @@ class RecruitmentJobSerializer(serializers.ModelSerializer):
             "id", "boss_account", "account_name", "external_id", "title", "department",
             "jd", "owner", "owner_name", "headcount", "status", "candidate_count",
             "is_demo", "created_at", "updated_at",
+            "archived_at",
         ]
 
 
@@ -108,6 +110,7 @@ class CandidateSerializer(serializers.ModelSerializer):
             "id", "identity_key", "external_id", "name", "phone", "email",
             "current_title", "current_city", "applications", "resume_count",
             "is_demo", "created_at", "updated_at",
+            "archived_at",
         ]
 
 
@@ -178,6 +181,7 @@ class ResumeSerializer(serializers.ModelSerializer):
             "content_type", "file_size", "source", "source_label", "processing_status",
             "status_label", "file_available", "preview_url", "download_url", "is_demo",
             "sha256", "version", "external_id", "acquired_at", "created_at", "updated_at",
+            "archived_at",
         ]
 
 
@@ -253,7 +257,7 @@ class WorkflowTemplateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WorkflowTemplate
-        fields = ["id", "name", "description", "active_version", "active_version_number", "created_at", "updated_at"]
+        fields = ["id", "name", "description", "active_version", "active_version_number", "archived_at", "created_at", "updated_at"]
         read_only_fields = ["id", "active_version", "active_version_number", "created_at", "updated_at"]
 
 
@@ -313,6 +317,7 @@ class RpaTaskSerializer(serializers.ModelSerializer):
             "worker", "approval", "execution_batch", "idempotency_key", "request_payload",
             "result", "error_code", "error_message",
             "lease_expires_at", "started_at", "completed_at", "created_at", "updated_at", "events",
+            "archived_at",
         ]
         read_only_fields = [
             "status", "worker", "result", "error_code", "error_message", "lease_expires_at",

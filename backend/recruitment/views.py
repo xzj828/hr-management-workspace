@@ -57,9 +57,27 @@ from .services.discovery import import_discoveries
 from .services.workflows import enable_version
 from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
+from .services.lifecycle import LifecycleConflict, archive_object, restore_object
 
 
-class BossAccountViewSet(viewsets.ModelViewSet):
+class ArchivableViewSetMixin:
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        archived = self.request.query_params.get("archived") == "1"
+        return queryset.filter(archived_at__isnull=not archived)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        instance = archive_object(instance=self.get_object(), actor=request.user)
+        return Response(self.get_serializer(instance).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        instance = restore_object(instance=self.get_object(), actor=request.user)
+        return Response(self.get_serializer(instance).data)
+
+
+class BossAccountViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     queryset = BossAccount.objects.all().order_by("name")
     serializer_class = BossAccountSerializer
     permission_classes = [RecruitmentWritePermission]
@@ -96,7 +114,7 @@ class BossAccountViewSet(viewsets.ModelViewSet):
         return Response(data)
 
 
-class RecruitmentJobViewSet(viewsets.ModelViewSet):
+class RecruitmentJobViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     queryset = RecruitmentJob.objects.select_related("boss_account", "owner").annotate(
         candidate_count=Count("applications", distinct=True)
     ).order_by("-updated_at")
@@ -105,6 +123,11 @@ class RecruitmentJobViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(
+                Q(boss_account__authorized_users=self.request.user)
+                | Q(boss_account__isnull=True, owner=self.request.user)
+            ).distinct()
         if self.request.query_params.get("is_demo") == "true":
             queryset = queryset.filter(is_demo=True)
         return queryset
@@ -128,7 +151,7 @@ class RecruitmentJobViewSet(viewsets.ModelViewSet):
         )
 
 
-class CandidateViewSet(viewsets.ReadOnlyModelViewSet):
+class CandidateViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Candidate.objects.prefetch_related(
         "applications__job", "applications__owner", "resumes"
     ).annotate(resume_count=Count("resumes", distinct=True)).order_by("-updated_at")
@@ -137,6 +160,11 @@ class CandidateViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(
+                Q(applications__job__boss_account__authorized_users=self.request.user)
+                | Q(applications__job__boss_account__isnull=True, applications__job__owner=self.request.user)
+            ).distinct()
         search = self.request.query_params.get("search", "").strip()
         if search:
             queryset = queryset.filter(
@@ -417,7 +445,7 @@ class ExecutionBatchViewSet(viewsets.ReadOnlyModelViewSet):
         return queryset.distinct()
 
 
-class WorkflowTemplateViewSet(viewsets.ModelViewSet):
+class WorkflowTemplateViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkflowTemplate.objects.select_related("active_version", "created_by").all()
     serializer_class = WorkflowTemplateSerializer
     permission_classes = [RecruitmentWritePermission]
@@ -434,11 +462,28 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
     queryset = WorkflowVersion.objects.select_related("template", "boss_account").prefetch_related("nodes", "edges__source", "edges__target")
     serializer_class = WorkflowVersionSerializer
     permission_classes = [RecruitmentWritePermission]
-    http_method_names = ["get", "post", "head", "options"]
+    http_method_names = ["get", "post", "delete", "head", "options"]
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        queryset = queryset.filter(template__archived_at__isnull=self.request.query_params.get("archived") != "1")
         return queryset if self.request.user.is_superuser else queryset.filter(template__created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        version = self.get_object()
+        if version.status != WorkflowVersion.Status.DRAFT:
+            raise LifecycleConflict("已启用或已停用的流程版本需要保留审计记录，不能直接删除")
+        if version.template.active_version_id == version.pk:
+            raise LifecycleConflict("当前启用版本不能删除，请先停用流程")
+        RecruitmentAuditLog.objects.create(
+            actor=request.user,
+            boss_account=version.boss_account,
+            action="workflow_draft_deleted",
+            target_id=str(version.pk),
+            detail={"template_id": version.template_id, "version": version.version},
+        )
+        version.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"])
     def enable(self, request, pk=None):
@@ -446,10 +491,19 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(version).data)
 
 
-class ResumeViewSet(viewsets.ReadOnlyModelViewSet):
+class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Resume.objects.select_related("candidate", "application__job").all()
     serializer_class = ResumeSerializer
     permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.is_superuser:
+            return queryset
+        return queryset.filter(
+            Q(application__job__boss_account__authorized_users=self.request.user)
+            | Q(application__job__boss_account__isnull=True, application__job__owner=self.request.user)
+        ).distinct()
 
     @action(detail=True, methods=["get"])
     def file(self, request, pk=None):
@@ -472,7 +526,7 @@ class ResumeViewSet(viewsets.ReadOnlyModelViewSet):
         return response
 
 
-class RpaTaskViewSet(viewsets.ModelViewSet):
+class RpaTaskViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     queryset = RpaTask.objects.select_related("boss_account", "created_by", "worker").prefetch_related("events")
     serializer_class = RpaTaskSerializer
     permission_classes = [RecruitmentWritePermission]
