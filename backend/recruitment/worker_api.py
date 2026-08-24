@@ -175,7 +175,35 @@ def complete_task_view(request, task_id):
     if task.action == RpaTask.Action.SYNC_CONVERSATIONS and completed_status == RpaTask.Status.SUCCEEDED:
         rows = result.get("conversations")
         try:
-            result = {"sync": sync_conversation_states(account=task.boss_account, rows=rows, actor=task.created_by)}
+            sync_result = sync_conversation_states(account=task.boss_account, rows=rows, actor=task.created_by)
+            archived = 0
+            incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
+            for row in rows:
+                applications = list(JobApplication.objects.filter(
+                    job__boss_account=task.boss_account,
+                    candidate__name=str(row.get("name", "")).strip(),
+                )[:2])
+                if len(applications) != 1:
+                    continue
+                for attachment in row.get("attachments") if isinstance(row.get("attachments"), list) else []:
+                    raw_path = Path(str(attachment.get("path", "")))
+                    try:
+                        resolved = raw_path.resolve(strict=True)
+                        if incoming not in resolved.parents or resolved.suffix.lower() != ".pdf":
+                            continue
+                        _, created = archive_pdf(
+                            application=applications[0],
+                            filename=attachment.get("filename", "附件简历.pdf"),
+                            content=resolved.read_bytes(),
+                            source=Resume.Source.BOSS,
+                            actor=task.created_by,
+                        )
+                        resolved.unlink(missing_ok=True)
+                        archived += int(created)
+                    except (OSError, ValueError):
+                        continue
+            sync_result["attachments_archived"] = archived
+            result = {"sync": sync_result}
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     if task.action == RpaTask.Action.VIEW_ONLINE_RESUME and completed_status == RpaTask.Status.SUCCEEDED:

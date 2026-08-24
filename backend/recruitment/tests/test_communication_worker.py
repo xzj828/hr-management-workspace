@@ -42,6 +42,18 @@ class CommunicationWorkerTests(SimpleTestCase):
         self.assertEqual(outcome["status"], "waiting_human")
         self.assertNotIn("greet", [call[0] for call in runner.calls])
 
+    def test_greet_with_same_name_candidates_never_clicks_first_match(self):
+        runner = FakeRunner()
+        runner.recommend = lambda account, job: [
+            {"display_name": "林然", "fingerprint": "fp-safe"},
+            {"display_name": "林然", "fingerprint": "fp-other"},
+        ]
+        outcome = execute_greet({"request_payload": {
+            "target": {"name": "林然", "fingerprint": "fp-safe", "job_title": "测试工程师"}
+        }}, self.account, runner)
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertNotIn("greet", [call[0] for call in runner.calls])
+
     def test_request_resume_and_interview_use_confirmed_snapshots(self):
         runner = FakeRunner()
         resume = execute_request_resume({"request_payload": {
@@ -54,4 +66,3 @@ class CommunicationWorkerTests(SimpleTestCase):
         self.assertEqual(interview["status"], "succeeded")
         self.assertIn(("request_resume", "林然"), runner.calls)
         self.assertIn(("send_text", "林然", "周五上午十点面试"), runner.calls)
-

@@ -20,6 +20,7 @@ from .models import (
     ConversationAction,
     ExecutionBatch,
     JobApplication,
+    RecruitmentAuditLog,
     RecruitmentJob,
     Resume,
     RpaTask,
@@ -444,6 +445,13 @@ class ResumeViewSet(viewsets.ReadOnlyModelViewSet):
             filename=resume.original_name,
         )
         response["X-Frame-Options"] = "SAMEORIGIN"
+        RecruitmentAuditLog.objects.create(
+            actor=request.user,
+            boss_account=resume.application.job.boss_account if resume.application_id else None,
+            action="resume_downloaded" if request.query_params.get("download") == "1" else "resume_previewed",
+            target_id=str(resume.pk),
+            detail={"candidate_id": resume.candidate_id, "version": resume.version},
+        )
         return response
 
 

@@ -124,12 +124,13 @@ def execute_greet(task, account, runner):
     from recruitment.services.discovery import _fingerprint
 
     account_id = target.get("boss_account_id")
+    same_name = [row for row in refreshed if row.get("display_name") == name]
     matches = [
         row for row in refreshed
         if row.get("display_name") == name
         and (row.get("fingerprint") == fingerprint or (account_id and _fingerprint(account_id, row) == fingerprint))
     ]
-    if len(matches) != 1:
+    if len(matches) != 1 or len(same_name) != 1:
         return {
             "status": "waiting_human", "result": {}, "error_code": "target_identity_ambiguous",
             "error_message": "刷新后无法唯一确认候选人，已禁止发送",
@@ -157,6 +158,17 @@ def execute_send_interview(task, account, runner):
 
 def execute_sync_conversations(task, account, runner):
     rows = parse_conversation_list(runner.conversations(account))
+    incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
+    name_counts = {row["name"]: sum(1 for item in rows if item["name"] == row["name"]) for row in rows}
+    for row in rows[:50]:
+        if name_counts[row["name"]] != 1:
+            row["sync_error"] = "同名候选人不唯一，未打开会话"
+            continue
+        try:
+            runner.open_chat(account, row["name"])
+            row["attachments"] = BrowserInventory(account.cdp_port).download_resume_attachments(row["name"], incoming)
+        except (BossCliError, BrowserConnectionError) as exc:
+            row["sync_error"] = str(exc)
     return {"status": "succeeded", "result": {"conversations": rows}}
 
 
