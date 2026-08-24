@@ -35,6 +35,9 @@ class BossAccount(models.Model):
     verification_status = models.CharField(max_length=40, blank=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
     daily_contact_limit = models.PositiveIntegerField(default=50)
+    daily_search_limit = models.PositiveIntegerField(default=100)
+    daily_resume_view_limit = models.PositiveIntegerField(default=20)
+    daily_message_limit = models.PositiveIntegerField(default=50)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OFFLINE)
     active = models.BooleanField(default=True)
     authorized_users = models.ManyToManyField(User, blank=True, related_name="boss_accounts")
@@ -233,3 +236,133 @@ class RecruitmentAuditLog(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class AutomationApproval(models.Model):
+    class Action(models.TextChoices):
+        SYNC_POSITIONS = "sync_positions", "同步职位"
+        GREET = "greet", "打招呼"
+        REQUEST_RESUME = "request_resume", "索要简历"
+        VIEW_ONLINE_RESUME = "view_online_resume", "查看在线简历"
+        SEND_INTERVIEW = "send_interview", "发送面试邀约"
+        DEEP_MATCH = "deep_match", "深度匹配"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "待确认"
+        APPROVED = "approved", "已确认"
+        REJECTED = "rejected", "已拒绝"
+        EXPIRED = "expired", "已过期"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    action = models.CharField(max_length=40, choices=Action.choices)
+    boss_account = models.ForeignKey(
+        BossAccount,
+        on_delete=models.PROTECT,
+        related_name="automation_approvals",
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_automation_approvals",
+    )
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="approved_automation_approvals",
+    )
+    payload = models.JSONField(default=dict)
+    item_count = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class ExecutionBatch(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "待执行"
+        RUNNING = "running", "执行中"
+        WAITING_HUMAN = "waiting_human", "等待人工"
+        PARTIAL = "partial", "部分完成"
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+        CANCELLED = "cancelled", "已取消"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    approval = models.OneToOneField(
+        AutomationApproval,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="batch",
+    )
+    boss_account = models.ForeignKey(
+        BossAccount,
+        on_delete=models.PROTECT,
+        related_name="execution_batches",
+    )
+    action = models.CharField(max_length=40)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
+    idempotency_key = models.CharField(max_length=160, unique=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_execution_batches",
+    )
+    total_items = models.PositiveIntegerField(default=1)
+    succeeded_items = models.PositiveIntegerField(default=0)
+    failed_items = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class StepExecution(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "待执行"
+        LEASED = "leased", "已领取"
+        RUNNING = "running", "执行中"
+        VERIFYING = "verifying", "核验中"
+        WAITING_HUMAN = "waiting_human", "等待人工"
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+        SKIPPED = "skipped", "已跳过"
+        CANCELLED = "cancelled", "已取消"
+
+    batch = models.ForeignKey(ExecutionBatch, on_delete=models.CASCADE, related_name="steps")
+    target_key = models.CharField(max_length=160)
+    target_payload = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
+    attempt = models.PositiveSmallIntegerField(default=0)
+    result = models.JSONField(default=dict, blank=True)
+    error_code = models.CharField(max_length=64, blank=True)
+    error_message = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["batch", "target_key"], name="unique_batch_target")
+        ]
+
+
+class AutomationEvidence(models.Model):
+    step = models.ForeignKey(StepExecution, on_delete=models.CASCADE, related_name="evidence")
+    kind = models.CharField(max_length=32)
+    summary = models.CharField(max_length=300)
+    metadata = models.JSONField(default=dict, blank=True)
+    file = models.FileField(upload_to="recruitment/evidence/%Y/%m", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
