@@ -91,7 +91,27 @@
 - [ ] Implement a responsive desktop layout using the existing restrained teal visual language and local line icons. Cards navigate to filtered destination pages; alerts expose one clear action; charts use accessible labels and CSS/SVG rather than decorative animation.
 - [ ] Run focused/full frontend tests and `npm run build`, then commit with `feat: build recruitment operations dashboard`.
 
-### Task 7: Integrated verification and local deployment
+### Task 7: Complete saved-object lifecycle controls
+
+**Files:**
+- Modify: `backend/recruitment/models.py`
+- Create: `backend/recruitment/migrations/0012_recruitment_archiving.py`
+- Create: `backend/recruitment/services/lifecycle.py`
+- Modify: `backend/recruitment/views.py`
+- Modify: `frontend/src/views/recruitment/RecruitmentAutomationView.vue`
+- Modify: `frontend/src/views/recruitment/RecruitmentJobsView.vue`
+- Modify: `frontend/src/views/recruitment/RecruitmentCandidatesView.vue`
+- Modify: `frontend/src/views/recruitment/RecruitmentResumesView.vue`
+- Test: `backend/recruitment/tests/test_lifecycle_api.py`
+- Test: corresponding recruitment view tests
+
+- [ ] Write a lifecycle matrix and failing tests for every user-visible saved object: BOSS accounts, positions, candidates, resumes, workflow templates/drafts, and automation tasks. Verify object permissions, active-work blockers, confirmation copy, list refresh, and audit events.
+- [ ] Add reversible `archived_at` state where history or foreign-key references make hard deletion unsafe. Draft workflow versions with no run may be deleted; active/running work must be cancelled or stopped first; immutable execution/audit history is archived from normal views rather than destroyed.
+- [ ] Expose consistent `archive` and `restore` actions and an `archived=1` filter. Return `409` with a plain-language blocker and a suggested next action when disposal is unsafe.
+- [ ] Add contextual overflow menus and confirmation dialogs. Use product-specific labels such as `移除账号`, `关闭职位`, `移出候选人库`, `归档简历`, `删除流程草稿`, and `归档任务`; never rely on an unlabeled icon alone.
+- [ ] Provide an undo/restore path, refresh related counts immediately, run backend/frontend tests, and commit with `feat: add recruitment object lifecycle controls`.
+
+### Task 8: Integrated verification and local deployment
 
 **Files:**
 - Modify: `README.md` only if an operator step is missing
