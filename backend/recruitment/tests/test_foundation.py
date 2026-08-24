@@ -149,5 +149,6 @@ class RecruitmentFoundationApiTests(APITestCase):
         self.client.force_login(self.viewer)
         response = self.client.get("/api/recruitment/dashboard/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["open_jobs"], 0)
-        self.assertEqual(response.data["active_candidates"], 0)
+        self.assertEqual(response.data["metrics"]["open_jobs"], 0)
+        self.assertEqual(response.data["metrics"]["active_candidates"], 0)
+        self.assertEqual(response.data["job_progress"], [])

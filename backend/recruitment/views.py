@@ -56,6 +56,7 @@ from .services.communications import _identity_snapshot
 from .services.discovery import import_discoveries
 from .services.workflows import enable_version
 from .services.account_status import apply_account_observation
+from .services.dashboard import build_recruitment_dashboard
 
 
 class BossAccountViewSet(viewsets.ModelViewSet):
@@ -505,14 +506,7 @@ class RpaTaskViewSet(viewsets.ModelViewSet):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def dashboard_view(request):
-    terminal = [JobApplication.Stage.HIRED, JobApplication.Stage.REJECTED, JobApplication.Stage.TALENT_POOL]
-    return Response({
-        "open_jobs": RecruitmentJob.objects.filter(status=RecruitmentJob.Status.OPEN).count(),
-        "active_candidates": JobApplication.objects.exclude(stage__in=terminal).count(),
-        "waiting_resumes": JobApplication.objects.filter(stage=JobApplication.Stage.WAITING_RESUME).count(),
-        "waiting_interviews": JobApplication.objects.filter(stage=JobApplication.Stage.TO_INTERVIEW).count(),
-        "boss_accounts_ready": BossAccount.objects.filter(status=BossAccount.Status.READY, active=True).count(),
-    })
+    return Response(build_recruitment_dashboard(request.user))
 
 
 @api_view(["GET", "POST", "DELETE"])
