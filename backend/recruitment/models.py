@@ -366,3 +366,29 @@ class AutomationEvidence(models.Model):
 
     class Meta:
         ordering = ["created_at"]
+
+
+class AutomationUsage(models.Model):
+    class Metric(models.TextChoices):
+        SEARCH = "search", "候选人搜索"
+        DEEP_MATCH = "deep_match", "深度匹配"
+        RESUME_VIEW = "resume_view", "在线简历查看"
+        CONTACT = "contact", "打招呼"
+        MESSAGE = "message", "发送消息"
+
+    boss_account = models.ForeignKey(
+        BossAccount,
+        on_delete=models.CASCADE,
+        related_name="automation_usage",
+    )
+    day = models.DateField()
+    metric = models.CharField(max_length=24, choices=Metric.choices)
+    used = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["boss_account", "day", "metric"],
+                name="unique_daily_automation_usage",
+            )
+        ]
