@@ -658,6 +658,89 @@ class WorkflowEdge(models.Model):
     version = models.ForeignKey(WorkflowVersion, on_delete=models.CASCADE, related_name="edges")
     source = models.ForeignKey(WorkflowNode, on_delete=models.CASCADE, related_name="outgoing_edges")
     target = models.ForeignKey(WorkflowNode, on_delete=models.CASCADE, related_name="incoming_edges")
+    order = models.PositiveIntegerField(default=0)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["version", "source", "target"], name="unique_workflow_edge")]
+        ordering = ["order", "id"]
+
+
+class WorkflowRun(models.Model):
+    class Mode(models.TextChoices):
+        DRY_RUN = "dry_run", "试运行"
+        FORMAL = "formal", "正式运行"
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "已排队"
+        RUNNING = "running", "运行中"
+        WAITING_HUMAN = "waiting_human", "等待人工"
+        PAUSED = "paused", "已暂停"
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+        CANCELLED = "cancelled", "已取消"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    version = models.ForeignKey(WorkflowVersion, on_delete=models.PROTECT, related_name="runs")
+    boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, related_name="workflow_runs")
+    job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, null=True, blank=True, related_name="workflow_runs")
+    actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="workflow_runs")
+    mode = models.CharField(max_length=16, choices=Mode.choices, default=Mode.DRY_RUN)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.QUEUED, db_index=True)
+    idempotency_key = models.CharField(max_length=180, unique=True)
+    graph_snapshot = models.JSONField(default=dict)
+    input_snapshot = models.JSONField(default=dict, blank=True)
+    result = models.JSONField(default=dict, blank=True)
+    error_code = models.CharField(max_length=64, blank=True)
+    error_message = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class WorkflowNodeRun(models.Model):
+    class Status(models.TextChoices):
+        BLOCKED = "blocked", "等待前置"
+        READY = "ready", "就绪"
+        RUNNING = "running", "运行中"
+        WAITING_HUMAN = "waiting_human", "等待人工"
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+        SKIPPED = "skipped", "已跳过"
+        CANCELLED = "cancelled", "已取消"
+
+    run = models.ForeignKey(WorkflowRun, on_delete=models.CASCADE, related_name="node_runs")
+    node_key = models.CharField(max_length=80)
+    node_type = models.CharField(max_length=40)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.BLOCKED, db_index=True)
+    config_snapshot = models.JSONField(default=dict, blank=True)
+    input_snapshot = models.JSONField(default=dict, blank=True)
+    output = models.JSONField(default=dict, blank=True)
+    attempt = models.PositiveSmallIntegerField(default=0)
+    idempotency_key = models.CharField(max_length=200, unique=True)
+    error_code = models.CharField(max_length=64, blank=True)
+    error_message = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [models.UniqueConstraint(fields=["run", "node_key"], name="unique_workflow_run_node_key")]
+
+
+class WorkflowRunEvent(models.Model):
+    run = models.ForeignKey(WorkflowRun, on_delete=models.CASCADE, related_name="events")
+    node_run = models.ForeignKey(WorkflowNodeRun, on_delete=models.CASCADE, null=True, blank=True, related_name="events")
+    level = models.CharField(max_length=16, default="info")
+    event = models.CharField(max_length=64)
+    message = models.CharField(max_length=500)
+    data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
