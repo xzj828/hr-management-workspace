@@ -54,6 +54,28 @@ class RpaTaskApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    def test_disabled_write_action_is_rejected_with_policy_message(self):
+        response = self.create_task(action="greet", payload={"candidate_ids": [1]})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("尚未开放", str(response.data))
+
+    def test_idempotency_key_returns_the_existing_task(self):
+        self.client.force_login(self.hr)
+        body = {
+            "boss_account": self.account.id,
+            "action": "sync_positions",
+            "idempotency_key": "sync-click-1",
+        }
+
+        first = self.client.post("/api/recruitment/rpa-tasks/", body, format="json")
+        second = self.client.post("/api/recruitment/rpa-tasks/", body, format="json")
+
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(first.data["id"], second.data["id"])
+        self.assertEqual(RpaTask.objects.count(), 1)
+
     def test_unassigned_hr_cannot_operate_account(self):
         self.client.force_login(self.other_hr)
         response = self.client.post(

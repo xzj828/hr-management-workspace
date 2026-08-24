@@ -156,18 +156,28 @@ class RpaTaskSerializer(serializers.ModelSerializer):
         model = RpaTask
         fields = [
             "id", "boss_account", "account_name", "action", "status", "created_by_name",
-            "worker", "request_payload", "result", "error_code", "error_message",
+            "worker", "approval", "execution_batch", "idempotency_key", "request_payload",
+            "result", "error_code", "error_message",
             "lease_expires_at", "started_at", "completed_at", "created_at", "updated_at", "events",
         ]
         read_only_fields = [
             "status", "worker", "result", "error_code", "error_message", "lease_expires_at",
             "started_at", "completed_at", "created_at", "updated_at",
         ]
+        extra_kwargs = {
+            "idempotency_key": {"validators": [], "allow_blank": True, "allow_null": True},
+        }
 
     def create(self, validated_data):
-        return create_task(
+        task, created = create_task(
             account=validated_data["boss_account"],
             action=validated_data["action"],
             actor=self.context["request"].user,
             request_payload=validated_data.get("request_payload"),
+            approval=validated_data.get("approval"),
+            execution_batch=validated_data.get("execution_batch"),
+            idempotency_key=validated_data.get("idempotency_key", ""),
+            return_created=True,
         )
+        task._was_existing = not created
+        return task

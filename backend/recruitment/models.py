@@ -177,6 +177,11 @@ class RpaTask(models.Model):
     class Action(models.TextChoices):
         CHECK_STATUS = "check_status", "检查状态"
         SYNC_POSITIONS = "sync_positions", "同步职位"
+        GREET = "greet", "打招呼"
+        REQUEST_RESUME = "request_resume", "索要简历"
+        VIEW_ONLINE_RESUME = "view_online_resume", "查看在线简历"
+        SEND_INTERVIEW = "send_interview", "发送面试邀约"
+        DEEP_MATCH = "deep_match", "深度匹配"
 
     class Status(models.TextChoices):
         PENDING = "pending", "待执行"
@@ -193,6 +198,21 @@ class RpaTask(models.Model):
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
     created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_rpa_tasks")
     worker = models.ForeignKey(RpaWorker, on_delete=models.SET_NULL, null=True, blank=True, related_name="tasks")
+    approval = models.ForeignKey(
+        "AutomationApproval",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="rpa_tasks",
+    )
+    execution_batch = models.ForeignKey(
+        "ExecutionBatch",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="rpa_tasks",
+    )
+    idempotency_key = models.CharField(max_length=160, unique=True, null=True, blank=True)
     request_payload = models.JSONField(default=dict, blank=True)
     result = models.JSONField(default=dict, blank=True)
     error_code = models.CharField(max_length=64, blank=True)
