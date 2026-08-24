@@ -47,6 +47,7 @@ REGISTRY = {
         read_only=False,
         requires_approval=True,
         consumes="contact",
+        enabled=True,
     ),
     "request_resume": CapabilitySpec(
         name="request_resume",
@@ -54,6 +55,7 @@ REGISTRY = {
         read_only=False,
         requires_approval=True,
         consumes="message",
+        enabled=True,
     ),
     "view_online_resume": CapabilitySpec(
         name="view_online_resume",
@@ -68,6 +70,7 @@ REGISTRY = {
         read_only=False,
         requires_approval=True,
         consumes="message",
+        enabled=True,
     ),
     "deep_match": CapabilitySpec(
         name="deep_match",
