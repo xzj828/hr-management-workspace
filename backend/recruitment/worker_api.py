@@ -304,6 +304,9 @@ def complete_task_view(request, task_id):
             target_id=str(task.pk),
             detail={"status": completed_status, "error_code": task.error_code},
         )
+        if task.workflow_node_run_id:
+            from .services.workflow_nodes import resume_workflow_for_task
+            resume_workflow_for_task(task)
         return Response({"id": str(task.pk), "status": task.status})
     task.status = completed_status
     task.result = result
@@ -341,4 +344,7 @@ def complete_task_view(request, task_id):
         target_id=str(task.pk),
         detail={"status": completed_status, "error_code": task.error_code},
     )
+    if task.workflow_node_run_id:
+        from .services.workflow_nodes import resume_workflow_for_task
+        resume_workflow_for_task(task)
     return Response({"id": str(task.pk), "status": task.status})

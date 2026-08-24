@@ -38,6 +38,7 @@ def create_task(
     request_payload=None,
     approval=None,
     execution_batch=None,
+    workflow_node_run=None,
     idempotency_key="",
     return_created=False,
 ):
@@ -86,6 +87,7 @@ def create_task(
         created_by=actor,
         approval=locked_approval,
         execution_batch=execution_batch,
+        workflow_node_run=workflow_node_run,
         idempotency_key=normalized_key or None,
         request_payload=request_payload or {},
     )

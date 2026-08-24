@@ -84,6 +84,16 @@ def advance_run(run, *, executor=None):
     while changed:
         changed = False
         for key, node in by_key.items():
+            if node.status == WorkflowNodeRun.Status.WAITING_HUMAN and executor is not None and node.node_type not in HUMAN_NODE_TYPES:
+                outcome = executor(node)
+                if outcome is not None and outcome[0] != node.status:
+                    node.status, node.output = outcome[0], outcome[1] or {}
+                    if node.status in NODE_TERMINAL_STATES:
+                        node.completed_at = timezone.now()
+                    node.save(update_fields=["status", "output", "completed_at", "updated_at"])
+                    _event(locked, f"node.{node.status}", f"节点 {key} {node.get_status_display()}", node=node, data=node.output)
+                    changed = True
+                continue
             if node.status == WorkflowNodeRun.Status.BLOCKED:
                 parents = [by_key[parent] for parent in incoming.get(key, [])]
                 if any(parent.status in {WorkflowNodeRun.Status.FAILED, WorkflowNodeRun.Status.CANCELLED} for parent in parents):

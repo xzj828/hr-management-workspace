@@ -320,6 +320,13 @@ class RpaTask(models.Model):
         blank=True,
         related_name="rpa_tasks",
     )
+    workflow_node_run = models.OneToOneField(
+        "WorkflowNodeRun",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="rpa_task",
+    )
     idempotency_key = models.CharField(max_length=160, unique=True, null=True, blank=True)
     request_payload = models.JSONField(default=dict, blank=True)
     result = models.JSONField(default=dict, blank=True)
@@ -443,6 +450,13 @@ class ExecutionBatch(models.Model):
         User,
         on_delete=models.PROTECT,
         related_name="created_execution_batches",
+    )
+    workflow_node_run = models.OneToOneField(
+        "WorkflowNodeRun",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="execution_batch",
     )
     total_items = models.PositiveIntegerField(default=1)
     succeeded_items = models.PositiveIntegerField(default=0)

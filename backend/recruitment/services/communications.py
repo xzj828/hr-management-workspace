@@ -122,6 +122,7 @@ def enqueue_next_step(batch):
         actor=batch.created_by,
         approval=batch.approval,
         execution_batch=batch,
+        workflow_node_run=batch.workflow_node_run,
         request_payload={
             "step_id": step.pk,
             "conversation_action_id": str(action.pk),
@@ -146,6 +147,7 @@ def materialize_communication_batch(*, approval, actor):
             "idempotency_key": f"communication-batch:{locked.pk}",
             "created_by": actor,
             "total_items": locked.item_count,
+            "workflow_node_run_id": locked.payload.get("workflow_node_run_id"),
         },
     )
     if batch.steps.exists():
