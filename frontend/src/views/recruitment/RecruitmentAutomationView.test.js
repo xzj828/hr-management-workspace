@@ -32,6 +32,7 @@ describe('RecruitmentAutomationView', () => {
         cdp_port: 53470,
         login_status: 'ready',
         verification_status: '',
+        last_checked_at: '2026-08-24T08:00:00Z',
         active: true,
       }] })
       if (path === 'recruitment/rpa-tasks/') return Promise.resolve({ results: [{
@@ -61,7 +62,7 @@ describe('RecruitmentAutomationView', () => {
     expect(wrapper.text()).toContain('@joohw/boss-cli 0.6.6')
     expect(wrapper.text()).toContain('主招聘账号')
     expect(wrapper.text()).toContain('Edge')
-    expect(wrapper.text()).toContain('检查状态')
+    expect(wrapper.text()).toContain('立即检查')
     expect(wrapper.text()).not.toContain('发送消息')
     expect(wrapper.text()).not.toContain('打招呼')
     expect(wrapper.text()).not.toContain('采集候选人')
@@ -83,6 +84,46 @@ describe('RecruitmentAutomationView', () => {
     expect(popover).not.toBeNull()
     expect(popover.style.position).toBe('fixed')
     expect(wrapper.find('.table-scroll .automation-menu-popover').exists()).toBe(false)
+  })
+
+  it('shows honest login state and checks it immediately without creating an RPA task', async () => {
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/boss-accounts/1/check-status/' && options?.method === 'POST') {
+        return Promise.resolve({ id: 1, login_status: 'ready', status: 'ready' })
+      }
+      if (path === 'recruitment/automation/summary/') return Promise.resolve({ worker: null, cli_available: true, task_counts: {} })
+      if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{
+        id: 1, name: '主招聘账号', browser_type: 'edge', browser_profile: 'boss-main', cdp_port: 53470,
+        login_status: 'ready', verification_status: '', last_checked_at: '2026-08-24T08:00:00Z', active: true,
+      }] })
+      if (['recruitment/rpa-tasks/', 'recruitment/execution-batches/', 'recruitment/workflows/', 'recruitment/workflow-versions/'].includes(path)) return Promise.resolve({ results: [] })
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    wrapper = mount(RecruitmentAutomationView, { attachTo: document.body })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('登录成功')
+    expect(wrapper.text()).toContain('最近检查')
+    await wrapper.get('button[aria-label="账号操作"]').trigger('click')
+    const checkButton = [...document.body.querySelectorAll('.automation-menu-popover button')]
+      .find((button) => button.textContent.includes('立即检查'))
+    expect(checkButton).toBeTruthy()
+    checkButton.click()
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/boss-accounts/1/check-status/', { method: 'POST' })
+    expect(apiMock).not.toHaveBeenCalledWith('recruitment/rpa-tasks/', expect.objectContaining({ method: 'POST' }))
+  })
+
+  it('offers re-login for a remembered ready session', async () => {
+    wrapper = mount(RecruitmentAutomationView, { attachTo: document.body })
+    await flushPromises()
+
+    await wrapper.get('button[aria-label="账号操作"]').trigger('click')
+    const labels = [...document.body.querySelectorAll('.automation-menu-popover button')].map((button) => button.textContent.trim())
+
+    expect(labels).toContain('重新登录')
+    expect(labels).toContain('立即检查')
   })
 
   it('opens a saved workflow version as a rearrangeable new-version draft', async () => {

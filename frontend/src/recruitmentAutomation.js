@@ -3,15 +3,15 @@ const LOGIN_STATUS_LABELS = {
   browser_stopped: '隔离浏览器未启动',
   waiting_login: '等待人工登录',
   waiting_human: '等待人工处理',
-  ready: '已登录，可执行只读同步',
+  ready: '登录成功',
   token_invalid: '登录二维码已失效，请重新打开登录浏览器',
   risk_control: '需要在隔离浏览器中完成人工验证',
   error: '状态检查异常',
 }
 
 export const actionLabels = {
-  open_login: '打开登录浏览器',
-  check_status: '检查状态',
+  open_login: '打开登录',
+  check_status: '立即检查',
   sync_positions: '同步职位',
   sync_conversations: '同步沟通状态',
   greet: '打招呼',
@@ -35,8 +35,14 @@ export function loginStatusLabel(status) {
 }
 
 export function availableActions(account) {
-  if (!account?.active || account.has_active_task) return []
-  return ['open_login', 'check_status', 'sync_positions', 'sync_conversations']
+  if (!account?.active) return []
+  if (account.has_active_task) return ['check_status']
+  return ['check_status', 'open_login', 'sync_positions', 'sync_conversations']
+}
+
+export function accountActionLabel(account, action) {
+  if (action === 'open_login') return account?.login_status === 'ready' ? '重新登录' : '打开登录'
+  return actionLabels[action] || action
 }
 
 export function accountDisplayStatus(account) {

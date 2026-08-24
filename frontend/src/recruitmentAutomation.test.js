@@ -10,12 +10,12 @@ describe('recruitment automation policy', () => {
 
   test('exposes read-only sync but never direct outbound actions', () => {
     expect(availableActions({ active: true, has_active_task: false })).toEqual([
-      'open_login', 'check_status', 'sync_positions', 'sync_conversations',
+      'check_status', 'open_login', 'sync_positions', 'sync_conversations',
     ])
   })
 
-  test('disables actions while an account task is active', () => {
-    expect(availableActions({ active: true, has_active_task: true })).toEqual([])
+  test('keeps independent status checks available while an account task is active', () => {
+    expect(availableActions({ active: true, has_active_task: true })).toEqual(['check_status'])
     expect(availableActions({ active: false, has_active_task: false })).toEqual([])
   })
 })

@@ -7,6 +7,7 @@ import AutomationBatchPanel from '@/components/AutomationBatchPanel.vue'
 import WorkflowCanvas from '@/components/WorkflowCanvas.vue'
 import {
   accountDisplayStatus,
+  accountActionLabel,
   actionLabels,
   availableActions,
   loginStatusLabel,
@@ -87,8 +88,18 @@ async function createAccount() {
 
 async function runAction(account, actionName) {
   closeActionMenu()
+  if (actionName === 'check_status') {
+    error.value = ''
+    try {
+      await api(`recruitment/boss-accounts/${account.id}/check-status/`, { method: 'POST' })
+      await loadWorkspace({ silent: true })
+    } catch (err) {
+      error.value = err.message
+    }
+    return
+  }
   const action = actionName === 'open_login' ? 'check_status' : actionName
-  const requestPayload = actionName === 'open_login' ? { open_login: true } : actionName === 'check_status' ? { open_login: false } : {}
+  const requestPayload = actionName === 'open_login' ? { open_login: true } : {}
   error.value = ''
   try {
     await api('recruitment/rpa-tasks/', {
@@ -302,7 +313,7 @@ onUnmounted(() => {
             :key="actionName"
             type="button"
             @click="runAction(actionMenu.account, actionName)"
-          >{{ actionLabels[actionName] }}</button>
+          >{{ accountActionLabel(actionMenu.account, actionName) }}</button>
         </div>
       </Transition>
     </Teleport>
