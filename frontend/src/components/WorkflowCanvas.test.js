@@ -94,4 +94,46 @@ describe('WorkflowCanvas', () => {
     expect(payload.nodes.find((node) => node.key === addedKey)?.type).toBe('wait_reply')
     expect(payload.edges).toContainEqual({ source: 'greet', target: addedKey })
   })
+
+  it('drags an output port to a chosen input port with a live preview', async () => {
+    wrapper = mount(WorkflowCanvas, { props: { accounts: [{ id: 7, name: '主账号' }] }, attachTo: document.body })
+    vi.spyOn(wrapper.get('[data-test="workflow-canvas"]').element, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: 1100, bottom: 600, width: 1100, height: 600, x: 0, y: 0, toJSON: () => {},
+    })
+
+    await wrapper.get('[data-node-key="source"] .workflow-node__port--output').trigger('pointerdown', { clientX: 196, clientY: 157, button: 0, pointerId: 1 })
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 520, clientY: 220, bubbles: true }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="connection-preview"]').exists()).toBe(true)
+    await wrapper.get('[data-node-key="end"] .workflow-node__port--input').trigger('pointerup', { clientX: 842, clientY: 157, pointerId: 1 })
+    await wrapper.get('[data-test="save-workflow"]').trigger('click')
+
+    expect(wrapper.emitted('save')[0][0].edges).toContainEqual({ source: 'source', target: 'end' })
+  })
+
+  it('rejects cycle connections and explains the graph error', async () => {
+    wrapper = mount(WorkflowCanvas, { props: { accounts: [{ id: 7, name: '主账号' }] } })
+    vi.spyOn(wrapper.get('[data-test="workflow-canvas"]').element, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: 1100, bottom: 600, width: 1100, height: 600, x: 0, y: 0, toJSON: () => {},
+    })
+    await wrapper.get('[data-node-key="end"] .workflow-node__port--output').trigger('pointerdown', { clientX: 996, clientY: 157, button: 0, pointerId: 2 })
+    await wrapper.get('[data-node-key="source"] .workflow-node__port--input').trigger('pointerup', { clientX: 42, clientY: 157, pointerId: 2 })
+
+    expect(wrapper.text()).toContain('流程不能形成循环')
+    await wrapper.get('[data-test="save-workflow"]').trigger('click')
+    expect(wrapper.emitted('save')[0][0].edges).not.toContainEqual({ source: 'end', target: 'source' })
+  })
+
+  it('reconfigures a selected node and persists the configuration', async () => {
+    wrapper = mount(WorkflowCanvas, { props: { accounts: [{ id: 7, name: '主账号' }] } })
+    await wrapper.get('[data-node-key="greet"]').trigger('click')
+    expect(wrapper.find('[data-test="workflow-node-config"]').exists()).toBe(true)
+    await wrapper.get('[data-test="node-label"]').setValue('首次问候')
+    await wrapper.get('.workflow-node-config textarea').setValue('您好，想和您沟通这个岗位。')
+    await wrapper.get('[data-test="save-workflow"]').trigger('click')
+
+    const node = wrapper.emitted('save')[0][0].nodes.find((item) => item.key === 'greet')
+    expect(node.label).toBe('首次问候')
+    expect(node.config.message).toContain('沟通')
+  })
 })
