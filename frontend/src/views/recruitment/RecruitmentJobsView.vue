@@ -5,6 +5,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import TaskProgressBar from '@/components/TaskProgressBar.vue'
+import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import { formatRecruitmentDate } from '@/recruitment'
 import { createRequestId, positionSyncSummary, terminalTaskStatuses } from '@/recruitmentJobs'
 
@@ -16,6 +17,9 @@ const loading = ref(true)
 const error = ref('')
 const syncTask = ref(null)
 const syncMessage = ref('')
+const lifecycleTarget = ref(null)
+const lifecycleSaving = ref(false)
+const showArchived = ref(false)
 let pollTimer = null
 
 const statusLabels = { open: '招聘中', paused: '已暂停', closed: '已关闭' }
@@ -25,7 +29,7 @@ async function loadJobs() {
   loading.value = true
   error.value = ''
   try {
-    jobs.value = listItems(await api('recruitment/jobs/'))
+    jobs.value = listItems(await api(`recruitment/jobs/${showArchived.value ? '?archived=1' : ''}`))
   } catch (err) {
     error.value = err.message
   } finally {
@@ -92,6 +96,34 @@ function openJob(job) {
   selected.value = job
 }
 
+async function archiveJob() {
+  if (!lifecycleTarget.value) return
+  lifecycleSaving.value = true
+  error.value = ''
+  try {
+    await api(`recruitment/jobs/${lifecycleTarget.value.id}/archive/`, { method: 'POST' })
+    lifecycleTarget.value = null
+    selected.value = null
+    await loadJobs()
+  } catch (err) { error.value = err.message }
+  finally { lifecycleSaving.value = false }
+}
+
+async function restoreJob(job) {
+  error.value = ''
+  try {
+    await api(`recruitment/jobs/${job.id}/restore/?archived=1`, { method: 'POST' })
+    selected.value = null
+    await loadJobs()
+  } catch (err) { error.value = err.message }
+}
+
+async function toggleArchiveView() {
+  showArchived.value = !showArchived.value
+  selected.value = null
+  await loadJobs()
+}
+
 onMounted(async () => {
   try {
     await Promise.all([loadJobs(), loadAccounts()])
@@ -111,6 +143,7 @@ onUnmounted(stopPolling)
         <p>集中查看在招职位、负责人和候选人分布。</p>
       </div>
       <div class="recruitment-toolbar__actions">
+        <button class="text-button" data-test="toggle-archived-jobs" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前职位' : '归档记录' }}</button>
         <label class="job-sync-account">
           <span>同步账号</span>
           <select v-model="selectedAccountId" data-test="sync-account" :disabled="syncing || !accounts.length">
@@ -158,7 +191,7 @@ onUnmounted(stopPolling)
               <td>{{ job.owner_name }}</td>
               <td><span class="recruitment-chip">{{ statusLabels[job.status] || job.status }}</span></td>
             </tr>
-            <tr v-if="!loading && !jobs.length"><td colspan="6" class="table-empty">暂无职位，可从“演示数据”加载示例。</td></tr>
+            <tr v-if="!loading && !jobs.length"><td colspan="6" class="table-empty">{{ showArchived ? '暂无已归档职位' : '暂无职位，可从“演示数据”加载示例。' }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -175,6 +208,11 @@ onUnmounted(stopPolling)
         <div><dt>更新时间</dt><dd>{{ formatRecruitmentDate(selected.updated_at) }}</dd></div>
       </dl>
       <section class="recruitment-detail-section"><span>职位描述</span><p>{{ selected.jd || '暂无职位描述' }}</p></section>
+      <template #footer>
+        <button v-if="showArchived" class="text-button" data-test="restore-job" type="button" @click="restoreJob(selected)">恢复职位</button>
+        <button v-else class="danger-text-button" data-test="archive-job" type="button" @click="lifecycleTarget = selected">关闭并归档职位</button>
+      </template>
     </RecruitmentDetailDrawer>
+    <ArchiveConfirmModal v-if="lifecycleTarget" title="关闭并归档职位" :name="lifecycleTarget.title" description="职位会转为已关闭并从在招列表移除，候选人与历史流程仍会保留。" action-label="确认关闭并归档" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="archiveJob" />
   </div>
 </template>

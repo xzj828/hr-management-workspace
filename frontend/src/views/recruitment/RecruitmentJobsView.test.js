@@ -23,6 +23,7 @@ describe('RecruitmentJobsView', () => {
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/jobs/') return Promise.resolve({ results: jobs })
+      if (path === 'recruitment/jobs/1/archive/') return Promise.resolve({ ...jobs[0], archived_at: '2026-08-24T10:00:00Z' })
       if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{ id: 8, name: '北京账号', login_status: 'ready' }] })
       if (path === 'recruitment/jobs/sync/') return Promise.resolve({ task_id: 'task-1', status: 'pending' })
       if (path === 'recruitment/rpa-tasks/task-1/') return Promise.resolve({
@@ -73,5 +74,18 @@ describe('RecruitmentJobsView', () => {
     expect(JSON.parse(syncCall[1].body).request_id).toMatch(/^[0-9a-f-]{36}$/)
     expect(wrapper.text()).toContain('新增 2 · 更新 1 · 未变化 4 · 共 7 个职位')
     expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/jobs/')).toHaveLength(2)
+  })
+
+  it('archives a saved position from its detail drawer', async () => {
+    const wrapper = mount(RecruitmentJobsView, { global: { stubs: { teleport: { template: '<div><slot /></div>' } } } })
+    await flushPromises()
+    await wrapper.get('tbody tr').trigger('click')
+
+    await wrapper.get('[data-test="archive-job"]').trigger('click')
+    expect(wrapper.text()).toContain('关闭并归档职位')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/jobs/1/archive/', { method: 'POST' })
   })
 })

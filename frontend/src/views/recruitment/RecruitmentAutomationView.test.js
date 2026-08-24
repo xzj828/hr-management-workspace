@@ -42,6 +42,7 @@ describe('RecruitmentAutomationView', () => {
       if (path === 'recruitment/execution-batches/') return Promise.resolve({ results: [] })
       if (path === 'recruitment/workflows/') return Promise.resolve({ results: [] })
       if (path === 'recruitment/workflow-versions/') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/boss-accounts/1/archive/') return Promise.resolve({ id: 1, archived_at: '2026-08-24T10:00:00Z' })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
   })
@@ -124,6 +125,26 @@ describe('RecruitmentAutomationView', () => {
 
     expect(labels).toContain('重新登录')
     expect(labels).toContain('立即检查')
+  })
+
+  it('removes a saved account through a confirmed lifecycle action', async () => {
+    wrapper = mount(RecruitmentAutomationView, {
+      attachTo: document.body,
+      global: { stubs: { teleport: { template: '<div><slot /></div>' } } },
+    })
+    await flushPromises()
+    await wrapper.get('button[aria-label="账号操作"]').trigger('click')
+    const removeButton = [...document.body.querySelectorAll('.automation-menu-popover button')]
+      .find((button) => button.textContent.includes('移除账号'))
+    expect(removeButton).toBeTruthy()
+    removeButton.click()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('移除 BOSS 账号')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/boss-accounts/1/archive/', { method: 'POST' })
   })
 
   it('opens a saved workflow version as a rearrangeable new-version draft', async () => {

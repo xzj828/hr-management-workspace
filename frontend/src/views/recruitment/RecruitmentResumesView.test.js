@@ -23,6 +23,7 @@ describe('RecruitmentResumesView', () => {
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/resumes/') return Promise.resolve({ results: resumes })
+      if (path === 'recruitment/resumes/1/archive/') return Promise.resolve({ ...resumes[0], archived_at: '2026-08-24T10:00:00Z' })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
@@ -60,5 +61,17 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.text()).toContain('文件不可用')
     expect(wrapper.find('[data-test="preview-4"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="download-4"]').exists()).toBe(false)
+  })
+
+  it('archives a resume without deleting its audit history', async () => {
+    const wrapper = mount(RecruitmentResumesView, { global: { stubs: { teleport: { template: '<div><slot /></div>' } } } })
+    await flushPromises()
+
+    await wrapper.get('[data-test="archive-resume-1"]').trigger('click')
+    expect(wrapper.text()).toContain('归档简历')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/resumes/1/archive/', { method: 'POST' })
   })
 })

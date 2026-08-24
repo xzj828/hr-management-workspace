@@ -5,6 +5,7 @@ import ModalPanel from '@/components/ModalPanel.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AutomationBatchPanel from '@/components/AutomationBatchPanel.vue'
 import WorkflowCanvas from '@/components/WorkflowCanvas.vue'
+import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import {
   accountDisplayStatus,
   accountActionLabel,
@@ -27,6 +28,8 @@ const selectedTask = ref(null)
 const saving = ref(false)
 const form = reactive({ name: '', browser_type: 'edge' })
 const actionMenu = ref(null)
+const lifecycleTarget = ref(null), lifecycleSaving = ref(false)
+const showArchived = ref(false)
 let refreshTimer = null
 
 const activeTaskAccountIds = computed(() => new Set(
@@ -43,12 +46,13 @@ async function loadWorkspace({ silent = false } = {}) {
     error.value = ''
   }
   try {
+    const archiveQuery = showArchived.value ? '?archived=1' : ''
     const [summaryPayload, accountPayload, taskPayload, batchPayload, workflowPayload, versionPayload] = await Promise.all([
       api('recruitment/automation/summary/'),
-      api('recruitment/boss-accounts/'),
-      api('recruitment/rpa-tasks/'),
+      api(`recruitment/boss-accounts/${archiveQuery}`),
+      api(`recruitment/rpa-tasks/${archiveQuery}`),
       api('recruitment/execution-batches/'),
-      api('recruitment/workflows/'),
+      api(`recruitment/workflows/${archiveQuery}`),
       api('recruitment/workflow-versions/'),
     ])
     Object.assign(summary, summaryPayload)
@@ -56,7 +60,8 @@ async function loadWorkspace({ silent = false } = {}) {
     tasks.value = listItems(taskPayload)
     batches.value = listItems(batchPayload)
     workflows.value = listItems(workflowPayload)
-    workflowVersions.value = listItems(versionPayload)
+    const visibleTemplateIds = new Set(workflows.value.map((item) => item.id))
+    workflowVersions.value = listItems(versionPayload).filter((item) => visibleTemplateIds.has(item.template))
   } catch (err) {
     if (!silent) error.value = err.message
   } finally {
@@ -65,7 +70,14 @@ async function loadWorkspace({ silent = false } = {}) {
 }
 
 function actionsFor(account) {
-  return availableActions({ ...account, has_active_task: activeTaskAccountIds.value.has(account.id) })
+  if (account.archived_at) return ['restore_account']
+  return [...availableActions({ ...account, has_active_task: activeTaskAccountIds.value.has(account.id) }), 'archive_account']
+}
+
+function menuActionLabel(account, actionName) {
+  if (actionName === 'archive_account') return '移除账号'
+  if (actionName === 'restore_account') return '恢复账号'
+  return accountActionLabel(account, actionName)
 }
 
 async function createAccount() {
@@ -88,6 +100,14 @@ async function createAccount() {
 
 async function runAction(account, actionName) {
   closeActionMenu()
+  if (actionName === 'restore_account') {
+    await restoreLifecycle('boss-accounts', account.id)
+    return
+  }
+  if (actionName === 'archive_account') {
+    lifecycleTarget.value = { kind: 'account', id: account.id, name: account.name, title: '移除 BOSS 账号', actionLabel: '确认移除', description: '账号会停用并从当前列表移除，隔离浏览器目录与历史任务保留，可从归档记录恢复。' }
+    return
+  }
   if (actionName === 'check_status') {
     error.value = ''
     try {
@@ -130,6 +150,50 @@ async function saveWorkflow(snapshot) {
     workflowEditorKey.value += 1
   } catch (err) { error.value = err.message }
   finally { workflowSaving.value = false }
+}
+
+async function restoreLifecycle(resource, id) {
+  error.value = ''
+  try {
+    await api(`recruitment/${resource}/${id}/restore/?archived=1`, { method: 'POST' })
+    await loadWorkspace({ silent: true })
+  } catch (err) { error.value = err.message }
+}
+
+async function toggleArchiveView() {
+  showArchived.value = !showArchived.value
+  actionMenu.value = null
+  selectedTask.value = null
+  await loadWorkspace()
+}
+
+function requestTaskArchive(task) {
+  lifecycleTarget.value = { kind: 'task', id: task.id, name: `${task.account_name} · ${actionLabels[task.action] || task.action}`, title: '归档自动化任务', actionLabel: '确认归档', description: '任务会从最近任务中隐藏，执行结果、事件与审计记录仍会保留。' }
+}
+
+function requestWorkflowDisposal(version) {
+  const template = workflows.value.find((item) => item.id === version.template)
+  lifecycleTarget.value = version.status === 'draft'
+    ? { kind: 'workflow_version', id: version.id, name: `${template?.name || '招聘流程'} · 版本 ${version.version}`, title: '删除流程草稿', actionLabel: '确认删除草稿', description: '该草稿尚未启用，可以直接删除；已启用和历史版本不会受影响。' }
+    : { kind: 'workflow_template', id: version.template, name: template?.name || '招聘流程', title: '归档招聘流程', actionLabel: '确认归档', description: '流程会停止启用并从当前版本列表移除，历史版本与审计信息仍会保留。' }
+}
+
+async function confirmLifecycle() {
+  const target = lifecycleTarget.value
+  if (!target) return
+  lifecycleSaving.value = true; error.value = ''
+  try {
+    if (target.kind === 'workflow_version') {
+      await api(`recruitment/workflow-versions/${target.id}/`, { method: 'DELETE' })
+    } else {
+      const resource = { account: 'boss-accounts', task: 'rpa-tasks', workflow_template: 'workflows' }[target.kind]
+      await api(`recruitment/${resource}/${target.id}/archive/`, { method: 'POST' })
+    }
+    lifecycleTarget.value = null
+    selectedTask.value = null
+    await loadWorkspace({ silent: true })
+  } catch (err) { error.value = err.message }
+  finally { lifecycleSaving.value = false }
 }
 
 function editWorkflowVersion(version) {
@@ -205,7 +269,7 @@ onUnmounted(() => {
         <h2>自动化任务</h2>
         <p>账号隔离、人工确认、逐人执行与结果留痕集中在同一工作区。</p>
       </div>
-      <button class="text-button automation-add button-with-icon" type="button" @click="accountModalOpen = true"><AppIcon name="plus" :size="16" /><span>添加账号</span></button>
+      <div class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-automation-archive" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前工作区' : '归档记录' }}</button><button v-if="!showArchived" class="text-button automation-add button-with-icon" type="button" @click="accountModalOpen = true"><AppIcon name="plus" :size="16" /><span>添加账号</span></button></div>
     </header>
 
     <p v-if="error" class="form-error">{{ error }}</p>
@@ -245,7 +309,7 @@ onUnmounted(() => {
             <tr v-for="account in accounts" :key="account.id">
               <td><strong>{{ account.name }}</strong><small class="block-text">账号配置 {{ account.active ? '启用' : '停用' }}</small></td>
               <td>{{ browserLabel(account.browser_type) }}</td>
-              <td><span :class="['status-badge', `status-badge--${accountDisplayStatus(account)}`]">{{ loginStatusLabel(accountDisplayStatus(account)) }}</span></td>
+              <td><span v-if="showArchived" class="status-badge">已归档</span><span v-else :class="['status-badge', `status-badge--${accountDisplayStatus(account)}`]">{{ loginStatusLabel(accountDisplayStatus(account)) }}</span></td>
               <td><span class="automation-mono">{{ account.browser_profile }}</span><small class="block-text">CDP {{ account.cdp_port }}</small></td>
               <td>{{ formatDate(account.last_checked_at) }}</td>
               <td class="automation-action-cell">
@@ -280,7 +344,7 @@ onUnmounted(() => {
               <td>{{ actionLabels[task.action] || task.action }}</td>
               <td><span :class="['status-badge', `status-badge--${task.status}`]">{{ taskStatusLabels[task.status] || task.status }}</span></td>
               <td>{{ formatDate(task.created_at) }}</td>
-              <td><button class="text-button" type="button" @click="selectedTask = task">查看记录</button></td>
+              <td><button class="text-button" type="button" @click="selectedTask = task">查看记录</button><button v-if="showArchived" class="text-button task-archive-button" type="button" @click="restoreLifecycle('rpa-tasks', task.id)">恢复</button><button v-else-if="['waiting_human','succeeded','failed','cancelled'].includes(task.status)" class="danger-text-button task-archive-button" type="button" @click="requestTaskArchive(task)">归档</button></td>
             </tr>
             <tr v-if="!loading && !tasks.length"><td colspan="5" class="table-empty">暂无自动化任务</td></tr>
           </tbody>
@@ -296,8 +360,8 @@ onUnmounted(() => {
     </section>
 
     <section v-else class="workflow-workspace">
-      <WorkflowCanvas :key="workflowEditorKey" :accounts="accounts" :saving="workflowSaving" :snapshot="workflowEditorSnapshot" @save="saveWorkflow" />
-      <aside class="workflow-versions"><header><div><span class="panel-kicker">VERSION HISTORY</span><h3>流程版本</h3></div><button class="text-button" type="button" @click="newWorkflow">新建</button></header><article v-for="version in workflowVersions" :key="version.id"><div><strong>{{ workflows.find((item) => item.id === version.template)?.name || `流程 ${version.template}` }}</strong><small>版本 {{ version.version }} · {{ version.nodes.length }} 个节点</small></div><span :class="['recruitment-chip', { 'is-draft': version.status === 'draft' }]">{{ version.status === 'enabled' ? '已启用' : version.status === 'draft' ? '草稿' : '已停用' }}</span><button class="text-button" type="button" :data-test="`edit-workflow-version-${version.id}`" @click="editWorkflowVersion(version)">基于此版本编排</button><button v-if="version.status === 'draft'" class="text-button" @click="enableWorkflow(version.id)">校验并启用</button></article><p v-if="!workflowVersions.length" class="table-empty">保存后会在这里生成不可变版本。</p></aside>
+      <WorkflowCanvas v-if="!showArchived" :key="workflowEditorKey" :accounts="accounts" :saving="workflowSaving" :snapshot="workflowEditorSnapshot" @save="saveWorkflow" />
+      <aside class="workflow-versions"><header><div><span class="panel-kicker">VERSION HISTORY</span><h3>{{ showArchived ? '已归档流程' : '流程版本' }}</h3></div><button v-if="!showArchived" class="text-button" type="button" @click="newWorkflow">新建</button></header><article v-for="version in workflowVersions" :key="version.id"><div><strong>{{ workflows.find((item) => item.id === version.template)?.name || `流程 ${version.template}` }}</strong><small>版本 {{ version.version }} · {{ version.nodes.length }} 个节点</small></div><span :class="['recruitment-chip', { 'is-draft': version.status === 'draft' }]">{{ version.status === 'enabled' ? '已启用' : version.status === 'draft' ? '草稿' : '已停用' }}</span><button v-if="showArchived" class="text-button" type="button" @click="restoreLifecycle('workflows', version.template)">恢复流程</button><template v-else><button class="text-button" type="button" :data-test="`edit-workflow-version-${version.id}`" @click="editWorkflowVersion(version)">基于此版本编排</button><button v-if="version.status === 'draft'" class="text-button" @click="enableWorkflow(version.id)">校验并启用</button><button class="danger-text-button" type="button" :data-test="`dispose-workflow-version-${version.id}`" @click="requestWorkflowDisposal(version)">{{ version.status === 'draft' ? '删除草稿' : '归档流程' }}</button></template></article><p v-if="!workflowVersions.length" class="table-empty">{{ showArchived ? '暂无已归档流程' : '保存后会在这里生成不可变版本。' }}</p></aside>
     </section>
 
     <Teleport to="body">
@@ -313,7 +377,7 @@ onUnmounted(() => {
             :key="actionName"
             type="button"
             @click="runAction(actionMenu.account, actionName)"
-          >{{ accountActionLabel(actionMenu.account, actionName) }}</button>
+          >{{ menuActionLabel(actionMenu.account, actionName) }}</button>
         </div>
       </Transition>
     </Teleport>
@@ -335,5 +399,6 @@ onUnmounted(() => {
         <p v-else class="table-empty">暂无更多事件</p>
       </div>
     </ModalPanel>
+    <ArchiveConfirmModal v-if="lifecycleTarget" :title="lifecycleTarget.title" :name="lifecycleTarget.name" :description="lifecycleTarget.description" :action-label="lifecycleTarget.actionLabel" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="confirmLifecycle" />
   </div>
 </template>

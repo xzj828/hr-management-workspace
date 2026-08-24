@@ -94,6 +94,9 @@ a { color: inherit; text-decoration: none; }
 .ghost-button:hover { color: var(--ink); background: #f8fafc; }
 .text-button { padding: 4px 2px; color: #0b8176; background: transparent; border: 0; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .text-button:hover { color: #065f57; }
+.danger-button { min-height: 38px; padding: 0 16px; color: #fff; background: #b83f4b; border: 1px solid #b83f4b; border-radius: 9px; font-size: 12px; font-weight: 750; }.danger-button:hover { background: #9f3340; }.danger-button:disabled { opacity: .5; cursor: not-allowed; }
+.danger-text-button { padding: 5px 2px; color: #b33f4a; background: transparent; border: 0; font-size: 11px; font-weight: 700; }.danger-text-button:hover { color: #8f2f39; }
+.archive-confirm-copy { display: grid; gap: 8px; }.archive-confirm-copy strong { color: var(--ink); font-size: 14px; }.archive-confirm-copy p { margin: 0; color: #4e5b6e; font-size: 11px; line-height: 1.7; }.archive-confirm-copy small { padding: 9px 10px; color: #8b5b21; background: #fff8e9; border-radius: 8px; font-size: 9px; line-height: 1.5; }
 .button-with-icon { display: inline-flex; align-items: center; gap: 6px; }
 .icon-button { width: 34px; height: 34px; display: inline-grid; place-items: center; color: var(--muted); background: #f1f5f9; border: 0; border-radius: 9px; line-height: 1; }
 
@@ -284,6 +287,7 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .automation-task-detail > div span, .automation-task-detail time { color: #8a97a8; font-size: 10px; }
 .automation-task-detail > div strong { color: #2a374a; font-size: 12px; }
 .automation-task-detail ol { display: grid; gap: 0; margin: 4px 0 0; padding: 0; list-style: none; }
+.task-archive-button { margin-left: 10px; }
 .automation-task-detail li { display: grid; grid-template-columns: 125px 1fr; gap: 14px; padding: 11px 0; border-bottom: 1px solid #edf1f5; font-size: 11px; }
 
 @media (max-width: 980px) {

@@ -29,6 +29,7 @@ describe('RecruitmentCandidatesView', () => {
       if (path.startsWith('recruitment/candidate-discoveries/?')) return Promise.resolve({ results: discoveries })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       if (path.startsWith('recruitment/candidates/')) {
+        if (path === 'recruitment/candidates/1/archive/') return Promise.resolve({ ...candidates[0], archived_at: '2026-08-24T10:00:00Z' })
         if (path.includes('search=%E5%91%A8')) return Promise.resolve({ results: [candidates[0]] })
         if (path.includes('stage=to_screen')) return Promise.resolve({ results: [candidates[1]] })
         return Promise.resolve({ results: candidates })
@@ -65,6 +66,19 @@ describe('RecruitmentCandidatesView', () => {
     expect(wrapper.text()).toContain('Vue 前端工程师')
     expect(wrapper.text()).toContain('admin')
     expect(wrapper.text()).toContain('1 份简历')
+  })
+
+  it('removes a candidate from the active library with confirmation', async () => {
+    const wrapper = mount(RecruitmentCandidatesView, { global: { stubs: { teleport: { template: '<div><slot /></div>' } } } })
+    await flushPromises()
+    await wrapper.get('tbody tr').trigger('click')
+
+    await wrapper.get('[data-test="archive-candidate"]').trigger('click')
+    expect(wrapper.text()).toContain('移出候选人库')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/candidates/1/archive/', { method: 'POST' })
   })
 
   it('selects discoveries and imports them into the library', async () => {

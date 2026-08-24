@@ -13,6 +13,7 @@ import { discoveryModes, discoveryPayload, discoverySyncMessage, discoveryTaskDo
 import { stageColumns } from '@/recruitment'
 import { createRequestId } from '@/recruitmentJobs'
 import { communicationPayload } from '@/recruitmentCommunications'
+import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 
 const activeTab = ref('library')
 const candidates = ref([]), discoveries = ref([]), jobs = ref([]), accounts = ref([])
@@ -25,6 +26,8 @@ const task = ref(null), taskMessage = ref(''), approval = ref(null)
 const confirming = ref(false), importing = ref(false)
 const librarySelectedIds = ref(new Set()), communicationOpen = ref(false), communicationSaving = ref(false)
 const onlineResumeApplication = ref(null), onlineResumeSaving = ref(false)
+const lifecycleTarget = ref(null), lifecycleSaving = ref(false)
+const showArchived = ref(false)
 let pollTimer = null
 
 const selectedCount = computed(() => selectedIds.value.size)
@@ -53,6 +56,7 @@ async function loadCandidates() {
   if (search.value.trim()) params.set('search', search.value.trim())
   if (job.value) params.set('job', job.value)
   if (stage.value) params.set('stage', stage.value)
+  if (showArchived.value) params.set('archived', '1')
   try { candidates.value = listItems(await api(`recruitment/candidates/${params.size ? `?${params}` : ''}`)) }
   catch (err) { error.value = err.message }
   finally { loading.value = false }
@@ -193,6 +197,33 @@ async function confirmOnlineResume() {
   finally { onlineResumeSaving.value = false }
 }
 
+async function archiveCandidate() {
+  if (!lifecycleTarget.value) return
+  lifecycleSaving.value = true; error.value = ''
+  try {
+    await api(`recruitment/candidates/${lifecycleTarget.value.id}/archive/`, { method: 'POST' })
+    lifecycleTarget.value = null; selected.value = null
+    await loadCandidates()
+  } catch (err) { error.value = err.message }
+  finally { lifecycleSaving.value = false }
+}
+
+async function restoreCandidate(candidate) {
+  error.value = ''
+  try {
+    await api(`recruitment/candidates/${candidate.id}/restore/?archived=1`, { method: 'POST' })
+    selected.value = null
+    await loadCandidates()
+  } catch (err) { error.value = err.message }
+}
+
+async function toggleArchiveView() {
+  showArchived.value = !showArchived.value
+  selected.value = null
+  librarySelectedIds.value = new Set()
+  await loadCandidates()
+}
+
 onMounted(loadWorkspace)
 onUnmounted(stopPolling)
 </script>
@@ -201,7 +232,7 @@ onUnmounted(stopPolling)
   <div class="page-stack candidate-workspace">
     <header class="page-hero page-hero--compact recruitment-toolbar">
       <div><span class="eyebrow">Candidate Workspace</span><h2>候选人</h2><p>从 BOSS 发现人才，确认后再纳入正式招聘流程。</p></div>
-      <RecruitmentDemoMenu @changed="loadWorkspace" />
+      <div class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-candidates" type="button" @click="toggleArchiveView">{{ showArchived ? '返回候选人库' : '归档记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="loadWorkspace" /></div>
     </header>
     <nav class="candidate-tabs" aria-label="候选人页面">
       <button data-test="candidate-tab-library" :class="{ active: activeTab === 'library' }" @click="activeTab = 'library'">候选人库 <span>{{ candidates.length }}</span></button>
@@ -218,7 +249,7 @@ onUnmounted(stopPolling)
         <span class="toolbar__count">{{ candidates.length }} 位候选人</span>
       </div>
       <div class="table-scroll"><table class="data-table"><thead><tr><th class="candidate-select-cell" aria-label="选择"></th><th>候选人</th><th>当前岗位 / 城市</th><th>应聘职位</th><th>阶段</th><th>负责人</th><th>简历</th></tr></thead><tbody>
-        <tr v-for="candidate in candidates" :key="candidate.id" :class="['recruitment-row', { 'is-selected': librarySelectedIds.has(candidate.id) }]" tabindex="0" @click="selected = candidate" @keydown.enter="selected = candidate"><td class="candidate-select-cell" @click.stop><label class="candidate-row-check"><input :data-test="`candidate-check-${candidate.id}`" type="checkbox" :checked="librarySelectedIds.has(candidate.id)" @change="toggleLibrary(candidate.id)" /><span></span></label></td><td><strong>{{ candidate.name }}</strong></td><td>{{ candidate.current_title || '—' }}<small class="block-text">{{ candidate.current_city || '—' }}</small></td><td>{{ primaryApplication(candidate)?.job_title || '—' }}</td><td><span class="recruitment-chip">{{ primaryApplication(candidate)?.stage_label || '—' }}</span></td><td>{{ primaryApplication(candidate)?.owner_name || '—' }}</td><td>{{ candidate.resume_count ? `${candidate.resume_count} 份简历` : '暂无简历' }}</td></tr>
+        <tr v-for="candidate in candidates" :key="candidate.id" :class="['recruitment-row', { 'is-selected': librarySelectedIds.has(candidate.id) }]" tabindex="0" @click="selected = candidate" @keydown.enter="selected = candidate"><td class="candidate-select-cell" @click.stop><label v-if="!showArchived" class="candidate-row-check"><input :data-test="`candidate-check-${candidate.id}`" type="checkbox" :checked="librarySelectedIds.has(candidate.id)" @change="toggleLibrary(candidate.id)" /><span></span></label></td><td><strong>{{ candidate.name }}</strong></td><td>{{ candidate.current_title || '—' }}<small class="block-text">{{ candidate.current_city || '—' }}</small></td><td>{{ primaryApplication(candidate)?.job_title || '—' }}</td><td><span class="recruitment-chip">{{ primaryApplication(candidate)?.stage_label || '—' }}</span></td><td>{{ primaryApplication(candidate)?.owner_name || '—' }}</td><td>{{ candidate.resume_count ? `${candidate.resume_count} 份简历` : '暂无简历' }}</td></tr>
         <tr v-if="!loading && !candidates.length"><td colspan="7" class="table-empty">没有符合条件的候选人</td></tr>
       </tbody></table></div>
     </section>
@@ -246,10 +277,11 @@ onUnmounted(stopPolling)
 
     <Transition name="batch-bar"><aside v-if="selectedCount" class="discovery-batch-bar" data-test="discovery-batch-bar"><div><strong>已选择 {{ selectedCount }} 人</strong><span>只写入本地候选人库，不会联系候选人</span></div><button class="text-button" @click="selectedIds = new Set()">取消选择</button><button class="primary-button" data-test="import-selected" :disabled="importing" @click="importSelected">{{ importing ? '正在入库…' : '加入候选人库' }}</button></aside></Transition>
     <Transition name="batch-bar"><aside v-if="librarySelectedIds.size && activeTab === 'library'" class="library-contact-bar" data-test="library-contact-bar"><div><strong>已选择 {{ librarySelectedIds.size }} 人</strong><span>对外发送前还会显示最终话术与账号</span></div><button class="text-button" @click="librarySelectedIds = new Set()">取消选择</button><button class="primary-button" data-test="open-communication" @click="openCommunication">创建沟通批次</button></aside></Transition>
-    <RecruitmentDetailDrawer v-if="selected" :title="selected.name" @close="selected = null"><dl class="recruitment-detail-grid"><div><dt>当前岗位</dt><dd>{{ selected.current_title || '—' }}</dd></div><div><dt>所在城市</dt><dd>{{ selected.current_city || '—' }}</dd></div><div><dt>电话</dt><dd>{{ selected.phone || '—' }}</dd></div><div><dt>邮箱</dt><dd>{{ selected.email || '—' }}</dd></div><div><dt>简历</dt><dd>{{ selected.resume_count ? `${selected.resume_count} 份简历` : '暂无简历' }}</dd></div></dl><section class="recruitment-detail-section"><span>应聘记录</span><article v-for="application in selected.applications" :key="application.id" class="recruitment-application-line"><div><strong>{{ application.job_title }}</strong><small>{{ application.stage_label }} · 负责人 {{ application.owner_name || '未分配' }}</small></div><button class="text-button" type="button" @click="onlineResumeApplication = application">保存在线简历 PDF</button></article></section></RecruitmentDetailDrawer>
+    <RecruitmentDetailDrawer v-if="selected" :title="selected.name" @close="selected = null"><dl class="recruitment-detail-grid"><div><dt>当前岗位</dt><dd>{{ selected.current_title || '—' }}</dd></div><div><dt>所在城市</dt><dd>{{ selected.current_city || '—' }}</dd></div><div><dt>电话</dt><dd>{{ selected.phone || '—' }}</dd></div><div><dt>邮箱</dt><dd>{{ selected.email || '—' }}</dd></div><div><dt>简历</dt><dd>{{ selected.resume_count ? `${selected.resume_count} 份简历` : '暂无简历' }}</dd></div></dl><section class="recruitment-detail-section"><span>应聘记录</span><article v-for="application in selected.applications" :key="application.id" class="recruitment-application-line"><div><strong>{{ application.job_title }}</strong><small>{{ application.stage_label }} · 负责人 {{ application.owner_name || '未分配' }}</small></div><button v-if="!showArchived" class="text-button" type="button" @click="onlineResumeApplication = application">保存在线简历 PDF</button></article></section><template #footer><button v-if="showArchived" class="text-button" data-test="restore-candidate" type="button" @click="restoreCandidate(selected)">恢复到候选人库</button><button v-else class="danger-text-button" data-test="archive-candidate" type="button" @click="lifecycleTarget = selected">移出候选人库</button></template></RecruitmentDetailDrawer>
     <RecruitmentDetailDrawer v-if="selectedDiscovery" :title="selectedDiscovery.display_name" @close="selectedDiscovery = null"><dl class="recruitment-detail-grid"><div><dt>当前岗位</dt><dd>{{ selectedDiscovery.current_title || '—' }}</dd></div><div><dt>城市</dt><dd>{{ selectedDiscovery.city || '—' }}</dd></div><div><dt>工作经历</dt><dd>{{ selectedDiscovery.experience || '—' }}</dd></div><div><dt>学历</dt><dd>{{ selectedDiscovery.education || '—' }}</dd></div><div><dt>身份依据</dt><dd>{{ selectedDiscovery.identity_quality_label }}</dd></div><div><dt>来源职位</dt><dd>{{ selectedDiscovery.job_title }}</dd></div></dl><section class="recruitment-detail-section"><span>候选人优势</span><p>{{ selectedDiscovery.advantage || '暂无' }}</p></section></RecruitmentDetailDrawer>
     <DeepMatchConfirmDrawer v-if="approval" :approval="approval" :confirming="confirming" @close="approval = null" @confirm="confirmDeepMatch" />
     <CommunicationConfirmDrawer v-if="communicationOpen" :candidates="communicationCandidates" :account-name="communicationAccountName" :saving="communicationSaving" @close="communicationOpen = false" @confirm="confirmCommunication" />
     <ModalPanel v-if="onlineResumeApplication" title="保存在线简历 PDF" @close="onlineResumeApplication = null"><p class="online-resume-confirm">打开在线简历可能消耗该账号的查看次数。系统会再次核验候选人身份，成功后保存 PDF 到简历中心；核验失败不会生成文件。</p><template #footer><button class="secondary-button" @click="onlineResumeApplication = null">取消</button><button class="primary-button" :disabled="onlineResumeSaving" @click="confirmOnlineResume">{{ onlineResumeSaving ? '正在创建…' : '确认并保存' }}</button></template></ModalPanel>
+    <ArchiveConfirmModal v-if="lifecycleTarget" title="移出候选人库" :name="lifecycleTarget.name" description="候选人会从当前人才库隐藏，应聘记录、简历和沟通审计仍会保留。" action-label="确认移出" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="archiveCandidate" />
   </div>
 </template>

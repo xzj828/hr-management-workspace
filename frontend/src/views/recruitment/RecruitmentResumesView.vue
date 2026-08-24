@@ -5,18 +5,22 @@ import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { formatFileSize, formatRecruitmentDate } from '@/recruitment'
+import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 
 const resumes = ref([])
 const selected = ref(null)
 const loading = ref(true)
 const error = ref('')
+const lifecycleTarget = ref(null)
+const lifecycleSaving = ref(false)
+const showArchived = ref(false)
 const selectedVersions = computed(() => selected.value ? resumes.value.filter((item) => item.candidate === selected.value.candidate || item.candidate_name === selected.value.candidate_name) : [])
 
 async function loadResumes() {
   loading.value = true
   error.value = ''
   try {
-    resumes.value = listItems(await api('recruitment/resumes/'))
+    resumes.value = listItems(await api(`recruitment/resumes/${showArchived.value ? '?archived=1' : ''}`))
   } catch (err) {
     error.value = err.message
   } finally {
@@ -25,6 +29,32 @@ async function loadResumes() {
 }
 
 onMounted(loadResumes)
+
+async function archiveResume() {
+  if (!lifecycleTarget.value) return
+  lifecycleSaving.value = true; error.value = ''
+  try {
+    await api(`recruitment/resumes/${lifecycleTarget.value.id}/archive/`, { method: 'POST' })
+    if (selected.value?.id === lifecycleTarget.value.id) selected.value = null
+    lifecycleTarget.value = null
+    await loadResumes()
+  } catch (err) { error.value = err.message }
+  finally { lifecycleSaving.value = false }
+}
+
+async function restoreResume(resume) {
+  error.value = ''
+  try {
+    await api(`recruitment/resumes/${resume.id}/restore/?archived=1`, { method: 'POST' })
+    await loadResumes()
+  } catch (err) { error.value = err.message }
+}
+
+async function toggleArchiveView() {
+  showArchived.value = !showArchived.value
+  selected.value = null
+  await loadResumes()
+}
 </script>
 
 <template>
@@ -35,7 +65,7 @@ onMounted(loadResumes)
         <h2>简历中心</h2>
         <p>集中管理从招聘渠道取得的 PDF 简历，评分能力将在后续接入。</p>
       </div>
-      <RecruitmentDemoMenu @changed="loadResumes" />
+      <div class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-resumes" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前简历' : '归档记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="loadResumes" /></div>
     </header>
 
     <p v-if="error" class="recruitment-error-strip">{{ error }}</p>
@@ -58,9 +88,11 @@ onMounted(loadResumes)
               <td class="recruitment-resume-actions">
                 <button v-if="resume.file_available" :data-test="`preview-${resume.id}`" type="button" class="text-button button-with-icon" @click="selected = resume"><AppIcon name="eye" :size="16" /><span>预览</span></button>
                 <a v-if="resume.file_available" :data-test="`download-${resume.id}`" class="button-with-icon" :href="resume.download_url"><AppIcon name="download" :size="16" /><span>下载</span></a>
+                <button v-if="showArchived" :data-test="`restore-resume-${resume.id}`" type="button" class="text-button" @click="restoreResume(resume)">恢复</button>
+                <button v-else :data-test="`archive-resume-${resume.id}`" type="button" class="danger-text-button" @click="lifecycleTarget = resume">归档</button>
               </td>
             </tr>
-            <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">暂无简历，可从“演示数据”加载 3 份 PDF。</td></tr>
+            <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">{{ showArchived ? '暂无已归档简历' : '暂无简历，可从“演示数据”加载 3 份 PDF。' }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -87,5 +119,6 @@ onMounted(loadResumes)
         <a class="secondary-button recruitment-download-link button-with-icon" :href="selected.download_url"><AppIcon name="download" :size="16" /><span>下载 PDF</span></a>
       </template>
     </RecruitmentDetailDrawer>
+    <ArchiveConfirmModal v-if="lifecycleTarget" title="归档简历" :name="lifecycleTarget.original_name" description="简历会从当前简历中心移除，文件与访问审计暂时保留，可从归档记录恢复。" action-label="确认归档" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="archiveResume" />
   </div>
 </template>
