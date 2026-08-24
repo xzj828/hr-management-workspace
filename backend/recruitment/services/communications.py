@@ -16,6 +16,7 @@ from recruitment.models import (
     StepExecution,
 )
 from recruitment.rpa.tasks import create_task
+from recruitment.services.stages import advance_for_event
 
 
 ACTION_TO_APPROVAL = {
@@ -30,6 +31,7 @@ def _identity_snapshot(application, account):
         candidate=application.candidate, boss_account=account
     ).order_by("-last_seen_at").first()
     return {
+        "boss_account_id": account.pk,
         "candidate_id": application.candidate_id,
         "application_id": application.pk,
         "name": application.candidate.name,
@@ -176,3 +178,68 @@ def materialize_communication_batch(*, approval, actor):
     enqueue_next_step(batch)
     return batch
 
+
+@transaction.atomic
+def complete_communication_task(*, task, status, result, error_code, error_message):
+    action = ConversationAction.objects.select_for_update().select_related(
+        "application", "batch", "step", "created_by"
+    ).get(pk=task.request_payload.get("conversation_action_id"))
+    step = StepExecution.objects.select_for_update().get(pk=action.step_id)
+    batch = ExecutionBatch.objects.select_for_update().get(pk=action.batch_id)
+    now = timezone.now()
+    if status == "succeeded" and result.get("verified") is True:
+        step_status = StepExecution.Status.SUCCEEDED
+        action_status = ConversationAction.Status.SUCCEEDED
+    elif status == "waiting_human" or (status == "succeeded" and result.get("verified") is not True):
+        step_status = StepExecution.Status.WAITING_HUMAN
+        action_status = ConversationAction.Status.WAITING_HUMAN
+        status = "waiting_human"
+    else:
+        step_status = StepExecution.Status.FAILED
+        action_status = ConversationAction.Status.FAILED
+    step.status = step_status
+    step.result = result
+    step.error_code = str(error_code or "")[:64]
+    step.error_message = str(error_message or "")[:2000]
+    step.completed_at = now
+    step.save(update_fields=["status", "result", "error_code", "error_message", "completed_at", "updated_at"])
+    action.status = action_status
+    action.result = result
+    action.error_code = step.error_code
+    action.error_message = step.error_message
+    action.completed_at = now
+    action.save(update_fields=["status", "result", "error_code", "error_message", "completed_at", "updated_at"])
+    task.status = status
+    task.result = result
+    task.error_code = step.error_code
+    task.error_message = step.error_message
+    task.completed_at = now
+    task.lease_expires_at = None
+    task.save(update_fields=["status", "result", "error_code", "error_message", "completed_at", "lease_expires_at", "updated_at"])
+    if step_status == StepExecution.Status.SUCCEEDED:
+        event = {
+            ConversationAction.Action.GREET: "greet_succeeded",
+            ConversationAction.Action.REQUEST_RESUME: "resume_requested",
+            ConversationAction.Action.SEND_INTERVIEW: "interview_sent",
+        }[action.action]
+        advance_for_event(application=action.application, event=event, actor=action.created_by, task=task)
+    batch.succeeded_items = batch.steps.filter(status=StepExecution.Status.SUCCEEDED).count()
+    batch.failed_items = batch.steps.filter(
+        status__in=[StepExecution.Status.FAILED, StepExecution.Status.SKIPPED]
+    ).count()
+    remaining = batch.steps.filter(status=StepExecution.Status.PENDING).exists()
+    waiting = batch.steps.filter(status=StepExecution.Status.WAITING_HUMAN).exists()
+    if waiting:
+        batch.status = ExecutionBatch.Status.WAITING_HUMAN
+    elif remaining:
+        batch.status = ExecutionBatch.Status.RUNNING
+    elif batch.failed_items and batch.succeeded_items:
+        batch.status = ExecutionBatch.Status.PARTIAL
+    elif batch.failed_items:
+        batch.status = ExecutionBatch.Status.FAILED
+    else:
+        batch.status = ExecutionBatch.Status.SUCCEEDED
+    batch.save(update_fields=["succeeded_items", "failed_items", "status", "updated_at"])
+    if not waiting and remaining:
+        enqueue_next_step(batch)
+    return batch

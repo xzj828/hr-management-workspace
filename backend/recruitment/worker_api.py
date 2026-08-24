@@ -15,6 +15,7 @@ from .models import BossAccount, RecruitmentAuditLog, RecruitmentJob, RpaTask, R
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
 from .services.discovery import sync_discoveries
+from .services.communications import complete_communication_task
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -168,6 +169,33 @@ def complete_task_view(request, task_id):
             result = {"sync": asdict(synced)}
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    communication_actions = {
+        RpaTask.Action.GREET,
+        RpaTask.Action.REQUEST_RESUME,
+        RpaTask.Action.SEND_INTERVIEW,
+    }
+    if task.action in communication_actions:
+        complete_communication_task(
+            task=task,
+            status=completed_status,
+            result=result,
+            error_code=request.data.get("error_code", ""),
+            error_message=request.data.get("error_message", ""),
+        )
+        append_event(task=task, event="completed", message="沟通任务执行结束", data={"status": completed_status})
+        account = task.boss_account
+        if completed_status == RpaTask.Status.WAITING_HUMAN:
+            account.status = BossAccount.Status.PAUSED
+        else:
+            account.status = BossAccount.Status.READY
+        account.save(update_fields=["status", "updated_at"])
+        RecruitmentAuditLog.objects.create(
+            boss_account=account,
+            action="communication_task_completed",
+            target_id=str(task.pk),
+            detail={"status": completed_status, "error_code": task.error_code},
+        )
+        return Response({"id": str(task.pk), "status": task.status})
     task.status = completed_status
     task.result = result
     task.error_code = str(request.data.get("error_code", ""))[:64]

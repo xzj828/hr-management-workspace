@@ -16,7 +16,11 @@ from recruitment.models import (
     StepExecution,
 )
 from recruitment.services.approvals import approve
-from recruitment.services.communications import materialize_communication_batch, prepare_communication
+from recruitment.services.communications import (
+    complete_communication_task,
+    materialize_communication_batch,
+    prepare_communication,
+)
 
 
 class CommunicationServiceTests(TestCase):
@@ -89,3 +93,24 @@ class CommunicationServiceTests(TestCase):
         batch = materialize_communication_batch(approval=approval, actor=self.user)
         self.assertEqual(batch.steps.get().status, StepExecution.Status.SKIPPED)
         self.assertEqual(batch.rpa_tasks.count(), 0)
+
+    def test_success_completes_one_step_advances_stage_and_enqueues_next(self):
+        approval = prepare_communication(
+            account=self.account, applications=self.applications, action="request_resume",
+            message="请发送 PDF 简历", actor=self.user, request_id=uuid.uuid4(),
+        )
+        approve(approval=approval, actor=self.user)
+        batch = materialize_communication_batch(approval=approval, actor=self.user)
+        first_task = batch.rpa_tasks.get()
+        executed_application = ConversationAction.objects.get(
+            pk=first_task.request_payload["conversation_action_id"]
+        ).application
+        complete_communication_task(
+            task=first_task, status="succeeded", result={"verified": True},
+            error_code="", error_message="",
+        )
+        batch.refresh_from_db()
+        executed_application.refresh_from_db()
+        self.assertEqual(batch.succeeded_items, 1)
+        self.assertEqual(executed_application.stage, JobApplication.Stage.WAITING_RESUME)
+        self.assertEqual(batch.rpa_tasks.count(), 2)

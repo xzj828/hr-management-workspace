@@ -75,7 +75,10 @@ def parse_positions(output):
 
 
 class BossCliRunner:
-    ALLOWED = {"--version", "login", "positions", "recommend", "search", "deep-search"}
+    ALLOWED = {
+        "--version", "login", "positions", "recommend", "search", "deep-search",
+        "list", "chat", "greet", "send", "action",
+    }
 
     def __init__(self, cli_path=None):
         self.cli_path = cli_path or self._discover()
@@ -162,4 +165,39 @@ class BossCliRunner:
         args = deep_search_args(job=job, core=core, bonus=bonus, match=match)
         result = self._run(args, env=self._account_env(account), timeout_seconds=240)
         return parse_candidate_output(result.stdout, source="deep_search") if match else []
+
+    def conversations(self, account, *, unread=False):
+        args = ["list", "--unread"] if unread else ["list"]
+        return self._run(args, env=self._account_env(account), timeout_seconds=120).stdout
+
+    def open_chat(self, account, name):
+        normalized = str(name or "").strip()
+        if not normalized or len(normalized) > 100:
+            raise BossCliError("候选人名称无效")
+        return self._run(
+            ["chat", normalized, "--strict"], env=self._account_env(account), timeout_seconds=120
+        )
+
+    def greet(self, account, name, *, job=""):
+        normalized = str(name or "").strip()
+        job_name = str(job or "").strip()
+        if not normalized or len(normalized) > 100 or len(job_name) > 120:
+            raise BossCliError("打招呼目标无效")
+        args = ["greet", normalized]
+        if job_name:
+            args.extend(["--job", job_name])
+        return self._run(args, env=self._account_env(account), timeout_seconds=120)
+
+    def request_resume(self, account, name):
+        self.open_chat(account, name)
+        return self._run(["action", "resume"], env=self._account_env(account), timeout_seconds=120)
+
+    def send_text(self, account, name, message):
+        normalized = str(message or "").strip()
+        if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
+            raise BossCliError("发送内容必须为 1 到 1000 个字符的单行文本")
+        self.open_chat(account, name)
+        return self._run(
+            ["send", "--text", normalized], env=self._account_env(account), timeout_seconds=120
+        )
 

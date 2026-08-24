@@ -97,12 +97,69 @@ def execute_deep_match(task, account, runner):
     return {"status": "succeeded", "result": {"candidates": rows}}
 
 
+def _safe_target(task):
+    payload = task.get("request_payload") or {}
+    target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+    name = str(target.get("name", "")).strip()
+    identity = str(target.get("external_id") or target.get("fingerprint") or "").strip()
+    if not name or not identity:
+        return payload, target, None
+    return payload, target, name
+
+
+def execute_greet(task, account, runner):
+    payload, target, name = _safe_target(task)
+    fingerprint = str(target.get("fingerprint", "")).strip()
+    job_title = str(target.get("job_title", "")).strip()
+    if not name or not fingerprint:
+        return {
+            "status": "waiting_human", "result": {}, "error_code": "target_identity_missing",
+            "error_message": "候选人缺少可复核身份，请由 HR 人工确认",
+        }
+    refreshed = runner.recommend(account, job_title)
+    from recruitment.services.discovery import _fingerprint
+
+    account_id = target.get("boss_account_id")
+    matches = [
+        row for row in refreshed
+        if row.get("display_name") == name
+        and (row.get("fingerprint") == fingerprint or (account_id and _fingerprint(account_id, row) == fingerprint))
+    ]
+    if len(matches) != 1:
+        return {
+            "status": "waiting_human", "result": {}, "error_code": "target_identity_ambiguous",
+            "error_message": "刷新后无法唯一确认候选人，已禁止发送",
+        }
+    runner.greet(account, name, job=job_title)
+    return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
+
+
+def execute_request_resume(task, account, runner):
+    payload, target, name = _safe_target(task)
+    if not name:
+        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份不足"}
+    runner.request_resume(account, name)
+    return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
+
+
+def execute_send_interview(task, account, runner):
+    payload, target, name = _safe_target(task)
+    message = str(payload.get("message", "")).strip()
+    if not name or not message:
+        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份或邀约内容不足"}
+    runner.send_text(account, name, message)
+    return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
+
+
 EXECUTORS = {
     "check_status": execute_check_status,
     "sync_positions": execute_sync_positions,
     "recommend_candidates": execute_recommend_candidates,
     "search_candidates": execute_search_candidates,
     "deep_match": execute_deep_match,
+    "greet": execute_greet,
+    "request_resume": execute_request_resume,
+    "send_interview": execute_send_interview,
 }
 
 
