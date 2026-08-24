@@ -54,11 +54,11 @@ class RpaTaskApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
 
-    def test_disabled_write_action_is_rejected_with_policy_message(self):
+    def test_write_action_without_approval_is_rejected_with_policy_message(self):
         response = self.create_task(action="greet", payload={"candidate_ids": [1]})
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("尚未开放", str(response.data))
+        self.assertIn("HR 确认", str(response.data))
 
     def test_idempotency_key_returns_the_existing_task(self):
         self.client.force_login(self.hr)

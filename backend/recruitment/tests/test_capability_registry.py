@@ -12,10 +12,10 @@ class CapabilityRegistryTests(SimpleTestCase):
         self.assertEqual(spec.adapter, "cli")
         self.assertTrue(spec.enabled)
 
-    def test_future_write_actions_are_declared_but_disabled(self):
+    def test_write_actions_are_enabled_only_with_approval(self):
         spec = REGISTRY["greet"]
 
-        self.assertFalse(spec.enabled)
+        self.assertTrue(spec.enabled)
         self.assertTrue(spec.requires_approval)
         self.assertFalse(spec.read_only)
 

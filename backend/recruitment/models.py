@@ -285,6 +285,7 @@ class RpaTask(models.Model):
         VIEW_ONLINE_RESUME = "view_online_resume", "查看在线简历"
         SEND_INTERVIEW = "send_interview", "发送面试邀约"
         DEEP_MATCH = "deep_match", "深度匹配"
+        SYNC_CONVERSATIONS = "sync_conversations", "同步沟通状态"
 
     class Status(models.TextChoices):
         PENDING = "pending", "待执行"

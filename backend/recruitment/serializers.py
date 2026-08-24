@@ -5,15 +5,19 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
 from .models import (
+    ApplicationStageHistory,
     AutomationApproval,
     BossAccount,
     Candidate,
     CandidateDiscovery,
+    ConversationAction,
+    ExecutionBatch,
     JobApplication,
     RecruitmentJob,
     Resume,
     RpaTask,
     RpaTaskEvent,
+    StepExecution,
 )
 from .rpa.browser import browser_configuration, port_is_available
 from .rpa.tasks import create_task
@@ -105,25 +109,48 @@ class CandidateSerializer(serializers.ModelSerializer):
         ]
 
 
+class ApplicationStageHistorySerializer(serializers.ModelSerializer):
+    actor_name = serializers.CharField(source="actor.username", read_only=True, allow_null=True)
+
+    class Meta:
+        model = ApplicationStageHistory
+        fields = ["id", "from_stage", "to_stage", "source", "reason", "actor_name", "created_at"]
+
+
 class JobApplicationSerializer(serializers.ModelSerializer):
     candidate = CandidateSummarySerializer(read_only=True)
     job_title = serializers.CharField(source="job.title", read_only=True)
     owner_name = serializers.CharField(source="owner.username", read_only=True, allow_null=True)
     stage_label = serializers.CharField(source="get_stage_display", read_only=True)
+    stage_reason = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    stage_history = ApplicationStageHistorySerializer(many=True, read_only=True)
 
     class Meta:
         model = JobApplication
         fields = [
             "id", "candidate", "job", "job_title", "source", "stage", "stage_label",
             "owner", "owner_name", "priority", "last_interaction_at", "is_demo",
-            "created_at", "updated_at",
+            "stage_reason", "stage_history", "created_at", "updated_at",
         ]
         read_only_fields = [
             "id", "candidate", "job", "job_title", "source", "stage_label", "owner",
             "owner_name", "priority", "last_interaction_at", "is_demo", "created_at", "updated_at",
         ]
 
+    def update(self, instance, validated_data):
+        from recruitment.services.stages import change_stage_manually
 
+        reason = validated_data.pop("stage_reason", "")
+        requested_stage = validated_data.pop("stage", instance.stage)
+        if requested_stage != instance.stage:
+            change_stage_manually(
+                application=instance,
+                to_stage=requested_stage,
+                actor=self.context["request"].user,
+                reason=reason,
+            )
+            instance.refresh_from_db()
+        return super().update(instance, validated_data)
 class ResumeSerializer(serializers.ModelSerializer):
     candidate_name = serializers.CharField(source="candidate.name", read_only=True)
     job_title = serializers.CharField(source="application.job.title", read_only=True, allow_null=True)
@@ -148,7 +175,74 @@ class ResumeSerializer(serializers.ModelSerializer):
             "id", "candidate", "candidate_name", "application", "job_title", "original_name",
             "content_type", "file_size", "source", "source_label", "processing_status",
             "status_label", "file_available", "preview_url", "download_url", "is_demo",
-            "created_at", "updated_at",
+            "sha256", "version", "external_id", "acquired_at", "created_at", "updated_at",
+        ]
+
+
+class CommunicationPrepareSerializer(serializers.Serializer):
+    boss_account = serializers.PrimaryKeyRelatedField(queryset=BossAccount.objects.all())
+    application_ids = serializers.ListField(child=serializers.IntegerField(), min_length=1, max_length=100)
+    action = serializers.ChoiceField(choices=ConversationAction.Action.choices)
+    message = serializers.CharField(min_length=1, max_length=1000)
+    request_id = serializers.UUIDField()
+    invitation = serializers.JSONField(required=False, default=dict)
+
+    def validate(self, attrs):
+        account = _validate_authorized_account(attrs["boss_account"], self.context["request"].user)
+        applications = list(JobApplication.objects.select_related("candidate", "job").filter(pk__in=attrs["application_ids"]))
+        if len(applications) != len(set(attrs["application_ids"])):
+            raise serializers.ValidationError({"application_ids": "部分候选人不存在"})
+        if any(application.job.boss_account_id != account.pk for application in applications):
+            raise serializers.ValidationError({"application_ids": "候选人与所选账号不匹配"})
+        invitation = attrs.get("invitation") or {}
+        if attrs["action"] == ConversationAction.Action.SEND_INTERVIEW:
+            required = ["interview_at", "mode", "location", "contact_name"]
+            if any(not invitation.get(field) for field in required):
+                raise serializers.ValidationError({"invitation": "面试时间、形式、地址和联系人必填"})
+        attrs["applications"] = applications
+        return attrs
+
+
+class ConversationActionSerializer(serializers.ModelSerializer):
+    candidate_name = serializers.CharField(source="application.candidate.name", read_only=True)
+    job_title = serializers.CharField(source="application.job.title", read_only=True)
+
+    class Meta:
+        model = ConversationAction
+        fields = [
+            "id", "application", "candidate_name", "job_title", "boss_account", "action", "status",
+            "message_snapshot", "target_snapshot", "approval", "batch", "result", "error_code",
+            "error_message", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class StepExecutionSerializer(serializers.ModelSerializer):
+    candidate_name = serializers.SerializerMethodField()
+    action_id = serializers.SerializerMethodField()
+
+    def get_candidate_name(self, obj):
+        action = getattr(obj, "conversation_action", None)
+        return action.application.candidate.name if action else obj.target_payload.get("name", "")
+
+    def get_action_id(self, obj):
+        action = getattr(obj, "conversation_action", None)
+        return str(action.pk) if action else ""
+
+    class Meta:
+        model = StepExecution
+        fields = ["id", "action_id", "candidate_name", "status", "result", "error_code", "error_message", "created_at", "updated_at"]
+
+
+class ExecutionBatchSerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="boss_account.name", read_only=True)
+    steps = StepExecutionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ExecutionBatch
+        fields = [
+            "id", "approval", "boss_account", "account_name", "action", "status", "total_items",
+            "succeeded_items", "failed_items", "steps", "created_at", "updated_at",
         ]
 
 

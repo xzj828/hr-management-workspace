@@ -2,6 +2,8 @@ import json
 import socket
 import threading
 import time
+import uuid
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -12,6 +14,8 @@ from recruitment.rpa.browser import ProfileLock, ProfileLockedError
 from recruitment.rpa.capabilities import capability_payload
 from recruitment.rpa.cli import BossCliError, BossCliRunner, CliAccountConfig
 from recruitment.rpa.status import inspect_boss_status
+from recruitment.rpa.conversations import parse_conversation_list
+from recruitment.rpa.playwright_adapter import BrowserConnectionError, BrowserInventory
 
 
 class WorkerApiClient:
@@ -151,6 +155,26 @@ def execute_send_interview(task, account, runner):
     return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
 
 
+def execute_sync_conversations(task, account, runner):
+    rows = parse_conversation_list(runner.conversations(account))
+    return {"status": "succeeded", "result": {"conversations": rows}}
+
+
+def execute_view_online_resume(task, account, runner):
+    payload, target, name = _safe_target(task)
+    if not name:
+        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份不足"}
+    runner.preview(account, name)
+    incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    output_path = incoming / f"online-resume-{uuid.uuid4().hex}.pdf"
+    BrowserInventory(account.cdp_port).save_pdf(name, output_path)
+    return {
+        "status": "succeeded",
+        "result": {"verified": True, "pdf_path": str(output_path), "filename": f"{name}-在线简历.pdf"},
+    }
+
+
 EXECUTORS = {
     "check_status": execute_check_status,
     "sync_positions": execute_sync_positions,
@@ -160,6 +184,8 @@ EXECUTORS = {
     "greet": execute_greet,
     "request_resume": execute_request_resume,
     "send_interview": execute_send_interview,
+    "sync_conversations": execute_sync_conversations,
+    "view_online_resume": execute_view_online_resume,
 }
 
 
@@ -187,6 +213,8 @@ class WorkerEngine:
             outcome = {"status": "failed", "result": {}, "error_code": "profile_locked", "error_message": str(exc)}
         except BossCliError as exc:
             outcome = {"status": "failed", "result": {}, "error_code": "boss_cli_error", "error_message": str(exc)}
+        except BrowserConnectionError as exc:
+            outcome = {"status": "waiting_human", "result": {}, "error_code": "browser_identity_check", "error_message": str(exc)}
         except Exception as exc:
             outcome = {"status": "failed", "result": {}, "error_code": "worker_error", "error_message": str(exc)}
         self.api.complete(task["id"], outcome)

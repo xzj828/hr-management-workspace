@@ -63,6 +63,7 @@ REGISTRY = {
         read_only=False,
         requires_approval=True,
         consumes="resume_view",
+        enabled=True,
     ),
     "send_interview": CapabilitySpec(
         name="send_interview",
@@ -78,6 +79,13 @@ REGISTRY = {
         read_only=False,
         requires_approval=True,
         consumes="deep_match",
+        enabled=True,
+    ),
+    "sync_conversations": CapabilitySpec(
+        name="sync_conversations",
+        adapter="cli",
+        read_only=True,
+        requires_approval=False,
         enabled=True,
     ),
 }

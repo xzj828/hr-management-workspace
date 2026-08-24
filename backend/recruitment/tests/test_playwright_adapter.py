@@ -26,3 +26,18 @@ class PlaywrightAdapterTests(SimpleTestCase):
     def test_inventory_rejects_a_port_outside_the_managed_range(self):
         with self.assertRaises(ValueError):
             BrowserInventory(9222)
+
+    @patch("recruitment.rpa.playwright_adapter.sync_playwright")
+    def test_pdf_export_requires_expected_candidate_on_boss_page(self, sync_playwright):
+        page = MagicMock()
+        page.url = "https://www.zhipin.com/web/geek/resume"
+        page.locator.return_value.count.return_value = 1
+        browser = MagicMock(contexts=[MagicMock(pages=[page])])
+        playwright = sync_playwright.return_value.__enter__.return_value
+        playwright.chromium.connect_over_cdp.return_value = browser
+
+        BrowserInventory(53470).save_pdf("林然", "resume.pdf")
+
+        page.locator.assert_called_with("text=林然")
+        page.pdf.assert_called_once()
+        browser.close.assert_not_called()

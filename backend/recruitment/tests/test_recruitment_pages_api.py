@@ -48,7 +48,7 @@ class RecruitmentPagesApiTests(APITestCase):
 
         response = self.client.patch(
             f"/api/recruitment/applications/{application.pk}/",
-            {"stage": JobApplication.Stage.INTERVIEWING, "source": "changed"},
+            {"stage": JobApplication.Stage.INTERVIEWING, "stage_reason": "HR 完成人工复核", "source": "changed"},
             format="json",
         )
 

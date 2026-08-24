@@ -1,4 +1,5 @@
 import secrets
+from pathlib import Path
 from datetime import timedelta
 from dataclasses import asdict
 
@@ -11,11 +12,13 @@ from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import BossAccount, RecruitmentAuditLog, RecruitmentJob, RpaTask, RpaWorker
+from .models import BossAccount, JobApplication, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
 from .services.discovery import sync_discoveries
 from .services.communications import complete_communication_task
+from .services.communications import sync_conversation_states
+from .services.resumes import archive_pdf
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -169,6 +172,34 @@ def complete_task_view(request, task_id):
             result = {"sync": asdict(synced)}
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    if task.action == RpaTask.Action.SYNC_CONVERSATIONS and completed_status == RpaTask.Status.SUCCEEDED:
+        rows = result.get("conversations")
+        try:
+            result = {"sync": sync_conversation_states(account=task.boss_account, rows=rows, actor=task.created_by)}
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    if task.action == RpaTask.Action.VIEW_ONLINE_RESUME and completed_status == RpaTask.Status.SUCCEEDED:
+        raw_path = Path(str(result.get("pdf_path", "")))
+        incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
+        try:
+            resolved = raw_path.resolve(strict=True)
+            if incoming not in resolved.parents or resolved.suffix.lower() != ".pdf":
+                raise ValueError
+            application = JobApplication.objects.get(
+                pk=task.request_payload.get("application_id"),
+                job__boss_account=task.boss_account,
+            )
+            resume, created = archive_pdf(
+                application=application,
+                filename=result.get("filename", "在线简历.pdf"),
+                content=resolved.read_bytes(),
+                source=Resume.Source.BOSS,
+                actor=task.created_by,
+            )
+            resolved.unlink(missing_ok=True)
+            result = {"resume_id": resume.pk, "created": created, "verified": True}
+        except (OSError, ValueError, JobApplication.DoesNotExist):
+            return Response({"detail": "在线简历结果文件无效"}, status=status.HTTP_400_BAD_REQUEST)
     communication_actions = {
         RpaTask.Action.GREET,
         RpaTask.Action.REQUEST_RESUME,

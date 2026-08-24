@@ -10,6 +10,7 @@ from recruitment.models import (
     AutomationApproval,
     CandidateExternalIdentity,
     ConversationAction,
+    ConversationSyncState,
     ExecutionBatch,
     InterviewInvitation,
     RecruitmentAuditLog,
@@ -243,3 +244,44 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
     if not waiting and remaining:
         enqueue_next_step(batch)
     return batch
+
+
+@transaction.atomic
+def sync_conversation_states(*, account, rows, actor=None):
+    if not isinstance(rows, list):
+        raise ValueError("沟通状态同步结果无效")
+    synced = 0
+    ambiguous = 0
+    replied = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "")).strip()
+        applications = list(
+            account.jobs.filter(applications__candidate__name=name)
+            .values_list("applications__id", flat=True)
+            .distinct()[:2]
+        )
+        if len(applications) != 1:
+            if name:
+                ambiguous += 1
+            continue
+        from recruitment.models import JobApplication
+
+        application = JobApplication.objects.get(pk=applications[0])
+        unread = bool(row.get("unread"))
+        ConversationSyncState.objects.update_or_create(
+            application=application,
+            defaults={
+                "boss_account": account,
+                "cursor": str(row.get("index", ""))[:300],
+                "last_message_preview": str(row.get("preview", ""))[:500],
+                "has_candidate_reply": unread,
+                "last_synced_at": timezone.now(),
+            },
+        )
+        if unread:
+            replied += 1
+            advance_for_event(application=application, event="candidate_replied", actor=actor)
+        synced += 1
+    return {"synced": synced, "ambiguous": ambiguous, "candidate_replies": replied}

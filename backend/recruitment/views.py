@@ -17,6 +17,8 @@ from .models import (
     BossAccount,
     Candidate,
     CandidateDiscovery,
+    ConversationAction,
+    ExecutionBatch,
     JobApplication,
     RecruitmentJob,
     Resume,
@@ -32,7 +34,10 @@ from .serializers import (
     CandidateDiscoverySearchSerializer,
     CandidateDiscoverySerializer,
     CandidateSerializer,
+    CommunicationPrepareSerializer,
+    ConversationActionSerializer,
     DeepMatchPrepareSerializer,
+    ExecutionBatchSerializer,
     JobApplicationSerializer,
     PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
@@ -40,6 +45,8 @@ from .serializers import (
     RpaTaskSerializer,
 )
 from .services.approvals import approve
+from .services.communications import materialize_communication_batch, prepare_communication
+from .services.communications import _identity_snapshot
 from .services.discovery import import_discoveries
 
 
@@ -260,7 +267,29 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
                 idempotency_key=f"deep-match-task:{approval.pk}",
                 return_created=True,
             )
+        elif approval.action == AutomationApproval.Action.VIEW_ONLINE_RESUME:
+            payload = approval.payload
+            task, created = create_task(
+                account=approval.boss_account,
+                action=RpaTask.Action.VIEW_ONLINE_RESUME,
+                actor=request.user,
+                approval=approval,
+                request_payload={
+                    "application_id": payload["application_id"],
+                    "target": payload["target"],
+                },
+                idempotency_key=f"online-resume-task:{approval.pk}",
+                return_created=True,
+            )
         response = AutomationApprovalSerializer(approval).data
+        if approval.action in {
+            AutomationApproval.Action.GREET,
+            AutomationApproval.Action.REQUEST_RESUME,
+            AutomationApproval.Action.SEND_INTERVIEW,
+        }:
+            batch = materialize_communication_batch(approval=approval, actor=request.user)
+            response["batch"] = ExecutionBatchSerializer(batch).data
+            created = True
         if task:
             response["task_id"] = str(task.pk)
             response["task_status"] = task.status
@@ -284,6 +313,85 @@ class JobApplicationViewSet(viewsets.ModelViewSet):
         if self.request.query_params.get("is_demo") == "true":
             queryset = queryset.filter(is_demo=True)
         return queryset
+
+
+class ConversationActionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = ConversationAction.objects.select_related(
+        "application__candidate", "application__job", "boss_account"
+    ).all()
+    serializer_class = ConversationActionSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(boss_account__authorized_users=self.request.user)
+        return queryset.distinct()
+
+    @action(detail=False, methods=["post"])
+    def prepare(self, request):
+        serializer = CommunicationPrepareSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        approval = prepare_communication(
+            account=data["boss_account"],
+            applications=data["applications"],
+            action=data["action"],
+            message=data["message"],
+            actor=request.user,
+            request_id=data["request_id"],
+            invitation=data.get("invitation"),
+        )
+        return Response(
+            {"approval_id": str(approval.pk), "status": approval.status, "item_count": approval.item_count},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="prepare-online-resume")
+    def prepare_online_resume(self, request):
+        application = JobApplication.objects.select_related("candidate", "job__boss_account").filter(
+            pk=request.data.get("application_id")
+        ).first()
+        if application is None or application.job.boss_account_id is None:
+            return Response({"detail": "候选人或 BOSS 账号不存在"}, status=status.HTTP_400_BAD_REQUEST)
+        account = application.job.boss_account
+        if not request.user.is_superuser and not account.authorized_users.filter(pk=request.user.pk).exists():
+            return Response({"detail": "无权操作该 BOSS 账号"}, status=status.HTTP_403_FORBIDDEN)
+        request_id = str(request.data.get("request_id", "")).strip()
+        if not request_id:
+            return Response({"detail": "request_id 必填"}, status=status.HTTP_400_BAD_REQUEST)
+        approval, created = AutomationApproval.objects.get_or_create(
+            idempotency_key=f"online-resume:{account.pk}:{request_id}",
+            defaults={
+                "action": AutomationApproval.Action.VIEW_ONLINE_RESUME,
+                "boss_account": account,
+                "created_by": request.user,
+                "payload": {
+                    "application_id": application.pk,
+                    "target": _identity_snapshot(application, account),
+                    "estimated_consumption": 1,
+                },
+                "expires_at": timezone.now() + timedelta(minutes=15),
+            },
+        )
+        return Response(
+            AutomationApprovalSerializer(approval).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class ExecutionBatchViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = ExecutionBatch.objects.select_related("boss_account", "approval").prefetch_related(
+        "steps__conversation_action__application__candidate"
+    )
+    serializer_class = ExecutionBatchSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(boss_account__authorized_users=self.request.user)
+        return queryset.distinct()
 
 
 class ResumeViewSet(viewsets.ReadOnlyModelViewSet):

@@ -77,7 +77,7 @@ def parse_positions(output):
 class BossCliRunner:
     ALLOWED = {
         "--version", "login", "positions", "recommend", "search", "deep-search",
-        "list", "chat", "greet", "send", "action",
+        "list", "chat", "greet", "send", "action", "preview",
     }
 
     def __init__(self, cli_path=None):
@@ -200,4 +200,10 @@ class BossCliRunner:
         return self._run(
             ["send", "--text", normalized], env=self._account_env(account), timeout_seconds=120
         )
+
+    def preview(self, account, name):
+        normalized = str(name or "").strip()
+        if not normalized or len(normalized) > 100:
+            raise BossCliError("在线简历目标无效")
+        return self._run(["preview", normalized], env=self._account_env(account), timeout_seconds=120)
 
