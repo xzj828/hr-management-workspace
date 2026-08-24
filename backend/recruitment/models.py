@@ -150,12 +150,27 @@ class Resume(models.Model):
         choices=ProcessingStatus.choices,
         default=ProcessingStatus.READY,
     )
+    sha256 = models.CharField(max_length=64, blank=True, db_index=True)
+    version = models.PositiveIntegerField(default=1)
+    external_id = models.CharField(max_length=160, blank=True)
+    acquired_at = models.DateTimeField(null=True, blank=True)
     is_demo = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["candidate", "sha256"],
+                condition=~Q(sha256=""),
+                name="unique_candidate_resume_hash",
+            ),
+            models.UniqueConstraint(
+                fields=["candidate", "version"],
+                name="unique_candidate_resume_version",
+            ),
+        ]
 
 
 class CandidateDiscovery(models.Model):
@@ -501,3 +516,141 @@ class AutomationUsage(models.Model):
                 name="unique_daily_automation_usage",
             )
         ]
+
+
+class ConversationAction(models.Model):
+    class Action(models.TextChoices):
+        GREET = "greet", "打招呼"
+        REQUEST_RESUME = "request_resume", "索要简历"
+        SEND_INTERVIEW = "send_interview", "发送面试邀约"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "待确认"
+        APPROVED = "approved", "已确认"
+        PENDING = "pending", "待执行"
+        RUNNING = "running", "执行中"
+        WAITING_HUMAN = "waiting_human", "等待人工"
+        SUCCEEDED = "succeeded", "成功"
+        FAILED = "failed", "失败"
+        SKIPPED = "skipped", "已跳过"
+        CANCELLED = "cancelled", "已取消"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    application = models.ForeignKey(JobApplication, on_delete=models.CASCADE, related_name="conversation_actions")
+    boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, related_name="conversation_actions")
+    action = models.CharField(max_length=32, choices=Action.choices)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
+    message_snapshot = models.TextField()
+    target_snapshot = models.JSONField(default=dict, blank=True)
+    idempotency_key = models.CharField(max_length=180, unique=True)
+    approval = models.ForeignKey(
+        AutomationApproval, on_delete=models.PROTECT, null=True, blank=True, related_name="conversation_actions"
+    )
+    batch = models.ForeignKey(
+        ExecutionBatch, on_delete=models.PROTECT, null=True, blank=True, related_name="conversation_actions"
+    )
+    step = models.OneToOneField(
+        StepExecution, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversation_action"
+    )
+    result = models.JSONField(default=dict, blank=True)
+    error_code = models.CharField(max_length=64, blank=True)
+    error_message = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_conversation_actions")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class InterviewInvitation(models.Model):
+    class Mode(models.TextChoices):
+        ONLINE = "online", "线上面试"
+        OFFLINE = "offline", "线下面试"
+
+    action = models.OneToOneField(ConversationAction, on_delete=models.CASCADE, related_name="interview_invitation")
+    interview_at = models.DateTimeField()
+    mode = models.CharField(max_length=16, choices=Mode.choices)
+    location = models.CharField(max_length=500)
+    contact_name = models.CharField(max_length=100)
+    note = models.TextField(blank=True)
+
+
+class ConversationSyncState(models.Model):
+    application = models.OneToOneField(JobApplication, on_delete=models.CASCADE, related_name="conversation_state")
+    boss_account = models.ForeignKey(BossAccount, on_delete=models.CASCADE, related_name="conversation_states")
+    cursor = models.CharField(max_length=300, blank=True)
+    last_message_preview = models.CharField(max_length=500, blank=True)
+    has_candidate_reply = models.BooleanField(default=False)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ApplicationStageHistory(models.Model):
+    class Source(models.TextChoices):
+        AUTOMATION = "automation", "自动化"
+        MANUAL = "manual", "人工调整"
+
+    application = models.ForeignKey(JobApplication, on_delete=models.CASCADE, related_name="stage_history")
+    from_stage = models.CharField(max_length=30, choices=JobApplication.Stage.choices)
+    to_stage = models.CharField(max_length=30, choices=JobApplication.Stage.choices)
+    source = models.CharField(max_length=20, choices=Source.choices)
+    reason = models.CharField(max_length=500)
+    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="stage_changes")
+    task = models.ForeignKey(RpaTask, on_delete=models.SET_NULL, null=True, blank=True, related_name="stage_changes")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class WorkflowTemplate(models.Model):
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="workflow_templates")
+    active_version = models.ForeignKey(
+        "WorkflowVersion", on_delete=models.SET_NULL, null=True, blank=True, related_name="active_for_templates"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class WorkflowVersion(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        ENABLED = "enabled", "已启用"
+        DISABLED = "disabled", "已停用"
+
+    template = models.ForeignKey(WorkflowTemplate, on_delete=models.CASCADE, related_name="versions")
+    version = models.PositiveIntegerField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, null=True, blank=True, related_name="workflow_versions")
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="workflow_versions")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version"]
+        constraints = [models.UniqueConstraint(fields=["template", "version"], name="unique_workflow_version")]
+
+
+class WorkflowNode(models.Model):
+    version = models.ForeignKey(WorkflowVersion, on_delete=models.CASCADE, related_name="nodes")
+    node_key = models.CharField(max_length=80)
+    node_type = models.CharField(max_length=40)
+    label = models.CharField(max_length=120, blank=True)
+    position = models.JSONField(default=dict)
+    config = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["version", "node_key"], name="unique_workflow_node_key")]
+
+
+class WorkflowEdge(models.Model):
+    version = models.ForeignKey(WorkflowVersion, on_delete=models.CASCADE, related_name="edges")
+    source = models.ForeignKey(WorkflowNode, on_delete=models.CASCADE, related_name="outgoing_edges")
+    target = models.ForeignKey(WorkflowNode, on_delete=models.CASCADE, related_name="incoming_edges")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["version", "source", "target"], name="unique_workflow_edge")]
