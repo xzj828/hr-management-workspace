@@ -26,6 +26,21 @@ REGISTRY = {
         requires_approval=False,
         enabled=True,
     ),
+    "recommend_candidates": CapabilitySpec(
+        name="recommend_candidates",
+        adapter="cli",
+        read_only=True,
+        requires_approval=False,
+        enabled=True,
+    ),
+    "search_candidates": CapabilitySpec(
+        name="search_candidates",
+        adapter="cli",
+        read_only=True,
+        requires_approval=False,
+        consumes="search",
+        enabled=True,
+    ),
     "greet": CapabilitySpec(
         name="greet",
         adapter="cli",
@@ -60,6 +75,7 @@ REGISTRY = {
         read_only=False,
         requires_approval=True,
         consumes="deep_match",
+        enabled=True,
     ),
 }
 

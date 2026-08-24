@@ -73,9 +73,36 @@ def execute_sync_positions(task, account, runner):
     return {"status": "succeeded", "result": {"positions": rows}}
 
 
+def execute_recommend_candidates(task, account, runner):
+    payload = task.get("request_payload") or {}
+    rows = runner.recommend(account, str(payload.get("job_title", "")))
+    return {"status": "succeeded", "result": {"candidates": rows}}
+
+
+def execute_search_candidates(task, account, runner):
+    payload = task.get("request_payload") or {}
+    rows = runner.search(account, str(payload.get("keyword", "")))
+    return {"status": "succeeded", "result": {"candidates": rows}}
+
+
+def execute_deep_match(task, account, runner):
+    payload = task.get("request_payload") or {}
+    rows = runner.deep_search(
+        account,
+        job=str(payload.get("job_title", "")),
+        core=payload.get("core") if isinstance(payload.get("core"), list) else [],
+        bonus=payload.get("bonus") if isinstance(payload.get("bonus"), list) else [],
+        match=True,
+    )
+    return {"status": "succeeded", "result": {"candidates": rows}}
+
+
 EXECUTORS = {
     "check_status": execute_check_status,
     "sync_positions": execute_sync_positions,
+    "recommend_candidates": execute_recommend_candidates,
+    "search_candidates": execute_search_candidates,
+    "deep_match": execute_deep_match,
 }
 
 

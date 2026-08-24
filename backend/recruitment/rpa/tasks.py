@@ -11,6 +11,7 @@ from recruitment.models import (
     RpaTaskEvent,
 )
 from recruitment.rpa.capabilities import REGISTRY
+from recruitment.services.usage import consume
 
 
 def append_event(*, task, event, message, data=None, level="info"):
@@ -75,6 +76,9 @@ def create_task(
 
     if locked.rpa_tasks.filter(status__in=[RpaTask.Status.PENDING, RpaTask.Status.LEASED, RpaTask.Status.RUNNING]).exists():
         raise ValidationError("该账号已有任务正在执行")
+
+    if capability.consumes:
+        consume(account=locked, metric=capability.consumes)
 
     task = RpaTask.objects.create(
         boss_account=locked,

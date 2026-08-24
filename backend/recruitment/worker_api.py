@@ -11,9 +11,10 @@ from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import BossAccount, RecruitmentAuditLog, RpaTask, RpaWorker
+from .models import BossAccount, RecruitmentAuditLog, RecruitmentJob, RpaTask, RpaWorker
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
+from .services.discovery import sync_discoveries
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -79,6 +80,7 @@ def lease_task_view(request):
         "id": str(task.pk),
         "action": task.action,
         "open_login": bool(task.request_payload.get("open_login", False)),
+        "request_payload": task.request_payload,
         "browser": {
             "type": account.browser_type,
             "executable": account.browser_executable,
@@ -140,6 +142,32 @@ def complete_task_view(request, task_id):
             result = {"sync": asdict(sync_positions(account=task.boss_account, owner=task.created_by, rows=rows))}
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    discovery_sources = {
+        RpaTask.Action.RECOMMEND_CANDIDATES: "recommend",
+        RpaTask.Action.SEARCH_CANDIDATES: "search",
+        RpaTask.Action.DEEP_MATCH: "deep_search",
+    }
+    if task.action in discovery_sources and completed_status == RpaTask.Status.SUCCEEDED:
+        rows = result.get("candidates")
+        if not isinstance(rows, list):
+            return Response({"detail": "候选人发现结果无效"}, status=status.HTTP_400_BAD_REQUEST)
+        job = RecruitmentJob.objects.filter(
+            pk=task.request_payload.get("job"),
+            boss_account=task.boss_account,
+        ).first()
+        if job is None:
+            return Response({"detail": "候选人发现职位无效"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            synced = sync_discoveries(
+                account=task.boss_account,
+                job=job,
+                source=discovery_sources[task.action],
+                criteria=task.request_payload.get("criteria", {}),
+                rows=rows,
+            )
+            result = {"sync": asdict(synced)}
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     task.status = completed_status
     task.result = result
     task.error_code = str(request.data.get("error_code", ""))[:64]
@@ -167,7 +195,7 @@ def complete_task_view(request, task_id):
         elif login_status in {BossAccount.LoginStatus.BROWSER_STOPPED, BossAccount.LoginStatus.WAITING_LOGIN}:
             account.status = BossAccount.Status.OFFLINE
         account.save(update_fields=["login_status", "verification_status", "last_checked_at", "status", "updated_at"])
-    elif task.action == RpaTask.Action.SYNC_POSITIONS and completed_status == RpaTask.Status.SUCCEEDED:
+    elif task.action in {RpaTask.Action.SYNC_POSITIONS, *discovery_sources} and completed_status == RpaTask.Status.SUCCEEDED:
         account.status = BossAccount.Status.READY
         account.save(update_fields=["status", "updated_at"])
     RecruitmentAuditLog.objects.create(

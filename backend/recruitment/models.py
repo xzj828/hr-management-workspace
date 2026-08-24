@@ -263,6 +263,8 @@ class RpaTask(models.Model):
     class Action(models.TextChoices):
         CHECK_STATUS = "check_status", "检查状态"
         SYNC_POSITIONS = "sync_positions", "同步职位"
+        RECOMMEND_CANDIDATES = "recommend_candidates", "推荐候选人"
+        SEARCH_CANDIDATES = "search_candidates", "搜索候选人"
         GREET = "greet", "打招呼"
         REQUEST_RESUME = "request_resume", "索要简历"
         VIEW_ONLINE_RESUME = "view_online_resume", "查看在线简历"
