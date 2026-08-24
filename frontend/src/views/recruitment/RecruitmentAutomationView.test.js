@@ -84,4 +84,30 @@ describe('RecruitmentAutomationView', () => {
     expect(popover.style.position).toBe('fixed')
     expect(wrapper.find('.table-scroll .automation-menu-popover').exists()).toBe(false)
   })
+
+  it('opens a saved workflow version as a rearrangeable new-version draft', async () => {
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/automation/summary/') return Promise.resolve({ worker: null, cli_available: false, task_counts: {} })
+      if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{ id: 1, name: '主招聘账号' }] })
+      if (path === 'recruitment/rpa-tasks/' || path === 'recruitment/execution-batches/') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/workflows/') return Promise.resolve({ results: [{ id: 9, name: '标准流程' }] })
+      if (path === 'recruitment/workflow-versions/') return Promise.resolve({ results: [{
+        id: 21, template: 9, boss_account: 1, version: 3, status: 'enabled',
+        nodes: [
+          { key: 'source-x', type: 'search', label: '常规搜索', position: { x: 20, y: 40 } },
+          { key: 'end-x', type: 'end', label: '结束', position: { x: 300, y: 40 } },
+        ],
+        edges: [{ source: 'source-x', target: 'end-x' }],
+      }] })
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    wrapper = mount(RecruitmentAutomationView, { global: { stubs: { teleport: true } } })
+    await flushPromises()
+
+    await wrapper.get('.automation-workspace-tabs button:nth-child(3)').trigger('click')
+    await wrapper.get('[data-test="edit-workflow-version-21"]').trigger('click')
+
+    expect(wrapper.get('[data-test="workflow-name"]').element.value).toBe('标准流程')
+    expect(wrapper.find('[data-node-key="source-x"]').exists()).toBe(true)
+  })
 })

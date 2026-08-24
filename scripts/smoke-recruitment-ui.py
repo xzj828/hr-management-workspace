@@ -9,6 +9,7 @@ base_url = os.environ.get("HR_SMOKE_URL", "http://127.0.0.1:8769")
 username = os.environ.get("HR_SMOKE_USER", "smoke-admin")
 password = os.environ.get("HR_SMOKE_PASSWORD", "Smoke-pass-2026")
 screenshot = Path(tempfile.gettempdir()) / "hr-recruitment-smoke.png"
+workflow_screenshot = Path(tempfile.gettempdir()) / "hr-workflow-editor-smoke.png"
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(channel="msedge", headless=True)
@@ -36,10 +37,30 @@ with sync_playwright() as playwright:
     page.get_by_role("button", name="取消").last.click()
 
     page.goto(f"{base_url}/recruitment/automation", wait_until="networkidle")
-    page.get_by_role("button", name="流程编排 0").click()
+    page.locator(".automation-workspace-tabs button").nth(2).click()
     page.get_by_text("节点库").wait_for()
     page.get_by_text("人工确认", exact=True).last.wait_for()
     page.locator('[data-test="save-workflow"]').wait_for()
+    screen_node = page.locator('[data-node-key="screen"]')
+    before = screen_node.bounding_box()
+    page.mouse.move(before["x"] + 50, before["y"] + 24)
+    page.mouse.down()
+    page.mouse.move(before["x"] + 190, before["y"] + 145, steps=8)
+    page.mouse.up()
+    after = screen_node.bounding_box()
+    if after["x"] <= before["x"] + 80 or after["y"] <= before["y"] + 70:
+        raise SystemExit("Workflow node did not move freely on the canvas")
+    page.locator('[data-edge-key="source-screen"]').click(force=True)
+    page.locator('[data-test="remove-selection"]').click()
+    if page.locator('[data-edge-key="source-screen"]').count() != 0 or screen_node.count() != 1:
+        raise SystemExit("Workflow edge deletion did not preserve its nodes")
+    screen_node.click()
+    page.locator('[data-test="remove-selection"]').click()
+    if screen_node.count() != 0:
+        raise SystemExit("Workflow node deletion failed")
+    page.locator('[data-test="workflow-library-wait_reply"]').click()
+    page.locator('[data-test="auto-layout"]').click()
+    page.screenshot(path=str(workflow_screenshot), full_page=True)
 
     page.goto(f"{base_url}/recruitment/pipeline", wait_until="networkidle")
     card = page.locator(".recruitment-candidate-card").first
@@ -65,4 +86,4 @@ if script_errors or unexpected_responses:
         + "\nFailed responses: "
         + " | ".join(unexpected_responses)
     )
-print(f"Recruitment UI smoke passed. Screenshot: {screenshot}")
+print(f"Recruitment UI smoke passed. Screenshots: {workflow_screenshot} | {screenshot}")

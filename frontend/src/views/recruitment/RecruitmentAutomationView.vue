@@ -18,6 +18,7 @@ const accounts = ref([])
 const tasks = ref([])
 const batches = ref([]), workflows = ref([]), workflowVersions = ref([])
 const workspaceTab = ref('accounts'), workflowSaving = ref(false)
+const workflowEditorSnapshot = ref(null), workflowEditorKey = ref(0)
 const loading = ref(true)
 const error = ref('')
 const accountModalOpen = ref(false)
@@ -103,15 +104,38 @@ async function runAction(account, actionName) {
 async function saveWorkflow(snapshot) {
   workflowSaving.value = true; error.value = ''
   try {
-    const template = await api('recruitment/workflows/', {
-      method: 'POST', body: JSON.stringify({ name: snapshot.name, description: '由招聘自动化工作台创建' }),
-    })
+    let templateId = snapshot.templateId
+    if (!templateId) {
+      const template = await api('recruitment/workflows/', {
+        method: 'POST', body: JSON.stringify({ name: snapshot.name, description: '由招聘自动化工作台创建' }),
+      })
+      templateId = template.id
+    }
     await api('recruitment/workflow-versions/', {
-      method: 'POST', body: JSON.stringify({ template: template.id, boss_account: snapshot.accountId, nodes: snapshot.nodes, edges: snapshot.edges }),
+      method: 'POST', body: JSON.stringify({ template: templateId, boss_account: snapshot.accountId, nodes: snapshot.nodes, edges: snapshot.edges }),
     })
     await loadWorkspace({ silent: true })
+    workflowEditorSnapshot.value = { ...snapshot, templateId }
+    workflowEditorKey.value += 1
   } catch (err) { error.value = err.message }
   finally { workflowSaving.value = false }
+}
+
+function editWorkflowVersion(version) {
+  const template = workflows.value.find((item) => item.id === version.template)
+  workflowEditorSnapshot.value = {
+    templateId: version.template,
+    name: template?.name || `流程 ${version.template}`,
+    accountId: version.boss_account,
+    nodes: version.nodes,
+    edges: version.edges,
+  }
+  workflowEditorKey.value += 1
+}
+
+function newWorkflow() {
+  workflowEditorSnapshot.value = null
+  workflowEditorKey.value += 1
 }
 
 async function enableWorkflow(versionId) {
@@ -261,8 +285,8 @@ onUnmounted(() => {
     </section>
 
     <section v-else class="workflow-workspace">
-      <WorkflowCanvas :accounts="accounts" :saving="workflowSaving" @save="saveWorkflow" />
-      <aside class="workflow-versions"><header><span class="panel-kicker">VERSION HISTORY</span><h3>流程版本</h3></header><article v-for="version in workflowVersions" :key="version.id"><div><strong>{{ workflows.find((item) => item.id === version.template)?.name || `流程 ${version.template}` }}</strong><small>版本 {{ version.version }} · {{ version.nodes.length }} 个节点</small></div><span :class="['recruitment-chip', { 'is-draft': version.status === 'draft' }]">{{ version.status === 'enabled' ? '已启用' : version.status === 'draft' ? '草稿' : '已停用' }}</span><button v-if="version.status === 'draft'" class="text-button" @click="enableWorkflow(version.id)">校验并启用</button></article><p v-if="!workflowVersions.length" class="table-empty">保存后会在这里生成不可变版本。</p></aside>
+      <WorkflowCanvas :key="workflowEditorKey" :accounts="accounts" :saving="workflowSaving" :snapshot="workflowEditorSnapshot" @save="saveWorkflow" />
+      <aside class="workflow-versions"><header><div><span class="panel-kicker">VERSION HISTORY</span><h3>流程版本</h3></div><button class="text-button" type="button" @click="newWorkflow">新建</button></header><article v-for="version in workflowVersions" :key="version.id"><div><strong>{{ workflows.find((item) => item.id === version.template)?.name || `流程 ${version.template}` }}</strong><small>版本 {{ version.version }} · {{ version.nodes.length }} 个节点</small></div><span :class="['recruitment-chip', { 'is-draft': version.status === 'draft' }]">{{ version.status === 'enabled' ? '已启用' : version.status === 'draft' ? '草稿' : '已停用' }}</span><button class="text-button" type="button" :data-test="`edit-workflow-version-${version.id}`" @click="editWorkflowVersion(version)">基于此版本编排</button><button v-if="version.status === 'draft'" class="text-button" @click="enableWorkflow(version.id)">校验并启用</button></article><p v-if="!workflowVersions.length" class="table-empty">保存后会在这里生成不可变版本。</p></aside>
     </section>
 
     <Teleport to="body">
