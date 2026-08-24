@@ -20,6 +20,7 @@ from .services.communications import complete_communication_task
 from .services.communications import sync_conversation_states
 from .services.resumes import archive_pdf
 from .services.task_recovery import recover_stale_tasks
+from .services.account_status import apply_account_observation
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -54,6 +55,51 @@ def heartbeat_view(request):
         },
     )
     return Response({"worker_key": worker.key, "status": worker.status, "last_seen_at": worker.last_seen_at})
+
+
+@api_view(["GET"])
+@permission_classes([HasRpaWorkerToken])
+def status_targets_view(request):
+    accounts = BossAccount.objects.filter(active=True).order_by("id")
+    return Response({"accounts": [
+        {
+            "id": account.pk,
+            "browser": {
+                "type": account.browser_type,
+                "executable": account.browser_executable,
+                "user_data_dir": account.user_data_dir,
+                "cdp_port": account.cdp_port,
+            },
+        }
+        for account in accounts
+    ]})
+
+
+@api_view(["POST"])
+@permission_classes([HasRpaWorkerToken])
+def status_observations_view(request):
+    observations = request.data.get("observations")
+    if not isinstance(observations, list) or len(observations) > 200:
+        return Response({"detail": "observations 必须是最多 200 项的数组"}, status=status.HTTP_400_BAD_REQUEST)
+    accounts = {
+        account.pk: account
+        for account in BossAccount.objects.filter(pk__in=[item.get("account_id") for item in observations if isinstance(item, dict)])
+    }
+    updated = 0
+    for item in observations:
+        if not isinstance(item, dict) or item.get("account_id") not in accounts:
+            continue
+        try:
+            apply_account_observation(
+                account=accounts[item["account_id"]],
+                login_status=str(item.get("login_status", "")),
+                verification_status=item.get("verification_status", ""),
+                detail=item.get("detail", ""),
+            )
+        except (ValidationError, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        updated += 1
+    return Response({"updated": updated})
 
 
 @api_view(["POST"])

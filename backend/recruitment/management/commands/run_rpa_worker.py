@@ -39,6 +39,18 @@ class WorkerApiClient:
         except (HTTPError, URLError, OSError, ValueError) as exc:
             raise RuntimeError(f"Worker API 请求失败：{exc}") from exc
 
+    def _get(self, path):
+        request = Request(
+            f"{self.base_url}/{path.lstrip('/')}",
+            headers={"X-RPA-Worker-Token": self.token},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, OSError, ValueError) as exc:
+            raise RuntimeError(f"Worker API 请求失败：{exc}") from exc
+
     def heartbeat(self, payload):
         return self._request("heartbeat/", payload)
 
@@ -50,6 +62,40 @@ class WorkerApiClient:
 
     def complete(self, task_id, payload):
         return self._request(f"tasks/{task_id}/complete/", payload)
+
+    def status_targets(self):
+        return self._get("status-targets/")
+
+    def submit_status_observations(self, observations):
+        return self._request("status-observations/", {"observations": observations})
+
+
+class AccountStatusObserver:
+    def __init__(self, api, interval=30):
+        self.api = api
+        self.interval = interval
+
+    def run_once(self):
+        observations = []
+        for target in self.api.status_targets().get("accounts", []):
+            observed = inspect_boss_status(target["browser"]["cdp_port"])
+            observations.append({
+                "account_id": target["id"],
+                "login_status": observed.login_status,
+                "verification_status": observed.verification_status,
+                "detail": observed.detail,
+            })
+        if observations:
+            self.api.submit_status_observations(observations)
+        return observations
+
+    def run(self, stop):
+        while not stop.is_set():
+            try:
+                self.run_once()
+            except RuntimeError:
+                pass
+            stop.wait(self.interval)
 
 
 def execute_check_status(task, account, runner):
@@ -259,10 +305,14 @@ class Command(BaseCommand):
         }
         api.heartbeat(heartbeat)
         engine = WorkerEngine(api, runner, worker_key)
+        observer = AccountStatusObserver(api)
         if options["once"]:
+            observer.run_once()
             engine.run_once()
             return
         stop = threading.Event()
+        observer_thread = threading.Thread(target=observer.run, args=(stop,), name="boss-status-observer", daemon=True)
+        observer_thread.start()
         next_heartbeat = time.monotonic() + 15
         try:
             while not stop.is_set():
@@ -273,3 +323,6 @@ class Command(BaseCommand):
                 stop.wait(settings.RPA_POLL_SECONDS)
         except KeyboardInterrupt:
             stop.set()
+        finally:
+            stop.set()
+            observer_thread.join(timeout=2)

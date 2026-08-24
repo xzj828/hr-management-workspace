@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from recruitment.management.commands.run_rpa_worker import WorkerEngine, execute_check_status
+from recruitment.management.commands.run_rpa_worker import AccountStatusObserver, WorkerEngine, execute_check_status
 from recruitment.rpa.cli import CliAccountConfig
 from recruitment.rpa.status import BossBrowserStatus, classify_boss_pages
 
@@ -27,6 +27,35 @@ class BossStatusTests(SimpleTestCase):
 
 
 class WorkerEngineTests(SimpleTestCase):
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    def test_status_observer_checks_all_accounts_outside_task_queue(self, inspect):
+        inspect.side_effect = [
+            BossBrowserStatus("ready", detail="已登录"),
+            BossBrowserStatus("browser_stopped", detail="未启动"),
+        ]
+
+        class FakeApi:
+            submitted = None
+
+            def status_targets(self):
+                return {"accounts": [
+                    {"id": 1, "browser": {"cdp_port": 53470}},
+                    {"id": 2, "browser": {"cdp_port": 53471}},
+                ]}
+
+            def submit_status_observations(self, observations):
+                self.submitted = observations
+                return {"updated": len(observations)}
+
+        api = FakeApi()
+
+        AccountStatusObserver(api, interval=30).run_once()
+
+        self.assertEqual(inspect.call_count, 2)
+        self.assertEqual([item["account_id"] for item in api.submitted], [1, 2])
+        self.assertEqual(api.submitted[0]["login_status"], "ready")
+        self.assertEqual(api.submitted[1]["login_status"], "browser_stopped")
+
     def test_unknown_action_is_not_executed(self):
         api = type("Api", (), {"complete": lambda self, task_id, payload: payload})()
         engine = WorkerEngine(api=api, runner=object(), worker_key="local-worker")

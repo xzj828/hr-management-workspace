@@ -30,6 +30,7 @@ from .models import (
 )
 from .permissions import RecruitmentWritePermission
 from .rpa.tasks import cancel_task, create_task, retry_task
+from .rpa.status import inspect_boss_status
 from .serializers import (
     BossAccountSerializer,
     AutomationApprovalSerializer,
@@ -54,6 +55,7 @@ from .services.communications import materialize_communication_batch, prepare_co
 from .services.communications import _identity_snapshot
 from .services.discovery import import_discoveries
 from .services.workflows import enable_version
+from .services.account_status import apply_account_observation
 
 
 class BossAccountViewSet(viewsets.ModelViewSet):
@@ -77,6 +79,20 @@ class BossAccountViewSet(viewsets.ModelViewSet):
             actor=self.request.user,
             request_payload={"open_login": True},
         )
+
+    @action(detail=True, methods=["post"], url_path="check-status")
+    def check_status(self, request, pk=None):
+        account = self.get_object()
+        observation = inspect_boss_status(account.cdp_port)
+        account = apply_account_observation(
+            account=account,
+            login_status=observation.login_status,
+            verification_status=observation.verification_status,
+            detail=observation.detail,
+        )
+        data = self.get_serializer(account).data
+        data["status_detail"] = observation.detail
+        return Response(data)
 
 
 class RecruitmentJobViewSet(viewsets.ModelViewSet):

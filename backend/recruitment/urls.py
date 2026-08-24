@@ -23,6 +23,8 @@ urlpatterns = [
     path("demo-data/", views.demo_data_view),
     path("automation/summary/", views.automation_summary_view),
     path("worker/heartbeat/", worker_api.heartbeat_view),
+    path("worker/status-targets/", worker_api.status_targets_view),
+    path("worker/status-observations/", worker_api.status_observations_view),
     path("worker/tasks/lease/", worker_api.lease_task_view),
     path("worker/tasks/<uuid:task_id>/event/", worker_api.task_event_view),
     path("worker/tasks/<uuid:task_id>/complete/", worker_api.complete_task_view),
