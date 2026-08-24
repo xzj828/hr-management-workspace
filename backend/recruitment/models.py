@@ -158,6 +158,92 @@ class Resume(models.Model):
         ordering = ["-updated_at"]
 
 
+class CandidateDiscovery(models.Model):
+    class Source(models.TextChoices):
+        RECOMMEND = "recommend", "推荐候选人"
+        SEARCH = "search", "常规搜索"
+        DEEP_SEARCH = "deep_search", "深度搜索"
+
+    class IdentityQuality(models.TextChoices):
+        PLATFORM = "platform", "平台标识"
+        FINGERPRINT = "fingerprint", "组合指纹"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    boss_account = models.ForeignKey(
+        BossAccount,
+        on_delete=models.CASCADE,
+        related_name="candidate_discoveries",
+    )
+    job = models.ForeignKey(
+        RecruitmentJob,
+        on_delete=models.CASCADE,
+        related_name="candidate_discoveries",
+    )
+    source = models.CharField(max_length=24, choices=Source.choices)
+    external_id = models.CharField(max_length=160, blank=True)
+    fingerprint = models.CharField(max_length=64)
+    identity_quality = models.CharField(max_length=20, choices=IdentityQuality.choices)
+    display_name = models.CharField(max_length=100)
+    current_title = models.CharField(max_length=160, blank=True)
+    city = models.CharField(max_length=80, blank=True)
+    experience = models.CharField(max_length=160, blank=True)
+    education = models.CharField(max_length=160, blank=True)
+    advantage = models.TextField(blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    criteria = models.JSONField(default=dict, blank=True)
+    source_payload = models.JSONField(default=dict, blank=True)
+    contact_hint = models.CharField(max_length=40, blank=True)
+    imported_candidate = models.ForeignKey(
+        Candidate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="discovery_sources",
+    )
+    expires_at = models.DateTimeField()
+    imported_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["boss_account", "job", "fingerprint"],
+                name="unique_account_job_discovery_fingerprint",
+            )
+        ]
+
+
+class CandidateExternalIdentity(models.Model):
+    boss_account = models.ForeignKey(
+        BossAccount,
+        on_delete=models.CASCADE,
+        related_name="candidate_identities",
+    )
+    candidate = models.ForeignKey(
+        Candidate,
+        on_delete=models.CASCADE,
+        related_name="external_identities",
+    )
+    external_id = models.CharField(max_length=160, blank=True)
+    fingerprint = models.CharField(max_length=64)
+    identity_quality = models.CharField(
+        max_length=20,
+        choices=CandidateDiscovery.IdentityQuality.choices,
+    )
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["boss_account", "fingerprint"],
+                name="unique_account_candidate_fingerprint",
+            )
+        ]
+
+
 class RpaWorker(models.Model):
     class Status(models.TextChoices):
         ONLINE = "online", "在线"
