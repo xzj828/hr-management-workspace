@@ -2,6 +2,7 @@ import uuid
 
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from .models import BossAccount, Candidate, JobApplication, RecruitmentJob, Resume, RpaTask, RpaTaskEvent
 from .rpa.browser import browser_configuration, port_is_available
@@ -181,3 +182,16 @@ class RpaTaskSerializer(serializers.ModelSerializer):
         )
         task._was_existing = not created
         return task
+
+
+class PositionSyncRequestSerializer(serializers.Serializer):
+    boss_account = serializers.PrimaryKeyRelatedField(queryset=BossAccount.objects.all())
+    request_id = serializers.UUIDField()
+
+    def validate_boss_account(self, account):
+        user = self.context["request"].user
+        if not user.is_superuser and not account.authorized_users.filter(pk=user.pk).exists():
+            raise PermissionDenied("无权操作该 BOSS 账号")
+        if not account.active:
+            raise serializers.ValidationError("该 BOSS 账号已停用")
+        return account

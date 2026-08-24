@@ -15,6 +15,7 @@ from .serializers import (
     BossAccountSerializer,
     CandidateSerializer,
     JobApplicationSerializer,
+    PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
     ResumeSerializer,
     RpaTaskSerializer,
@@ -56,6 +57,24 @@ class RecruitmentJobViewSet(viewsets.ModelViewSet):
         if self.request.query_params.get("is_demo") == "true":
             queryset = queryset.filter(is_demo=True)
         return queryset
+
+    @action(detail=False, methods=["post"], url_path="sync")
+    def sync(self, request):
+        serializer = PositionSyncRequestSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        account = serializer.validated_data["boss_account"]
+        request_id = serializer.validated_data["request_id"]
+        task, created = create_task(
+            account=account,
+            action=RpaTask.Action.SYNC_POSITIONS,
+            actor=request.user,
+            idempotency_key=f"position-sync:{account.pk}:{request_id}",
+            return_created=True,
+        )
+        return Response(
+            {"task_id": str(task.pk), "status": task.status},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class CandidateViewSet(viewsets.ReadOnlyModelViewSet):
