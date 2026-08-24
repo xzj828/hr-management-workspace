@@ -1,16 +1,25 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, listItems } from '@/api'
+import AppIcon from '@/components/AppIcon.vue'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
+import TaskProgressBar from '@/components/TaskProgressBar.vue'
 import { formatRecruitmentDate } from '@/recruitment'
+import { createRequestId, positionSyncSummary, terminalTaskStatuses } from '@/recruitmentJobs'
 
 const jobs = ref([])
+const accounts = ref([])
+const selectedAccountId = ref('')
 const selected = ref(null)
 const loading = ref(true)
 const error = ref('')
+const syncTask = ref(null)
+const syncMessage = ref('')
+let pollTimer = null
 
 const statusLabels = { open: '招聘中', paused: '已暂停', closed: '已关闭' }
+const syncing = computed(() => syncTask.value && !terminalTaskStatuses.has(syncTask.value.status))
 
 async function loadJobs() {
   loading.value = true
@@ -24,11 +33,73 @@ async function loadJobs() {
   }
 }
 
+async function loadAccounts() {
+  accounts.value = listItems(await api('recruitment/boss-accounts/'))
+  if (!selectedAccountId.value && accounts.value.length) selectedAccountId.value = String(accounts.value[0].id)
+}
+
+function stopPolling() {
+  if (pollTimer) window.clearTimeout(pollTimer)
+  pollTimer = null
+}
+
+async function pollSyncTask(taskId) {
+  try {
+    const task = await api(`recruitment/rpa-tasks/${taskId}/`)
+    syncTask.value = task
+    if (task.status === 'succeeded') {
+      syncMessage.value = positionSyncSummary(task.result) || '职位同步完成'
+      await loadJobs()
+      return
+    }
+    if (task.status === 'waiting_human') {
+      syncMessage.value = '需要在隔离浏览器中完成验证'
+      return
+    }
+    if (task.status === 'failed' || task.status === 'cancelled') {
+      error.value = task.error_message || (task.status === 'cancelled' ? '同步任务已取消' : '职位同步失败')
+      return
+    }
+    pollTimer = window.setTimeout(() => pollSyncTask(taskId), 900)
+  } catch (err) {
+    error.value = err.message
+  }
+}
+
+async function syncPositions() {
+  if (!selectedAccountId.value || syncing.value) return
+  stopPolling()
+  error.value = ''
+  syncMessage.value = ''
+  syncTask.value = { status: 'pending' }
+  try {
+    const created = await api('recruitment/jobs/sync/', {
+      method: 'POST',
+      body: JSON.stringify({
+        boss_account: Number(selectedAccountId.value),
+        request_id: createRequestId(),
+      }),
+    })
+    syncTask.value = created
+    await pollSyncTask(created.task_id)
+  } catch (err) {
+    syncTask.value = { status: 'failed' }
+    error.value = err.message
+  }
+}
+
 function openJob(job) {
   selected.value = job
 }
 
-onMounted(loadJobs)
+onMounted(async () => {
+  try {
+    await Promise.all([loadJobs(), loadAccounts()])
+  } catch (err) {
+    error.value = err.message
+  }
+})
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -39,10 +110,33 @@ onMounted(loadJobs)
         <h2>职位管理</h2>
         <p>集中查看在招职位、负责人和候选人分布。</p>
       </div>
-      <RecruitmentDemoMenu @changed="loadJobs" />
+      <div class="recruitment-toolbar__actions">
+        <label class="job-sync-account">
+          <span>同步账号</span>
+          <select v-model="selectedAccountId" data-test="sync-account" :disabled="syncing || !accounts.length">
+            <option v-if="!accounts.length" value="">暂无可用账号</option>
+            <option v-for="account in accounts" :key="account.id" :value="String(account.id)">{{ account.name }}</option>
+          </select>
+        </label>
+        <button
+          class="text-button button-with-icon job-sync-button"
+          data-test="sync-positions"
+          type="button"
+          :disabled="syncing || !selectedAccountId"
+          @click="syncPositions"
+        ><AppIcon name="refresh" :size="16" /><span>{{ syncing ? '同步中…' : '同步职位' }}</span></button>
+        <RecruitmentDemoMenu @changed="loadJobs" />
+      </div>
     </header>
 
     <p v-if="error" class="recruitment-error-strip">{{ error }}</p>
+
+    <Transition name="job-sync-feedback">
+      <section v-if="syncTask" class="job-sync-feedback" aria-live="polite">
+        <TaskProgressBar :status="syncTask.status" />
+        <p v-if="syncMessage">{{ syncMessage }}</p>
+      </section>
+    </Transition>
 
     <section class="recruitment-data-shell">
       <div class="table-scroll">

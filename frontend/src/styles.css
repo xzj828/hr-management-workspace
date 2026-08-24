@@ -505,3 +505,28 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
   .mini-calendar { grid-template-columns: repeat(5,1fr); }
   .login-form-wrap { padding: 28px 22px; }
 }
+
+/* Recruitment position sync */
+.recruitment-row {
+  transition: background-color 140ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+.recruitment-row:hover { transform: translateY(-1px); }
+.recruitment-toolbar__actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.job-sync-account { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.job-sync-account select { min-width: 150px; height: 36px; padding: 0 34px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); }
+.job-sync-button:disabled { cursor: default; opacity: .5; }
+.job-sync-feedback { display: grid; grid-template-columns: minmax(260px,520px) 1fr; align-items: center; gap: 22px; padding: 15px 18px; border: 1px solid rgba(8,127,115,.16); border-radius: 14px; background: rgba(255,255,255,.88); box-shadow: 0 12px 34px rgba(33,50,70,.06); }
+.job-sync-feedback p { margin: 0; color: var(--muted); font-size: 13px; }
+.job-sync-feedback-enter-active, .job-sync-feedback-leave-active { transition: opacity 180ms ease, transform 220ms cubic-bezier(.2,.8,.2,1); }
+.job-sync-feedback-enter-from, .job-sync-feedback-leave-to { opacity: 0; transform: translateY(-6px); }
+.task-progress { min-width: 0; }
+.task-progress__meta { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+.task-progress__meta strong { color: var(--teal-dark); font-variant-numeric: tabular-nums; }
+.task-progress__track { height: 6px; overflow: hidden; border-radius: 999px; background: rgba(8,127,115,.1); }
+.task-progress__bar { display: block; width: 100%; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#0c9b8b,#32c6aa); transform-origin: left; transition: transform 260ms cubic-bezier(.2,.8,.2,1); }
+.task-progress.is-reduced-motion .task-progress__bar { transition: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .job-sync-feedback-enter-active, .job-sync-feedback-leave-active, .task-progress__bar, .recruitment-row { transition-duration: 1ms; }
+  .recruitment-row:hover { transform: none; }
+}

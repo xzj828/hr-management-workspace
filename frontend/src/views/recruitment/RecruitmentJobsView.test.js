@@ -23,6 +23,13 @@ describe('RecruitmentJobsView', () => {
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/jobs/') return Promise.resolve({ results: jobs })
+      if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{ id: 8, name: '北京账号', login_status: 'ready' }] })
+      if (path === 'recruitment/jobs/sync/') return Promise.resolve({ task_id: 'task-1', status: 'pending' })
+      if (path === 'recruitment/rpa-tasks/task-1/') return Promise.resolve({
+        id: 'task-1',
+        status: 'succeeded',
+        result: { sync: { created: 2, updated: 1, unchanged: 4, total: 7 } },
+      })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
@@ -48,6 +55,23 @@ describe('RecruitmentJobsView', () => {
     wrapper.getComponent(RecruitmentDemoMenu).vm.$emit('changed')
     await flushPromises()
 
+    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/jobs/')).toHaveLength(2)
+  })
+
+  it('runs one-click position sync and shows persisted counts', async () => {
+    const wrapper = mount(RecruitmentJobsView)
+    await flushPromises()
+
+    await wrapper.get('[data-test="sync-account"]').setValue('8')
+    await wrapper.get('[data-test="sync-positions"]').trigger('click')
+    await flushPromises()
+
+    const syncCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/jobs/sync/')
+    expect(syncCall).toBeTruthy()
+    expect(syncCall[1].method).toBe('POST')
+    expect(JSON.parse(syncCall[1].body)).toMatchObject({ boss_account: 8 })
+    expect(JSON.parse(syncCall[1].body).request_id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(wrapper.text()).toContain('新增 2 · 更新 1 · 未变化 4 · 共 7 个职位')
     expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/jobs/')).toHaveLength(2)
   })
 })
