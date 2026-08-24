@@ -92,9 +92,10 @@ def create_version(*, template, boss_account, nodes, edges, actor):
             position=item.get("position") if isinstance(item.get("position"), dict) else {},
             config=item.get("config") if isinstance(item.get("config"), dict) else {},
         )
-    for item in edges:
+    for index, item in enumerate(edges):
         WorkflowEdge.objects.create(
-            version=version, source=node_models[item["source"]], target=node_models[item["target"]]
+            version=version, source=node_models[item["source"]], target=node_models[item["target"]],
+            order=max(0, int(item.get("order", index))),
         )
     return version
 
