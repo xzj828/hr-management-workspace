@@ -362,6 +362,7 @@ class AutomationApproval(models.Model):
         EXPIRED = "expired", "已过期"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    idempotency_key = models.CharField(max_length=160, unique=True, null=True, blank=True)
     action = models.CharField(max_length=40, choices=Action.choices)
     boss_account = models.ForeignKey(
         BossAccount,

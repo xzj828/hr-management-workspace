@@ -1,6 +1,10 @@
+from dataclasses import asdict
+from datetime import timedelta
+
 from django.db import transaction
 from django.db.models import Count, Q
 from django.http import FileResponse
+from django.utils import timezone
 from django.utils.http import content_disposition_header
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -8,18 +12,35 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .demo_data import clear_demo_data, demo_status, load_demo_data
-from .models import BossAccount, Candidate, JobApplication, RecruitmentJob, Resume, RpaTask, RpaWorker
+from .models import (
+    AutomationApproval,
+    BossAccount,
+    Candidate,
+    CandidateDiscovery,
+    JobApplication,
+    RecruitmentJob,
+    Resume,
+    RpaTask,
+    RpaWorker,
+)
 from .permissions import RecruitmentWritePermission
 from .rpa.tasks import cancel_task, create_task, retry_task
 from .serializers import (
     BossAccountSerializer,
+    AutomationApprovalSerializer,
+    CandidateDiscoveryImportSerializer,
+    CandidateDiscoverySearchSerializer,
+    CandidateDiscoverySerializer,
     CandidateSerializer,
+    DeepMatchPrepareSerializer,
     JobApplicationSerializer,
     PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
     ResumeSerializer,
     RpaTaskSerializer,
 )
+from .services.approvals import approve
+from .services.discovery import import_discoveries
 
 
 class BossAccountViewSet(viewsets.ModelViewSet):
@@ -100,6 +121,149 @@ class CandidateViewSet(viewsets.ReadOnlyModelViewSet):
         if self.request.query_params.get("is_demo") == "true":
             queryset = queryset.filter(is_demo=True)
         return queryset.distinct()
+
+
+class CandidateDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = CandidateDiscovery.objects.select_related(
+        "boss_account", "job", "imported_candidate"
+    ).all()
+    serializer_class = CandidateDiscoverySerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(boss_account__authorized_users=self.request.user)
+        for field in ("boss_account", "job", "source"):
+            value = self.request.query_params.get(field)
+            if value:
+                queryset = queryset.filter(**{field: value})
+        imported = self.request.query_params.get("imported")
+        if imported == "true":
+            queryset = queryset.filter(imported_candidate__isnull=False)
+        elif imported == "false":
+            queryset = queryset.filter(imported_candidate__isnull=True)
+        return queryset.distinct()
+
+    @action(detail=False, methods=["post"])
+    def search(self, request):
+        serializer = CandidateDiscoverySearchSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        account = data["boss_account"]
+        job = data["job"]
+        mode = data["mode"]
+        task, created = create_task(
+            account=account,
+            action=(
+                RpaTask.Action.RECOMMEND_CANDIDATES
+                if mode == "recommend"
+                else RpaTask.Action.SEARCH_CANDIDATES
+            ),
+            actor=request.user,
+            request_payload={
+                "job": job.pk,
+                "job_title": job.title,
+                "keyword": data.get("keyword", ""),
+                "criteria": {"mode": mode, "keyword": data.get("keyword", "")},
+            },
+            idempotency_key=f"candidate-discovery:{account.pk}:{mode}:{data['request_id']}",
+            return_created=True,
+        )
+        return Response(
+            {"task_id": str(task.pk), "status": task.status},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"], url_path="prepare-deep-match")
+    def prepare_deep_match(self, request):
+        serializer = DeepMatchPrepareSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        account = data["boss_account"]
+        job = data["job"]
+        key = f"deep-match:{account.pk}:{data['request_id']}"
+        approval, created = AutomationApproval.objects.get_or_create(
+            idempotency_key=key,
+            defaults={
+                "action": AutomationApproval.Action.DEEP_MATCH,
+                "boss_account": account,
+                "created_by": request.user,
+                "payload": {
+                    "job": job.pk,
+                    "job_title": job.title,
+                    "core": data["core"],
+                    "bonus": data["bonus"],
+                    "request_id": str(data["request_id"]),
+                    "estimated_consumption": 1,
+                },
+                "expires_at": timezone.now() + timedelta(minutes=15),
+            },
+        )
+        if approval.created_by_id != request.user.pk or approval.boss_account_id != account.pk:
+            return Response({"detail": "确认请求标识已被占用"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            AutomationApprovalSerializer(approval).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"], url_path="import-selected")
+    def import_selected(self, request):
+        serializer = CandidateDiscoveryImportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ids = serializer.validated_data["ids"]
+        discoveries = list(self.get_queryset().filter(pk__in=ids))
+        if len(discoveries) != len(set(ids)):
+            return Response(
+                {"detail": "部分候选人不存在或无权操作"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        result = import_discoveries(discoveries=discoveries, actor=request.user)
+        return Response(asdict(result))
+
+
+class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = AutomationApproval.objects.select_related("boss_account", "created_by", "approved_by")
+    serializer_class = AutomationApprovalSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.is_superuser:
+            return queryset
+        return queryset.filter(boss_account__authorized_users=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        approval = approve(approval=self.get_object(), actor=request.user)
+        task = None
+        created = False
+        if approval.action == AutomationApproval.Action.DEEP_MATCH:
+            payload = approval.payload
+            task, created = create_task(
+                account=approval.boss_account,
+                action=RpaTask.Action.DEEP_MATCH,
+                actor=request.user,
+                approval=approval,
+                request_payload={
+                    "job": payload["job"],
+                    "job_title": payload["job_title"],
+                    "core": payload.get("core", []),
+                    "bonus": payload.get("bonus", []),
+                    "criteria": {
+                        "mode": "deep_search",
+                        "core": payload.get("core", []),
+                        "bonus": payload.get("bonus", []),
+                    },
+                },
+                idempotency_key=f"deep-match-task:{approval.pk}",
+                return_created=True,
+            )
+        response = AutomationApprovalSerializer(approval).data
+        if task:
+            response["task_id"] = str(task.pk)
+            response["task_status"] = task.status
+        return Response(response, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 class JobApplicationViewSet(viewsets.ModelViewSet):

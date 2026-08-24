@@ -4,7 +4,17 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from .models import BossAccount, Candidate, JobApplication, RecruitmentJob, Resume, RpaTask, RpaTaskEvent
+from .models import (
+    AutomationApproval,
+    BossAccount,
+    Candidate,
+    CandidateDiscovery,
+    JobApplication,
+    RecruitmentJob,
+    Resume,
+    RpaTask,
+    RpaTaskEvent,
+)
 from .rpa.browser import browser_configuration, port_is_available
 from .rpa.tasks import create_task
 
@@ -195,3 +205,82 @@ class PositionSyncRequestSerializer(serializers.Serializer):
         if not account.active:
             raise serializers.ValidationError("该 BOSS 账号已停用")
         return account
+
+
+def _validate_authorized_account(account, user):
+    if not user.is_superuser and not account.authorized_users.filter(pk=user.pk).exists():
+        raise PermissionDenied("无权操作该 BOSS 账号")
+    if not account.active:
+        raise serializers.ValidationError("该 BOSS 账号已停用")
+    return account
+
+
+class CandidateDiscoverySerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="boss_account.name", read_only=True)
+    job_title = serializers.CharField(source="job.title", read_only=True)
+    source_label = serializers.CharField(source="get_source_display", read_only=True)
+    identity_quality_label = serializers.CharField(source="get_identity_quality_display", read_only=True)
+    imported_candidate_name = serializers.CharField(
+        source="imported_candidate.name", read_only=True, allow_null=True
+    )
+
+    class Meta:
+        model = CandidateDiscovery
+        fields = [
+            "id", "boss_account", "account_name", "job", "job_title", "source", "source_label",
+            "external_id", "fingerprint", "identity_quality", "identity_quality_label",
+            "display_name", "current_title", "city", "experience", "education", "advantage",
+            "tags", "contact_hint", "imported_candidate", "imported_candidate_name",
+            "expires_at", "imported_at", "created_at", "updated_at",
+        ]
+
+
+class CandidateDiscoverySearchSerializer(serializers.Serializer):
+    boss_account = serializers.PrimaryKeyRelatedField(queryset=BossAccount.objects.all())
+    job = serializers.PrimaryKeyRelatedField(queryset=RecruitmentJob.objects.all())
+    mode = serializers.ChoiceField(choices=["recommend", "search"])
+    keyword = serializers.CharField(max_length=20, allow_blank=True, required=False, default="")
+    request_id = serializers.UUIDField()
+
+    def validate(self, attrs):
+        account = _validate_authorized_account(attrs["boss_account"], self.context["request"].user)
+        if attrs["job"].boss_account_id != account.pk:
+            raise serializers.ValidationError({"job": "职位不属于所选 BOSS 账号"})
+        return attrs
+
+
+class DeepMatchPrepareSerializer(serializers.Serializer):
+    boss_account = serializers.PrimaryKeyRelatedField(queryset=BossAccount.objects.all())
+    job = serializers.PrimaryKeyRelatedField(queryset=RecruitmentJob.objects.all())
+    core = serializers.ListField(
+        child=serializers.CharField(max_length=200), required=False, default=list, max_length=10
+    )
+    bonus = serializers.ListField(
+        child=serializers.CharField(max_length=200), required=False, default=list, max_length=10
+    )
+    request_id = serializers.UUIDField()
+
+    def validate(self, attrs):
+        account = _validate_authorized_account(attrs["boss_account"], self.context["request"].user)
+        if attrs["job"].boss_account_id != account.pk:
+            raise serializers.ValidationError({"job": "职位不属于所选 BOSS 账号"})
+        attrs["core"] = [value.strip() for value in attrs["core"] if value.strip()]
+        attrs["bonus"] = [value.strip() for value in attrs["bonus"] if value.strip()]
+        return attrs
+
+
+class CandidateDiscoveryImportSerializer(serializers.Serializer):
+    ids = serializers.ListField(child=serializers.UUIDField(), min_length=1, max_length=100)
+
+
+class AutomationApprovalSerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="boss_account.name", read_only=True)
+    approved_by_name = serializers.CharField(source="approved_by.username", read_only=True, allow_null=True)
+
+    class Meta:
+        model = AutomationApproval
+        fields = [
+            "id", "idempotency_key", "action", "boss_account", "account_name", "payload",
+            "item_count", "status", "approved_by_name", "expires_at", "approved_at", "created_at",
+        ]
+        read_only_fields = fields
