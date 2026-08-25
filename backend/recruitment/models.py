@@ -1107,6 +1107,8 @@ class ResumeAssessment(models.Model):
         related_name="assessments",
     )
     standard = models.ForeignKey(JobStandardVersion, on_delete=models.PROTECT, related_name="assessments")
+    version = models.PositiveIntegerField(default=1)
+    request_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     total_score = models.DecimalField(max_digits=5, decimal_places=2)
     dimension_scores = models.JSONField(default=list, blank=True)
     evidence = models.JSONField(default=list, blank=True)
@@ -1126,8 +1128,8 @@ class ResumeAssessment(models.Model):
         ordering = ["-created_at", "-id"]
         constraints = [
             models.UniqueConstraint(
-                fields=["structured_resume", "standard"],
-                name="unique_resume_assessment_inputs",
+                fields=["structured_resume", "standard", "version"],
+                name="unique_resume_assessment_version",
             )
         ]
 

@@ -21,6 +21,7 @@ from .models import (
     MessageSyncPolicy,
     RecruitmentJob,
     Resume,
+    ResumeAssessment,
     StructuredResumeVersion,
     RpaTask,
     RpaTaskEvent,
@@ -315,6 +316,23 @@ class StructuredResumeVersionSerializer(serializers.ModelSerializer):
         model = StructuredResumeVersion
         fields = [
             "id", "resume", "resume_name", "version", "data", "evidence", "warnings",
+            "model_name", "prompt_version", "created_at",
+        ]
+        read_only_fields = fields
+
+
+class ResumeAssessmentSerializer(serializers.ModelSerializer):
+    resume = serializers.IntegerField(source="structured_resume.resume_id", read_only=True)
+    resume_name = serializers.CharField(source="structured_resume.resume.original_name", read_only=True)
+    standard_version = serializers.IntegerField(source="standard.version", read_only=True)
+    recommendation_label = serializers.CharField(source="get_recommendation_display", read_only=True)
+
+    class Meta:
+        model = ResumeAssessment
+        fields = [
+            "id", "resume", "resume_name", "structured_resume", "standard", "standard_version",
+            "version", "request_id", "total_score", "dimension_scores", "evidence", "gaps",
+            "verification_questions", "confidence", "recommendation", "recommendation_label",
             "model_name", "prompt_version", "created_at",
         ]
         read_only_fields = fields

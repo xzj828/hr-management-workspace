@@ -109,6 +109,8 @@ class Migration(migrations.Migration):
             name='ResumeAssessment',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('version', models.PositiveIntegerField(default=1)),
+                ('request_id', models.UUIDField(default=uuid.uuid4, editable=False, unique=True)),
                 ('total_score', models.DecimalField(decimal_places=2, max_digits=5)),
                 ('dimension_scores', models.JSONField(blank=True, default=list)),
                 ('evidence', models.JSONField(blank=True, default=list)),
@@ -140,6 +142,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='resumeassessment',
-            constraint=models.UniqueConstraint(fields=('structured_resume', 'standard'), name='unique_resume_assessment_inputs'),
+            constraint=models.UniqueConstraint(fields=('structured_resume', 'standard', 'version'), name='unique_resume_assessment_version'),
         ),
     ]

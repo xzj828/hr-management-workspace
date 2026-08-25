@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import Max
@@ -8,7 +9,9 @@ from accounts.services.model_gateway import ModelGatewayError, OpenAICompatibleG
 from recruitment.models import (
     AiProcessingTask,
     FileTextExtraction,
+    JobStandardVersion,
     RecruitmentAuditLog,
+    ResumeAssessment,
     StructuredResumeVersion,
 )
 from recruitment.services.file_extraction import ExtractionError, extract_file
@@ -189,5 +192,171 @@ def process_resume_structure_task(task: AiProcessingTask):
     return {"structured_resume_id": structured.pk}
 
 
+def validate_assessment_payload(*, payload: dict, standard: JobStandardVersion, structured: StructuredResumeVersion) -> dict:
+    if not isinstance(payload, dict) or not isinstance(payload.get("dimension_scores"), list):
+        raise ModelGatewayError("model_invalid_response", "模型返回的简历评分格式无效")
+    criteria = {str(item.get("key")): item for item in standard.criteria.get("dimensions", [])}
+    if not criteria:
+        raise ValueError("评分标准没有可用维度")
+    allowed_blocks = {str(block.get("id")) for block in structured.extraction.blocks if block.get("id")}
+    normalized_scores = []
+    seen = set()
+    total = Decimal("0")
+    allowed_statuses = {"supported", "not_supported", "information_missing"}
+    for item in payload["dimension_scores"]:
+        if not isinstance(item, dict):
+            raise ModelGatewayError("model_invalid_response", "评分维度结果必须是对象")
+        key = str(item.get("criterion_key") or "")
+        if key not in criteria or key in seen:
+            raise ValueError("评分结果包含未知或重复的评分维度")
+        seen.add(key)
+        criterion = criteria[key]
+        try:
+            score = Decimal(str(item.get("score")))
+            maximum = Decimal(str(criterion.get("weight")))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("维度得分必须是数字") from exc
+        if score < 0 or score > maximum:
+            raise ValueError("维度得分超出评分标准权重")
+        status_value = str(item.get("status") or "")
+        if status_value not in allowed_statuses:
+            raise ValueError("评分维度状态无效")
+        evidence_ids = [str(value) for value in item.get("resume_evidence_block_ids", []) or []]
+        unknown = sorted(set(evidence_ids) - allowed_blocks)
+        if unknown:
+            raise ValueError(f"评分引用了不存在的简历证据：{unknown[0]}")
+        if score > 0 and not evidence_ids:
+            raise ValueError("非零得分必须提供简历原文证据")
+        if status_value == "information_missing" and score != 0:
+            raise ValueError("信息不足的维度得分必须为 0")
+        total += score
+        normalized_scores.append(
+            {
+                "criterion_key": key,
+                "score": float(score) if score % 1 else int(score),
+                "max_score": float(maximum) if maximum % 1 else int(maximum),
+                "status": status_value,
+                "reason": str(item.get("reason") or "").strip(),
+                "resume_evidence_block_ids": evidence_ids,
+            }
+        )
+    if seen != set(criteria):
+        raise ValueError("评分结果缺少部分评分维度")
+    evidence = payload.get("evidence") or []
+    if not isinstance(evidence, list):
+        raise ModelGatewayError("model_invalid_response", "评分证据格式无效")
+    unknown = sorted(set(_referenced_evidence_ids(evidence)) - allowed_blocks)
+    if unknown:
+        raise ValueError(f"评分证据引用了不存在的原文块：{unknown[0]}")
+    try:
+        confidence = Decimal(str(payload.get("confidence")))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("模型置信度必须是 0 到 1 之间的数字") from exc
+    if confidence < 0 or confidence > 1:
+        raise ValueError("模型置信度必须是 0 到 1 之间的数字")
+    recommendation = str(payload.get("recommendation") or "")
+    if recommendation not in ResumeAssessment.Recommendation.values:
+        raise ValueError("筛选建议无效")
+    gaps = payload.get("gaps") or []
+    questions = payload.get("verification_questions") or []
+    if not isinstance(gaps, list) or not isinstance(questions, list):
+        raise ModelGatewayError("model_invalid_response", "缺口或核实问题格式无效")
+    return {
+        "total_score": float(total) if total % 1 else int(total),
+        "dimension_scores": normalized_scores,
+        "evidence": evidence,
+        "gaps": [str(item).strip() for item in gaps if str(item).strip()],
+        "verification_questions": [str(item).strip() for item in questions if str(item).strip()],
+        "confidence": confidence,
+        "recommendation": recommendation,
+    }
+
+
+def build_assessment_prompt(*, standard, structured):
+    system = (
+        "你是招聘简历初筛助手。只能按已确认评分标准和简历证据评分。"
+        "没有原文证据必须标记 information_missing 且得分为 0；结论仅供 HR 复核。"
+    )
+    user = json.dumps(
+        {
+            "criteria": standard.criteria,
+            "structured_resume": structured.data,
+            "resume_blocks": structured.extraction.blocks,
+            "allowed_recommendations": list(ResumeAssessment.Recommendation.values),
+            "required_dimension_fields": [
+                "criterion_key", "score", "max_score", "status", "reason", "resume_evidence_block_ids"
+            ],
+        },
+        ensure_ascii=False,
+    )
+    return system, user
+
+
+@transaction.atomic
+def create_assessment(*, structured, standard, gateway, request_id) -> ResumeAssessment:
+    existing = ResumeAssessment.objects.filter(request_id=request_id).first()
+    if existing:
+        if existing.structured_resume_id != structured.pk or existing.standard_id != standard.pk:
+            raise ValueError("评分请求标识已被其他简历使用")
+        return existing
+    if standard.status != JobStandardVersion.Status.PUBLISHED:
+        raise ValueError("请先确认并启用评分标准")
+    if structured.resume.application_id and structured.resume.application.job_id != standard.job_id:
+        raise ValueError("简历与评分标准不属于同一职位")
+    system, user = build_assessment_prompt(standard=standard, structured=structured)
+    normalized = validate_assessment_payload(
+        payload=gateway.complete_json(system=system, user=user).data,
+        standard=standard,
+        structured=structured,
+    )
+    version = (
+        ResumeAssessment.objects.filter(structured_resume=structured, standard=standard)
+        .aggregate(value=Max("version"))["value"]
+        or 0
+    ) + 1
+    assessment = ResumeAssessment.objects.create(
+        structured_resume=structured,
+        standard=standard,
+        version=version,
+        request_id=request_id,
+        total_score=normalized["total_score"],
+        dimension_scores=normalized["dimension_scores"],
+        evidence=normalized["evidence"],
+        gaps=normalized["gaps"],
+        verification_questions=normalized["verification_questions"],
+        confidence=normalized["confidence"],
+        recommendation=normalized["recommendation"],
+        model_name=gateway.credential.model,
+    )
+    RecruitmentAuditLog.objects.create(
+        actor=None,
+        boss_account=standard.job.boss_account,
+        action="resume_assessed",
+        target_id=str(assessment.pk),
+        detail={
+            "resume_id": structured.resume_id,
+            "standard_id": standard.pk,
+            "standard_version": standard.version,
+            "assessment_version": version,
+            "model": assessment.model_name,
+        },
+    )
+    return assessment
+
+
 def process_resume_score_task(task: AiProcessingTask):
-    raise ModelGatewayError("scoring_not_ready", "简历评分服务尚未启用")
+    if not task.resume_id or not task.standard_id:
+        raise ValueError("评分任务缺少简历或评分标准")
+    if task.standard.status != JobStandardVersion.Status.PUBLISHED:
+        raise ValueError("评分标准尚未启用")
+    structured = task.resume.structured_versions.order_by("-version").first()
+    if not structured:
+        raise ValueError("简历尚未完成结构化")
+    credential = UserModelCredential.objects.get(user=task.requested_by)
+    assessment = create_assessment(
+        structured=structured,
+        standard=task.standard,
+        gateway=OpenAICompatibleGateway(credential),
+        request_id=task.pk,
+    )
+    return {"resume_assessment_id": assessment.pk}

@@ -1,5 +1,6 @@
 from dataclasses import asdict
 from datetime import timedelta
+import uuid
 
 from django.db import transaction
 from django.db.models import Count, Prefetch, Q
@@ -30,6 +31,7 @@ from .models import (
     RecruitmentAuditLog,
     RecruitmentJob,
     Resume,
+    ResumeAssessment,
     StructuredResumeVersion,
     RpaTask,
     RpaWorker,
@@ -61,6 +63,7 @@ from .serializers import (
     PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
     ResumeSerializer,
+    ResumeAssessmentSerializer,
     StructuredResumeVersionSerializer,
     AiProcessingTaskSerializer,
     RpaTaskSerializer,
@@ -79,7 +82,12 @@ from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
 from .services.lifecycle import LifecycleConflict, archive_object, restore_object
 from .services.job_documents import create_document, create_document_version, set_current_version
-from .services.ai_tasks import enqueue_job_standard, enqueue_resume_structure, retry_task as retry_ai_task
+from .services.ai_tasks import (
+    enqueue_job_standard,
+    enqueue_resume_score,
+    enqueue_resume_structure,
+    retry_task as retry_ai_task,
+)
 from .services.job_standards import publish_standard, update_standard_draft
 from .services.human_attention import archive_attention, resolve_attention
 from .services.standard_workflows import create_standard_workflow
@@ -986,6 +994,104 @@ class StructuredResumeVersionViewSet(viewsets.ReadOnlyModelViewSet):
         if resume_id:
             queryset = queryset.filter(resume_id=resume_id)
         return queryset.distinct()
+
+
+class ResumeAssessmentViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = ResumeAssessment.objects.select_related(
+        "structured_resume__resume__candidate",
+        "structured_resume__resume__application__job",
+        "standard",
+    )
+    serializer_class = ResumeAssessmentSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().filter(
+            structured_resume__resume__application__job__in=accessible_jobs(self.request.user)
+        )
+        job_id = self.request.query_params.get("job")
+        resume_id = self.request.query_params.get("resume")
+        if job_id:
+            queryset = queryset.filter(standard__job_id=job_id)
+        if resume_id:
+            queryset = queryset.filter(structured_resume__resume_id=resume_id)
+        return queryset.distinct()
+
+    @action(detail=False, methods=["post"])
+    def score(self, request):
+        try:
+            request_id = uuid.UUID(str(request.data.get("request_id")))
+        except (TypeError, ValueError, AttributeError):
+            raise ValidationError({"request_id": "请输入有效的请求标识"})
+        try:
+            job_id = int(request.data.get("job"))
+        except (TypeError, ValueError):
+            raise ValidationError({"job": "请选择职位"})
+        resume_ids = request.data.get("resume_ids")
+        if not isinstance(resume_ids, list) or not resume_ids:
+            raise ValidationError({"resume_ids": "请至少选择一份简历"})
+
+        job = accessible_jobs(request.user).filter(pk=job_id).first()
+        if not job:
+            raise NotFound("职位不存在")
+        standard = job.standard_versions.filter(status=JobStandardVersion.Status.PUBLISHED).first()
+        if not standard:
+            return Response(
+                {"detail": "请先确认评分标准", "code": "standard_not_published"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        resumes = {
+            resume.pk: resume
+            for resume in Resume.objects.filter(
+                pk__in=resume_ids,
+                application__job=job,
+                archived_at__isnull=True,
+            ).prefetch_related("structured_versions")
+        }
+        results = []
+        for raw_resume_id in resume_ids:
+            try:
+                resume_id = int(raw_resume_id)
+            except (TypeError, ValueError):
+                resume_id = raw_resume_id
+            resume = resumes.get(resume_id)
+            structured = resume.structured_versions.order_by("-version").first() if resume else None
+            if not structured:
+                results.append(
+                    {
+                        "resume_id": resume_id,
+                        "code": "resume_not_ready",
+                        "detail": "简历不存在、未归属当前职位或尚未完成结构化",
+                    }
+                )
+                continue
+            task, _created = enqueue_resume_score(
+                structured_resume=structured,
+                standard=standard,
+                requested_by=request.user,
+                request_id=request_id,
+            )
+            results.append({"resume_id": resume.pk, "task_id": str(task.pk), "status": task.status})
+        return Response({"request_id": str(request_id), "results": results}, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=["post"])
+    def rescore(self, request, pk=None):
+        assessment = self.get_object()
+        try:
+            request_id = uuid.UUID(str(request.data.get("request_id")))
+        except (TypeError, ValueError, AttributeError):
+            raise ValidationError({"request_id": "请输入有效的请求标识"})
+        task, created = enqueue_resume_score(
+            structured_resume=assessment.structured_resume,
+            standard=assessment.standard,
+            requested_by=request.user,
+            request_id=request_id,
+        )
+        return Response(
+            AiProcessingTaskSerializer(task).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class AiProcessingTaskViewSet(viewsets.ReadOnlyModelViewSet):

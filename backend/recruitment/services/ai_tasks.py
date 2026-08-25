@@ -1,4 +1,5 @@
 from datetime import timedelta
+import uuid
 
 from django.db import connection, transaction
 from django.utils import timezone
@@ -67,8 +68,9 @@ def enqueue_resume_structure(*, resume, requested_by) -> tuple[AiProcessingTask,
     )
 
 
-def enqueue_resume_score(*, structured_resume, standard, requested_by) -> tuple[AiProcessingTask, bool]:
-    key = f"resume-score:{structured_resume.pk}:{standard.pk}"
+def enqueue_resume_score(*, structured_resume, standard, requested_by, request_id=None) -> tuple[AiProcessingTask, bool]:
+    request_id = request_id or uuid.uuid4()
+    key = f"resume-score:{request_id}:{structured_resume.pk}:{standard.pk}"
     return AiProcessingTask.objects.get_or_create(
         idempotency_key=key,
         defaults={

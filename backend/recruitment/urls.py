@@ -23,6 +23,7 @@ router.register("workflow-runs", views.WorkflowRunViewSet, basename="workflow-ru
 router.register("applications", views.JobApplicationViewSet, basename="job-application")
 router.register("resumes", views.ResumeViewSet, basename="resume")
 router.register("structured-resumes", views.StructuredResumeVersionViewSet, basename="structured-resume")
+router.register("resume-assessments", views.ResumeAssessmentViewSet, basename="resume-assessment")
 router.register("ai-tasks", views.AiProcessingTaskViewSet, basename="ai-task")
 router.register("search-campaigns", views.SearchCampaignViewSet, basename="search-campaign")
 router.register("rpa-tasks", views.RpaTaskViewSet, basename="rpa-task")
