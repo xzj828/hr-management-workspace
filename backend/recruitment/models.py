@@ -1,9 +1,11 @@
 import uuid
 
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 
 class BossAccount(models.Model):
@@ -975,3 +977,221 @@ class WorkflowRunEvent(models.Model):
 
     class Meta:
         ordering = ["created_at", "id"]
+
+
+class FileTextExtraction(models.Model):
+    class SourceKind(models.TextChoices):
+        JOB_DOCUMENT = "job_document", "岗位文档"
+        RESUME = "resume", "简历"
+
+    class Method(models.TextChoices):
+        DOCX = "docx", "DOCX"
+        DOC_CONVERT = "doc_convert", "DOC 转换"
+        PDF_TEXT = "pdf_text", "PDF 文字"
+        PDF_OCR = "pdf_ocr", "PDF OCR"
+        IMAGE_OCR = "image_ocr", "图片 OCR"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "待处理"
+        READY = "ready", "已完成"
+        FAILED = "failed", "失败"
+
+    source_kind = models.CharField(max_length=24, choices=SourceKind.choices)
+    source_id = models.PositiveBigIntegerField()
+    source_sha256 = models.CharField(max_length=64)
+    method = models.CharField(max_length=24, choices=Method.choices)
+    plain_text = models.TextField(blank=True)
+    blocks = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_kind", "source_id", "source_sha256"],
+                name="unique_file_text_extraction_source",
+            )
+        ]
+
+
+class JobStandardVersion(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        PUBLISHED = "published", "已启用"
+        SUPERSEDED = "superseded", "历史版本"
+
+    job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, related_name="standard_versions")
+    version = models.PositiveIntegerField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    source_document_versions = models.ManyToManyField(
+        JobRequirementDocumentVersion,
+        related_name="job_standard_versions",
+        blank=True,
+    )
+    criteria = models.JSONField(default=dict, blank=True)
+    unresolved_questions = models.JSONField(default=list, blank=True)
+    model_name = models.CharField(max_length=120, blank=True)
+    prompt_version = models.CharField(max_length=40, default="job-standard-v1")
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_job_standards")
+    published_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="published_job_standards",
+    )
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-version", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["job", "version"], name="unique_job_standard_version"),
+            models.UniqueConstraint(
+                fields=["job"],
+                condition=Q(status="published"),
+                name="unique_published_standard_per_job",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).first()
+            if original and original.status == self.Status.PUBLISHED:
+                protected = (
+                    "status",
+                    "criteria",
+                    "unresolved_questions",
+                    "model_name",
+                    "prompt_version",
+                    "published_by_id",
+                    "published_at",
+                )
+                if any(getattr(original, field) != getattr(self, field) for field in protected):
+                    raise ValidationError("已启用的评分标准不可直接修改，请创建新草稿")
+        return super().save(*args, **kwargs)
+
+
+class StructuredResumeVersion(models.Model):
+    resume = models.ForeignKey(Resume, on_delete=models.PROTECT, related_name="structured_versions")
+    version = models.PositiveIntegerField()
+    extraction = models.ForeignKey(FileTextExtraction, on_delete=models.PROTECT, related_name="structured_resumes")
+    data = models.JSONField(default=dict, blank=True)
+    evidence = models.JSONField(default=list, blank=True)
+    warnings = models.JSONField(default=list, blank=True)
+    model_name = models.CharField(max_length=120)
+    prompt_version = models.CharField(max_length=40, default="resume-structure-v1")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["resume", "version"], name="unique_structured_resume_version")
+        ]
+
+
+class ResumeAssessment(models.Model):
+    class Recommendation(models.TextChoices):
+        ADVANCE = "advance", "建议进一步沟通"
+        REVIEW = "review", "建议人工复核"
+        HOLD = "hold", "暂不建议推进"
+
+    structured_resume = models.ForeignKey(
+        StructuredResumeVersion,
+        on_delete=models.PROTECT,
+        related_name="assessments",
+    )
+    standard = models.ForeignKey(JobStandardVersion, on_delete=models.PROTECT, related_name="assessments")
+    total_score = models.DecimalField(max_digits=5, decimal_places=2)
+    dimension_scores = models.JSONField(default=list, blank=True)
+    evidence = models.JSONField(default=list, blank=True)
+    gaps = models.JSONField(default=list, blank=True)
+    verification_questions = models.JSONField(default=list, blank=True)
+    confidence = models.DecimalField(
+        max_digits=4,
+        decimal_places=3,
+        validators=[MinValueValidator(0), MaxValueValidator(1)],
+    )
+    recommendation = models.CharField(max_length=32, choices=Recommendation.choices)
+    model_name = models.CharField(max_length=120)
+    prompt_version = models.CharField(max_length=40, default="resume-score-v1")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["structured_resume", "standard"],
+                name="unique_resume_assessment_inputs",
+            )
+        ]
+
+
+class AiProcessingTask(models.Model):
+    class Kind(models.TextChoices):
+        JOB_STANDARD = "job_standard", "岗位标准"
+        RESUME_STRUCTURE = "resume_structure", "简历结构化"
+        RESUME_SCORE = "resume_score", "简历评分"
+
+    class Status(models.TextChoices):
+        WAITING_CONFIG = "waiting_config", "等待模型配置"
+        PENDING = "pending", "等待处理"
+        EXTRACTING = "extracting", "文本提取中"
+        OCR = "ocr", "OCR 处理中"
+        MODEL = "model", "模型处理中"
+        WAITING_REVIEW = "waiting_review", "待人工确认"
+        SUCCEEDED = "succeeded", "已完成"
+        FAILED = "failed", "失败"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=32, choices=Kind.choices, db_index=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING, db_index=True)
+    requested_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="ai_processing_tasks")
+    job = models.ForeignKey(
+        RecruitmentJob,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="ai_tasks",
+    )
+    document_version = models.ForeignKey(
+        JobRequirementDocumentVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="ai_tasks",
+    )
+    resume = models.ForeignKey(
+        Resume,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="ai_tasks",
+    )
+    standard = models.ForeignKey(
+        JobStandardVersion,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="ai_tasks",
+    )
+    idempotency_key = models.CharField(max_length=160, unique=True)
+    progress = models.PositiveSmallIntegerField(default=0, validators=[MaxValueValidator(100)])
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=3)
+    available_at = models.DateTimeField(default=timezone.now, db_index=True)
+    leased_at = models.DateTimeField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    result_ref = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["available_at", "created_at"]

@@ -118,17 +118,17 @@ git commit -m "feat: add compatible model gateway"
 - Create: `backend/recruitment/migrations/0021_resume_intelligence.py`
 - Create: `backend/recruitment/tests/test_resume_intelligence_models.py`
 
-- [ ] **Step 1: Write failing model tests**
+- [x] **Step 1: Write failing model tests**
 
 Cover unique versions, immutable published standards, one current published standard per job, unique task idempotency keys, nullable task targets, and an assessment that binds one `JobStandardVersion` to one `StructuredResumeVersion`.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `..\.venv\Scripts\python.exe manage.py test recruitment.tests.test_resume_intelligence_models -v 2`.
 
 Expected: FAIL because the models do not exist.
 
-- [ ] **Step 3: Add the models and migration**
+- [x] **Step 3: Add the models and migration**
 
 Add these models with timestamps and explicit choices:
 
@@ -217,19 +217,19 @@ class AiProcessingTask(models.Model):
     result_ref = models.JSONField(default=dict, blank=True)
 ```
 
-- [ ] **Step 4: Generate and inspect migration**
+- [x] **Step 4: Generate and inspect migration**
 
 Run: `..\.venv\Scripts\python.exe manage.py makemigrations recruitment --name resume_intelligence`.
 
 Expected: migration `0021_resume_intelligence.py` with all five models and constraints; no unrelated changes.
 
-- [ ] **Step 5: Run tests and Django checks**
+- [x] **Step 5: Run tests and Django checks**
 
 Run: `..\.venv\Scripts\python.exe manage.py test recruitment.tests.test_resume_intelligence_models -v 2` and `..\.venv\Scripts\python.exe manage.py check`.
 
 Expected: PASS and no system-check issues.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add backend/recruitment/models.py backend/recruitment/migrations/0021_resume_intelligence.py backend/recruitment/tests/test_resume_intelligence_models.py
