@@ -243,7 +243,7 @@ git commit -m "feat: model resume intelligence versions"
 - Create: `backend/recruitment/services/file_extraction.py`
 - Create: `backend/recruitment/tests/test_file_extraction.py`
 
-- [ ] **Step 1: Add bounded dependencies**
+- [x] **Step 1: Add bounded dependencies**
 
 Add:
 
@@ -252,11 +252,12 @@ python-docx>=1.2,<2
 pypdf>=6.16,<7
 pypdfium2>=5.13,<6
 rapidocr>=3.9,<4
+onnxruntime>=1.28,<2
 ```
 
 `pypdf` and `pypdfium2` are selected instead of AGPL PyMuPDF so the local product retains a liberal PDF dependency boundary.
 
-- [ ] **Step 2: Write failing extraction tests**
+- [x] **Step 2: Write failing extraction tests**
 
 Generate synthetic files during tests. Assert:
 
@@ -267,13 +268,13 @@ Generate synthetic files during tests. Assert:
 - PNG invokes OCR and returns bounding boxes.
 - no extractor writes files outside its temporary directory.
 
-- [ ] **Step 3: Run tests and verify failure**
+- [x] **Step 3: Run tests and verify failure**
 
 Run: `..\.venv\Scripts\python.exe manage.py test recruitment.tests.test_file_extraction -v 2`.
 
 Expected: FAIL because the service does not exist.
 
-- [ ] **Step 4: Implement focused adapters**
+- [x] **Step 4: Implement focused adapters**
 
 Expose:
 
@@ -302,13 +303,13 @@ def extract_image(path: Path, *, ocr) -> ExtractionResult: ...
 
 Use `subprocess.run([soffice, "--headless", "--convert-to", "docx", "--outdir", temp_dir, source], shell=False, timeout=60)` for DOC. Treat fewer than 80 non-whitespace PDF characters as scanned. Render OCR pages at 2x scale with `pypdfium2`. Normalize OCR results into `{text, page, section, bbox}`.
 
-- [ ] **Step 5: Install dependencies and run tests**
+- [x] **Step 5: Install dependencies and run tests**
 
 Run: `..\.venv\Scripts\python.exe -m pip install -r requirements.txt` then the extraction test command.
 
 Expected: installation succeeds on Windows and all extraction tests PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add backend/requirements.txt backend/recruitment/services/file_extraction.py backend/recruitment/tests/test_file_extraction.py
