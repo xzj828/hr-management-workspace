@@ -46,5 +46,15 @@ def archive_pdf(*, application, filename, content, source=Resume.Source.BOSS, ex
         target_id=str(resume.pk),
         detail={"candidate_id": application.candidate_id, "version": version, "sha256": digest[:12]},
     )
+    from recruitment.services.workflow_events import publish_workflow_event
+
+    transaction.on_commit(
+        lambda: publish_workflow_event(
+            event="resume.archived",
+            application=application,
+            event_key=f"resume:{resume.pk}",
+            payload={"resume_id": resume.pk},
+        )
+    )
     return resume, True
 

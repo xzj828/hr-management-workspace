@@ -67,6 +67,7 @@ def ingest_conversation(*, application, account, messages, cursor=""):
 
     created_messages = 0
     created_attachments = 0
+    created_candidate_messages = []
     last_preview = state.last_message_preview
     has_candidate_reply = state.has_candidate_reply
     for item in messages:
@@ -95,6 +96,8 @@ def ingest_conversation(*, application, account, messages, cursor=""):
         if not created:
             continue
         created_messages += 1
+        if direction == ConversationMessage.Direction.CANDIDATE:
+            created_candidate_messages.append(message)
         last_preview = message.content[:500]
         has_candidate_reply = has_candidate_reply or direction == ConversationMessage.Direction.CANDIDATE
         for attachment in item.get("attachments", []):
@@ -124,6 +127,18 @@ def ingest_conversation(*, application, account, messages, cursor=""):
         cached_state.last_message_preview = state.last_message_preview
         cached_state.has_candidate_reply = state.has_candidate_reply
         cached_state.last_synced_at = state.last_synced_at
+    if created_candidate_messages:
+        from recruitment.services.workflow_events import publish_workflow_event
+
+        for candidate_message in created_candidate_messages:
+            transaction.on_commit(
+                lambda item=candidate_message: publish_workflow_event(
+                    event="candidate_message.received",
+                    application=application,
+                    event_key=f"message:{item.pk}",
+                    payload={"message_id": item.pk},
+                )
+            )
     return ConversationIngestionResult(created_messages, created_attachments, state.cursor)
 
 
