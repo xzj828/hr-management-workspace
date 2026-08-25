@@ -12,13 +12,14 @@ from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import BossAccount, JobApplication, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker
+from .models import BossAccount, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
 from .services.discovery import sync_discoveries
 from .services.communications import complete_communication_task
 from .services.communications import sync_conversation_states
 from .services.resumes import archive_pdf
+from .services.conversation_ingestion import ingest_conversation, process_pending_messages
 from .services.task_recovery import recover_stale_tasks
 from .services.account_status import apply_account_observation
 
@@ -235,14 +236,40 @@ def complete_task_view(request, task_id):
                 )[:2])
                 if len(applications) != 1:
                     continue
+                application = applications[0]
+                messages = [dict(item) for item in row.get("messages", []) if isinstance(item, dict)]
+                attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else []
+                if attachments:
+                    target_message = next(
+                        (item for item in reversed(messages) if item.get("direction") == "candidate"),
+                        None,
+                    )
+                    if target_message is not None:
+                        target_message["attachments"] = [
+                            {
+                                "external_id": str(item.get("external_id", "")),
+                                "filename": str(item.get("filename", "附件简历.pdf")),
+                                "content_type": "application/pdf",
+                                "file_size": int(item.get("file_size", 0) or 0),
+                                "path": str(item.get("path", "")),
+                            }
+                            for item in attachments
+                            if isinstance(item, dict)
+                        ]
+                ingest_conversation(
+                    application=application,
+                    account=task.boss_account,
+                    messages=messages,
+                    cursor=str(row.get("cursor", "")),
+                )
                 for attachment in row.get("attachments") if isinstance(row.get("attachments"), list) else []:
                     raw_path = Path(str(attachment.get("path", "")))
                     try:
                         resolved = raw_path.resolve(strict=True)
                         if incoming not in resolved.parents or resolved.suffix.lower() != ".pdf":
                             continue
-                        _, created = archive_pdf(
-                            application=applications[0],
+                        resume, created = archive_pdf(
+                            application=application,
                             filename=attachment.get("filename", "附件简历.pdf"),
                             content=resolved.read_bytes(),
                             source=Resume.Source.BOSS,
@@ -250,8 +277,19 @@ def complete_task_view(request, task_id):
                         )
                         resolved.unlink(missing_ok=True)
                         archived += int(created)
+                        MessageAttachment.objects.filter(
+                            message__conversation_state__application=application,
+                            original_name=attachment.get("filename", "附件简历.pdf"),
+                            archived_resume__isnull=True,
+                        ).order_by("-created_at").update(archived_resume=resume)
                     except (OSError, ValueError):
                         continue
+                process_pending_messages(
+                    application=application,
+                    account=task.boss_account,
+                    actor=task.created_by,
+                    schedule_actions=True,
+                )
             sync_result["attachments_archived"] = archived
             result = {"sync": sync_result}
         except ValueError as exc:

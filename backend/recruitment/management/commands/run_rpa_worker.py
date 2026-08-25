@@ -14,7 +14,7 @@ from recruitment.rpa.browser import ProfileLock, ProfileLockedError
 from recruitment.rpa.capabilities import capability_payload
 from recruitment.rpa.cli import BossCliError, BossCliRunner, CliAccountConfig
 from recruitment.rpa.status import inspect_boss_status
-from recruitment.rpa.conversations import parse_conversation_list
+from recruitment.rpa.conversations import parse_chat_messages, parse_conversation_list
 from recruitment.rpa.playwright_adapter import BrowserConnectionError, BrowserInventory
 
 
@@ -216,7 +216,8 @@ def execute_sync_conversations(task, account, runner):
             row["sync_error"] = "同名候选人不唯一，未打开会话"
             continue
         try:
-            runner.open_chat(account, row["name"])
+            opened = runner.open_chat(account, row["name"])
+            row["messages"] = parse_chat_messages(opened.stdout)
             row["attachments"] = BrowserInventory(account.cdp_port).download_resume_attachments(row["name"], incoming)
         except (BossCliError, BrowserConnectionError) as exc:
             row["sync_error"] = str(exc)

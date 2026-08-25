@@ -1,8 +1,14 @@
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from django.test import SimpleTestCase
 
-from recruitment.management.commands.run_rpa_worker import AccountStatusObserver, WorkerEngine, execute_check_status
+from recruitment.management.commands.run_rpa_worker import (
+    AccountStatusObserver,
+    WorkerEngine,
+    execute_check_status,
+    execute_sync_conversations,
+)
 from recruitment.rpa.cli import CliAccountConfig
 from recruitment.rpa.status import BossBrowserStatus, classify_boss_pages
 
@@ -27,6 +33,28 @@ class BossStatusTests(SimpleTestCase):
 
 
 class WorkerEngineTests(SimpleTestCase):
+    @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
+    def test_conversation_sync_returns_every_chat_message(self, inventory):
+        inventory.return_value.download_resume_attachments.return_value = []
+
+        class Runner:
+            def conversations(self, account):
+                return "1. 林然｜产品经理｜未读 2"
+
+            def open_chat(self, account, name):
+                return SimpleNamespace(stdout="""成功进入候选人聊天：林然
+完整聊天消息：
+[candidate] 2026-08-25 09:00 你好
+[you] 2026-08-25 09:01 您好
+[candidate] 2026-08-25 09:02 这是我的简历
+""")
+
+        outcome = execute_sync_conversations({}, CliAccountConfig("edge.exe", "profile", 53470), Runner())
+
+        messages = outcome["result"]["conversations"][0]["messages"]
+        self.assertEqual(len(messages), 3)
+        self.assertEqual(messages[-1]["content"], "这是我的简历")
+
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_status_observer_checks_all_accounts_outside_task_queue(self, inspect):
         inspect.side_effect = [

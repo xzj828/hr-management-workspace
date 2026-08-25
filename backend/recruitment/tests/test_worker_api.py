@@ -5,7 +5,17 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from recruitment.models import BossAccount, RecruitmentJob, RpaTask, RpaWorker
+from attendance.models import AccountProfile
+from recruitment.models import (
+    BossAccount,
+    Candidate,
+    ConversationMessage,
+    HumanAttention,
+    JobApplication,
+    RecruitmentJob,
+    RpaTask,
+    RpaWorker,
+)
 
 
 @override_settings(RPA_WORKER_TOKEN="test-worker-secret")
@@ -166,3 +176,91 @@ class WorkerApiTests(APITestCase):
         self.task.refresh_from_db()
         self.assertEqual(self.task.result["sync"]["created"], 1)
         self.assertNotIn("positions", self.task.result)
+
+    def test_conversation_completion_persists_all_messages_and_observation_attention(self):
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="conversation-job",
+            title="产品经理",
+            owner=self.hr,
+        )
+        candidate = Candidate.objects.create(identity_key="conversation-worker", name="林然")
+        JobApplication.objects.create(candidate=candidate, job=job, source="boss")
+        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
+        self.task.save(update_fields=["action"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+            {
+                "worker_key": "local-worker",
+                "status": "succeeded",
+                "result": {"conversations": [{
+                    "name": "林然",
+                    "messages": [
+                        {"direction": "candidate", "content": "你好", "sent_at": "2026-08-25T09:00:00+08:00"},
+                        {"direction": "hr", "content": "您好", "sent_at": "2026-08-25T09:01:00+08:00"},
+                        {"direction": "candidate", "content": "我想先了解一下公司", "sent_at": "2026-08-25T09:02:00+08:00"},
+                    ],
+                    "attachments": [],
+                }]},
+            },
+            format="json",
+            **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(ConversationMessage.objects.count(), 3)
+        self.assertEqual(HumanAttention.objects.get().attention_type, HumanAttention.Type.OBSERVING_CANDIDATE)
+
+    def test_ordinary_candidate_message_queues_native_resume_request(self):
+        AccountProfile.objects.create(user=self.hr, role=AccountProfile.Role.HR)
+        self.account.authorized_users.add(self.hr)
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="resume-request-job",
+            title="测试工程师",
+            owner=self.hr,
+        )
+        candidate = Candidate.objects.create(
+            identity_key="resume-request-candidate",
+            external_id="boss-candidate-1",
+            name="周青",
+        )
+        JobApplication.objects.create(candidate=candidate, job=job, source="boss")
+        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
+        self.task.save(update_fields=["action"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+                {
+                    "worker_key": "local-worker",
+                    "status": "succeeded",
+                    "result": {"conversations": [{
+                        "name": "周青",
+                        "messages": [{
+                            "direction": "candidate",
+                            "content": "你好",
+                            "sent_at": "2026-08-25T09:00:00+08:00",
+                        }],
+                        "attachments": [],
+                    }]},
+                },
+                format="json",
+                **self.token_header,
+            )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        request_task = RpaTask.objects.exclude(pk=self.task.pk).get(action=RpaTask.Action.REQUEST_RESUME)
+        self.assertTrue(request_task.request_payload["first_contact"])
+        self.assertEqual(request_task.request_payload["target"]["name"], "周青")

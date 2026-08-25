@@ -84,7 +84,7 @@ def create_task(
         ):
             raise ValidationError("自动化确认记录无效")
 
-    if locked.rpa_tasks.filter(status__in=[RpaTask.Status.PENDING, RpaTask.Status.LEASED, RpaTask.Status.RUNNING]).exists():
+    if locked.rpa_tasks.filter(status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING]).exists():
         raise ValidationError("该账号已有任务正在执行")
 
     if capability.consumes:
