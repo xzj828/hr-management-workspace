@@ -108,7 +108,7 @@ onMounted(async () => {
         </section>
       </div>
 
-      <div class="recruitment-detail-grid-dashboard">
+      <div class="recruitment-detail-grid-dashboard recruitment-detail-grid-dashboard--single">
         <section class="panel recruitment-dashboard-panel">
           <header class="panel__header"><div><span class="panel-kicker">AUTOMATION LOG</span><h3>最近自动化</h3></div><button class="text-button" type="button" @click="go('/recruitment/automation')">查看全部</button></header>
           <div v-if="dashboard.recent_tasks.length" class="dashboard-task-list"><button v-for="task in dashboard.recent_tasks" :key="task.id" type="button" @click="go(task.route)"><i :class="`is-${task.status}`"></i><span><strong>{{ task.action_label }}</strong><small>{{ task.account_name }} · {{ formatTime(task.created_at) }}</small></span><b>{{ task.status_label }}</b></button></div>
