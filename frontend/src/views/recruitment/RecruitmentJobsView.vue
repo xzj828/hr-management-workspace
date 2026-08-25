@@ -8,6 +8,11 @@ import TaskProgressBar from '@/components/TaskProgressBar.vue'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import { formatRecruitmentDate } from '@/recruitment'
 import { createRequestId, positionSyncSummary, terminalTaskStatuses } from '@/recruitmentJobs'
+import { useAuthStore } from '@/stores/auth'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
+
+const auth = useAuthStore()
+const recruitmentContext = useRecruitmentContextStore()
 
 const jobs = ref([])
 const accounts = ref([])
@@ -54,6 +59,7 @@ async function pollSyncTask(taskId) {
     if (task.status === 'succeeded') {
       syncMessage.value = positionSyncSummary(task.result) || '职位同步完成'
       await loadJobs()
+      await recruitmentContext.loadJobs({ userId: auth.user?.id, force: true })
       return
     }
     if (task.status === 'waiting_human') {

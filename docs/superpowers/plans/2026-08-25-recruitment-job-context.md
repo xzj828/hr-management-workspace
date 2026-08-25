@@ -350,11 +350,11 @@ git commit -m "feat: make recruitment dashboard a global command center"
 - Modify: `frontend/src/stores/recruitmentContext.js`
 - Modify: `frontend/src/stores/recruitmentContext.test.js`
 
-- [ ] **Step 1: Write failing synchronization tests**
+- [x] **Step 1: Write failing synchronization tests**
 
 Assert the context store reloads only after the sync task reaches `succeeded`; failed/waiting-human tasks leave the old list intact. Assert a selected job absent from the successful reload is invalidated and the store exposes a user-readable invalidation reason.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 npm.cmd test -- src/views/recruitment/RecruitmentJobsView.test.js src/stores/recruitmentContext.test.js
@@ -362,17 +362,17 @@ npm.cmd test -- src/views/recruitment/RecruitmentJobsView.test.js src/stores/rec
 
 Expected: FAIL because position sync does not notify the context store.
 
-- [ ] **Step 3: Connect successful sync to the context store**
+- [x] **Step 3: Connect successful sync to the context store**
 
 After existing RPA polling reports `succeeded`, call `context.loadJobs({ userId: auth.user.id, force: true })`. Do not reload the store on failed, cancelled, or waiting-human states. Preserve the old `jobs` array during refresh and invalidate selection only after a successful replacement list proves it absent.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run the command from Step 2.
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit sync integration**
+- [x] **Step 5: Commit sync integration**
 
 ```powershell
 git add frontend/src/views/recruitment/RecruitmentJobsView.vue frontend/src/views/recruitment/RecruitmentJobsView.test.js frontend/src/stores/recruitmentContext.js frontend/src/stores/recruitmentContext.test.js

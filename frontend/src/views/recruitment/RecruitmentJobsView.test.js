@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 
 const apiMock = vi.hoisted(() => vi.fn())
 
@@ -9,6 +10,8 @@ vi.mock('@/api', () => ({
 }))
 
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
+import { useAuthStore } from '@/stores/auth'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import RecruitmentJobsView from './RecruitmentJobsView.vue'
 
 
@@ -20,9 +23,16 @@ const jobs = [
 
 describe('RecruitmentJobsView', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
+    useAuthStore().user = { id: 7, username: 'hr' }
+    const context = useRecruitmentContextStore()
+    context.jobs = jobs.slice(0, 2)
+    context.loaded = true
+    context.loadedUserId = '7'
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/jobs/') return Promise.resolve({ results: jobs })
+      if (path === 'recruitment/jobs/?status=open') return Promise.resolve({ results: jobs.slice(1) })
       if (path === 'recruitment/jobs/1/archive/') return Promise.resolve({ ...jobs[0], archived_at: '2026-08-24T10:00:00Z' })
       if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{ id: 8, name: '北京账号', login_status: 'ready' }] })
       if (path === 'recruitment/jobs/sync/') return Promise.resolve({ task_id: 'task-1', status: 'pending' })
@@ -74,6 +84,28 @@ describe('RecruitmentJobsView', () => {
     expect(JSON.parse(syncCall[1].body).request_id).toMatch(/^[0-9a-f-]{36}$/)
     expect(wrapper.text()).toContain('新增 2 · 更新 1 · 未变化 4 · 共 7 个职位')
     expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/jobs/')).toHaveLength(2)
+    expect(apiMock).toHaveBeenCalledWith('recruitment/jobs/?status=open')
+    expect(useRecruitmentContextStore().jobs).toEqual(jobs.slice(1))
+  })
+
+  it('does not refresh the shared job selector when sync needs human action', async () => {
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/jobs/') return Promise.resolve({ results: jobs })
+      if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{ id: 8, name: '北京账号' }] })
+      if (path === 'recruitment/jobs/sync/') return Promise.resolve({ task_id: 'task-human', status: 'pending' })
+      if (path === 'recruitment/rpa-tasks/task-human/') return Promise.resolve({ id: 'task-human', status: 'waiting_human' })
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    const oldJobs = useRecruitmentContextStore().jobs
+    const wrapper = mount(RecruitmentJobsView)
+    await flushPromises()
+
+    await wrapper.get('[data-test="sync-positions"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('需要在隔离浏览器中完成验证')
+    expect(apiMock.mock.calls.some(([path]) => path === 'recruitment/jobs/?status=open')).toBe(false)
+    expect(useRecruitmentContextStore().jobs).toEqual(oldJobs)
   })
 
   it('archives a saved position from its detail drawer', async () => {
