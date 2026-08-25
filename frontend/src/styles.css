@@ -602,6 +602,10 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 
 /* Candidate discovery — restrained editorial workspace */
 .candidate-workspace { padding-bottom: 96px; }
+.job-context-required { min-height: 300px; display: flex; align-items: center; justify-content: center; gap: 14px; color: var(--teal-dark); text-align: left; }
+.job-context-required div { max-width: 420px; }
+.job-context-required strong { color: var(--ink); font-size: 16px; }
+.job-context-required p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .candidate-tabs { display: flex; align-items: center; gap: 28px; min-height: 46px; border-bottom: 1px solid var(--line); }
 .candidate-tabs button { position: relative; height: 46px; padding: 0; border: 0; color: var(--muted); background: transparent; font-size: 13px; font-weight: 700; cursor: pointer; transition: color 150ms ease; }
 .candidate-tabs button::after { content: ''; position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--teal-dark); transform: scaleX(0); transition: transform 180ms cubic-bezier(.2,.8,.2,1); }
@@ -610,6 +614,9 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .candidate-tabs span { display: inline-grid; min-width: 19px; height: 19px; margin-left: 5px; place-content: center; border-radius: 999px; background: #edf3f4; font-size: 9px; }
 .discovery-console { overflow: hidden; border: 1px solid rgba(15,70,68,.12); border-radius: 16px; background: rgba(255,255,255,.92); box-shadow: 0 16px 42px rgba(22,49,65,.05); }
 .discovery-console__top { display: grid; grid-template-columns: minmax(170px,230px) minmax(190px,260px) 1fr; align-items: end; gap: 18px; padding: 18px 20px 15px; }
+.discovery-bound-context { min-width: 0; display: grid; gap: 7px; padding: 3px 0; }
+.discovery-bound-context span { color: var(--muted); font-size: 10px; font-weight: 700; }
+.discovery-bound-context strong { overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .discovery-console label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 700; }
 .discovery-console select, .discovery-console textarea { width: 100%; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: #fbfcfc; outline: none; transition: border-color 140ms ease, box-shadow 140ms ease; }
 .discovery-console select { height: 38px; padding: 0 34px 0 11px; }

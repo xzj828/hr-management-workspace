@@ -54,6 +54,7 @@ from .serializers import (
     WorkflowRunSerializer,
 )
 from .services.approvals import approve
+from .services.access import accessible_jobs
 from .services.communications import materialize_communication_batch, prepare_communication
 from .services.communications import _identity_snapshot
 from .services.discovery import import_discoveries
@@ -80,16 +81,6 @@ class ArchivableViewSetMixin:
     def restore(self, request, pk=None):
         instance = restore_object(instance=self.get_object(), actor=request.user)
         return Response(self.get_serializer(instance).data)
-
-
-def accessible_jobs(user):
-    queryset = RecruitmentJob.objects.all()
-    if user.is_superuser:
-        return queryset
-    return queryset.filter(
-        Q(boss_account__authorized_users=user)
-        | Q(boss_account__isnull=True, owner=user)
-    ).distinct()
 
 
 def requested_open_job(request):
@@ -393,16 +384,33 @@ class JobApplicationViewSet(
 ):
     queryset = JobApplication.objects.select_related(
         "candidate", "job", "owner"
-    ).prefetch_related("candidate__resumes").order_by("-updated_at")
+    ).prefetch_related("candidate__resumes", "resumes").order_by("-updated_at")
     serializer_class = JobApplicationSerializer
     permission_classes = [RecruitmentWritePermission]
     http_method_names = ["get", "patch", "post", "head", "options"]
 
     def get_queryset(self):
         queryset = super().get_queryset().filter(job__in=accessible_jobs(self.request.user))
+        queryset = queryset.prefetch_related(
+            Prefetch(
+                "candidate__applications",
+                queryset=JobApplication.objects.select_related("job", "owner").filter(
+                    job__in=accessible_jobs(self.request.user),
+                    archived_at__isnull=True,
+                ),
+                to_attr="accessible_applications",
+            )
+        )
         job = requested_open_job(self.request)
         if job:
             queryset = queryset.filter(job=job)
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(candidate__name__icontains=search)
+                | Q(candidate__current_title__icontains=search)
+                | Q(candidate__current_city__icontains=search)
+            )
         if self.request.query_params.get("stage"):
             queryset = queryset.filter(stage=self.request.query_params["stage"])
         if self.request.query_params.get("is_demo") == "true":

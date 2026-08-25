@@ -204,6 +204,9 @@ class RecruitmentPagesApiTests(APITestCase):
         applications = self.client.get(f"/api/recruitment/applications/?job={visible_job.id}")
         self.assertEqual(applications.data["count"], 1)
         self.assertEqual(applications.data["results"][0]["id"], visible_application.id)
+        self.assertIn("phone", applications.data["results"][0]["candidate"])
+        self.assertIn("resume_count", applications.data["results"][0])
+        self.assertEqual(applications.data["results"][0]["other_applications"], [])
         self.assertEqual(
             self.client.get(f"/api/recruitment/applications/{hidden_application.id}/").status_code,
             404,
@@ -227,6 +230,17 @@ class RecruitmentPagesApiTests(APITestCase):
         resumes = self.client.get(f"/api/recruitment/resumes/?job={visible_job.id}")
         self.assertEqual(resumes.data["count"], 1)
         self.assertEqual(resumes.data["results"][0]["id"], visible_resume.id)
+
+    def test_applications_support_candidate_search_inside_selected_job(self):
+        target = JobApplication.objects.select_related("candidate", "job").get(candidate__name="林雨薇")
+
+        response = self.client.get(
+            f"/api/recruitment/applications/?job={target.job_id}&search=林&stage={target.stage}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["candidate"]["name"], "林雨薇")
 
     def test_archiving_application_keeps_candidate_and_other_application(self):
         target = JobApplication.objects.filter(is_demo=True).select_related("candidate", "job").first()

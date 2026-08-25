@@ -78,14 +78,9 @@ class JobApplicationSummarySerializer(serializers.ModelSerializer):
 
 
 class CandidateSummarySerializer(serializers.ModelSerializer):
-    resume_count = serializers.SerializerMethodField()
-
-    def get_resume_count(self, obj):
-        return obj.resumes.count()
-
     class Meta:
         model = Candidate
-        fields = ["id", "name", "current_title", "current_city", "resume_count"]
+        fields = ["id", "name", "phone", "email", "current_title", "current_city"]
 
 
 class RecruitmentJobSerializer(serializers.ModelSerializer):
@@ -138,18 +133,39 @@ class JobApplicationSerializer(serializers.ModelSerializer):
     stage_label = serializers.CharField(source="get_stage_display", read_only=True)
     stage_reason = serializers.CharField(write_only=True, required=False, allow_blank=True)
     stage_history = ApplicationStageHistorySerializer(many=True, read_only=True)
+    resume_count = serializers.SerializerMethodField()
+    other_applications = serializers.SerializerMethodField()
+
+    def get_resume_count(self, obj):
+        return sum(1 for resume in obj.resumes.all() if resume.archived_at is None)
+
+    def get_other_applications(self, obj):
+        from recruitment.services.access import accessible_jobs
+
+        request = self.context.get("request")
+        if request is None:
+            return []
+        applications = getattr(obj.candidate, "accessible_applications", None)
+        if applications is None:
+            applications = obj.candidate.applications.select_related("job", "owner").filter(
+                job__in=accessible_jobs(request.user),
+                archived_at__isnull=True,
+            )
+        applications = [application for application in applications if application.pk != obj.pk]
+        return JobApplicationSummarySerializer(applications, many=True).data
 
     class Meta:
         model = JobApplication
         fields = [
             "id", "candidate", "job", "job_title", "source", "stage", "stage_label",
             "owner", "owner_name", "priority", "last_interaction_at", "is_demo",
-            "stage_reason", "stage_history", "archived_at", "created_at", "updated_at",
+            "stage_reason", "stage_history", "resume_count", "other_applications",
+            "archived_at", "created_at", "updated_at",
         ]
         read_only_fields = [
             "id", "candidate", "job", "job_title", "source", "stage_label", "owner",
             "owner_name", "priority", "last_interaction_at", "is_demo", "created_at", "updated_at",
-            "archived_at",
+            "resume_count", "other_applications", "archived_at",
         ]
 
     def update(self, instance, validated_data):

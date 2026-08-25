@@ -20,6 +20,7 @@
 - Modify `frontend/src/components/AppLayout.test.js`: header routing and context tests.
 - Modify `frontend/src/router.js`: mark scoped/global recruitment routes in route metadata.
 - Modify `backend/recruitment/views.py`: accessible-job helper, status filter, application access control, candidate prefetch scoping, resume job filter.
+- Create `backend/recruitment/services/access.py`: reusable authorized-job queryset for views and serializers.
 - Modify `backend/recruitment/models.py`: add recoverable JobApplication archival state.
 - Create `backend/recruitment/migrations/0015_jobapplication_archived_at.py`: persist JobApplication archival state.
 - Modify `backend/recruitment/serializers.py`: application-centric candidate rows and safe related-application output.
@@ -217,13 +218,13 @@ git commit -m "feat: add recruitment job selector"
 - Modify: `frontend/src/views/recruitment/RecruitmentCandidatesView.test.js`
 - Modify: `backend/recruitment/serializers.py`
 
-- [ ] **Step 1: Write failing candidate-workspace tests**
+- [x] **Step 1: Write failing candidate-workspace tests**
 
 Mount with current job 12. Assert the library calls `recruitment/applications/?job=12`, discovery calls `recruitment/candidate-discoveries/?imported=false&job=12`, the old “全部职位” and “来源职位” selects do not exist, and communication payload uses selected application IDs.
 
 Add a no-selection test asserting neither applications nor discoveries are requested and the page renders “请先选择在招职位”.
 
-- [ ] **Step 2: Run candidate tests and verify failure**
+- [x] **Step 2: Run candidate tests and verify failure**
 
 ```powershell
 npm.cmd test -- src/views/recruitment/RecruitmentCandidatesView.test.js
@@ -231,7 +232,7 @@ npm.cmd test -- src/views/recruitment/RecruitmentCandidatesView.test.js
 
 Expected: FAIL because the page still fetches candidates and owns separate job selections.
 
-- [ ] **Step 3: Implement application-centric rows**
+- [x] **Step 3: Implement application-centric rows**
 
 Replace `candidates` with `applications`. Render `application.candidate.name`, `application.candidate.current_title`, `application.stage_label`, `application.owner_name`, and `application.candidate.resume_count`. Use application IDs for selection and communication. Derive the BOSS account from `currentJob.boss_account`; keep the account visible but read-only in discovery.
 
@@ -239,7 +240,7 @@ All discovery search/deep-match payloads use `currentJob.id`. “移出当前职
 
 Extend `CandidateSummarySerializer` only with fields required by the application row; do not duplicate application state into Candidate.
 
-- [ ] **Step 4: Run candidate and serializer regression tests**
+- [x] **Step 4: Run candidate and serializer regression tests**
 
 ```powershell
 npm.cmd test -- src/views/recruitment/RecruitmentCandidatesView.test.js
@@ -248,7 +249,7 @@ npm.cmd test -- src/views/recruitment/RecruitmentCandidatesView.test.js
 
 Expected: all focused suites pass.
 
-- [ ] **Step 5: Commit the candidate slice**
+- [x] **Step 5: Commit the candidate slice**
 
 ```powershell
 git add frontend/src/views/recruitment/RecruitmentCandidatesView.vue frontend/src/views/recruitment/RecruitmentCandidatesView.test.js backend/recruitment/serializers.py
