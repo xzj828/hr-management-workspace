@@ -153,4 +153,24 @@ describe('WorkflowCanvas', () => {
       source: 'intent', target: 'attention', condition: { intent: 'observing' },
     })
   })
+
+  it('lets advanced users configure branch intent on any selected connection', async () => {
+    wrapper = mount(WorkflowCanvas, { props: { accounts: [{ id: 7, name: '主账号' }] } })
+    await wrapper.get('[data-edge-key="source-screen"]').trigger('click')
+    await wrapper.get('[data-test="edge-intent-condition"]').setValue('request_resume')
+    await wrapper.get('[data-test="save-workflow"]').trigger('click')
+
+    expect(wrapper.emitted('save')[0][0].edges).toContainEqual({
+      source: 'source', target: 'screen', condition: { intent: 'request_resume' },
+    })
+  })
+
+  it('adds a valid configurable search-and-pull business node', async () => {
+    wrapper = mount(WorkflowCanvas, { props: { accounts: [{ id: 7, name: '主账号' }] } })
+    await wrapper.get('[data-test="workflow-library-search_and_pull_resumes"]').trigger('click')
+    await wrapper.get('[data-test="save-workflow"]').trigger('click')
+
+    const node = wrapper.emitted('save')[0][0].nodes.find((item) => item.type === 'search_and_pull_resumes')
+    expect(node.config).toMatchObject({ source: 'search', target_resume_count: 3, max_scan_count: 20 })
+  })
 })

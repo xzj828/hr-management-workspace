@@ -16,13 +16,18 @@ const props = defineProps({
 const emit = defineEmits(['save'])
 
 const library = [
+  { type: 'sync_messages', label: '同步完整消息' },
+  { type: 'classify_intent', label: '判断消息意图' },
+  { type: 'create_attention', label: '创建人工待办', config: { attention_type: 'observing_candidate' } },
+  { type: 'search_and_pull_resumes', label: '搜索并拉取简历', config: { source: 'search', target_resume_count: 3, max_scan_count: 20 } },
+  { type: 'archive_resume', label: '归档简历' },
   { type: 'recommend', label: '读取推荐' },
   { type: 'search', label: '常规搜索' },
   { type: 'human_screen', label: '人工筛选' },
   { type: 'human_approval', label: '人工确认' },
-  { type: 'wait_reply', label: '等待回复' },
+  { type: 'wait_reply', label: '等待回复', config: { wake_event: 'candidate_message.received' } },
   { type: 'request_resume', label: '索要简历' },
-  { type: 'wait_resume', label: '等待简历' },
+  { type: 'wait_resume', label: '等待简历', config: { wake_event: 'resume.archived' } },
   { type: 'human_review', label: '人工复核' },
   { type: 'send_interview', label: '面试邀约' },
   { type: 'end', label: '结束' },
@@ -116,6 +121,9 @@ const connectionPreviewPath = computed(() => {
   return `M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`
 })
 const selectedNode = computed(() => selected.value?.kind === 'node' ? nodeByKey.value[selected.value.key] : null)
+const selectedEdge = computed(() => selected.value?.kind === 'edge'
+  ? edges.value.find((edge) => edge.source === selected.value.source && edge.target === selected.value.target)
+  : null)
 
 const selectionLabel = computed(() => {
   if (connectingFrom.value) return `正在从「${nodeByKey.value[connectingFrom.value]?.label || ''}」连线，请点击目标节点左侧圆点`
@@ -132,7 +140,7 @@ function makeNodeKey(type) {
 function addNode(item, position) {
   const index = nodes.value.length
   const nextPosition = position || { x: 70 + (index % 5) * 190, y: 80 + Math.floor(index / 5) * 110 }
-  const node = { key: makeNodeKey(item.type), type: item.type, label: item.label, position: nextPosition, config: {} }
+  const node = { key: makeNodeKey(item.type), type: item.type, label: item.label, position: nextPosition, config: { ...(item.config || {}) } }
   nodes.value.push(node)
   selected.value = { kind: 'node', key: node.key }
 }
@@ -395,8 +403,23 @@ onUnmounted(() => {
           <label class="workflow-node-config__switch"><input type="checkbox" :checked="selectedNode.config.enabled !== false" @change="selectedNode.config.enabled = $event.target.checked" /><span>启用此节点</span></label>
           <label v-if="['greet','request_resume','send_interview'].includes(selectedNode.type)">消息模板<textarea v-model="selectedNode.config.message" maxlength="1000" rows="5" placeholder="HR 确认时仍可修改"></textarea></label>
           <label v-if="['search','recommend','deep_search'].includes(selectedNode.type)">搜索关键词<input v-model.trim="selectedNode.config.keyword" maxlength="120" placeholder="例如：Vue 3" /></label>
+          <template v-if="selectedNode.type === 'search_and_pull_resumes'">
+            <label>搜索来源<select v-model="selectedNode.config.source"><option value="search">常规搜索</option><option value="recommend">推荐牛人</option><option value="deep_search">深度搜索</option></select></label>
+            <label>搜索关键词<input v-model.trim="selectedNode.config.keyword" maxlength="20" placeholder="例如：Python" /></label>
+            <label>目标简历数<input v-model.number="selectedNode.config.target_resume_count" type="number" min="1" max="100" /></label>
+            <label>最大扫描人数<input v-model.number="selectedNode.config.max_scan_count" type="number" :min="selectedNode.config.target_resume_count || 1" max="100" /></label>
+          </template>
+          <label v-if="selectedNode.type === 'create_attention'">待办类型<select v-model="selectedNode.config.attention_type"><option value="observing_candidate">候选人希望了解</option><option value="greeting_required">需要 HR 打招呼</option><option value="other">其他人工处理</option></select></label>
           <p>节点标识：<code>{{ selectedNode.key }}</code></p>
           <button class="danger-text-button" type="button" data-test="delete-selected-node" @click="removeSelection">删除节点</button>
+        </aside>
+      </Transition>
+      <Transition name="workflow-config">
+        <aside v-if="selectedEdge" class="workflow-node-config workflow-edge-config" data-test="workflow-edge-config">
+          <header><div><span class="panel-kicker">BRANCH SETTINGS</span><h3>连线条件</h3></div><button class="icon-button" type="button" aria-label="关闭连线配置" @click="selected = null"><AppIcon name="close" :size="16" /></button></header>
+          <label>消息意图<select :value="selectedEdge.condition?.intent || ''" data-test="edge-intent-condition" @change="selectedEdge.condition = $event.target.value ? { intent: $event.target.value } : {}"><option value="">无条件</option><option value="resume_received">已收到简历</option><option value="rejected">明确拒绝</option><option value="observing">想了解公司或岗位</option><option value="request_resume">可直接索要简历</option></select></label>
+          <p><code>{{ selectedEdge.source }}</code> → <code>{{ selectedEdge.target }}</code></p>
+          <button class="danger-text-button" type="button" data-test="delete-selected-edge" @click="removeSelection">删除连线</button>
         </aside>
       </Transition>
     </div>
