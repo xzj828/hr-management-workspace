@@ -23,6 +23,7 @@ from .services.human_attention import ensure_attention
 from .services.conversation_ingestion import ingest_conversation, process_pending_messages
 from .services.task_recovery import recover_stale_tasks
 from .services.account_status import apply_account_observation
+from .services.message_scheduling import schedule_due_conversation_syncs
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -113,6 +114,7 @@ def lease_task_view(request):
         return Response({"detail": "Worker 尚未注册"}, status=status.HTTP_400_BAD_REQUEST)
     now = timezone.now()
     recover_stale_tasks(now=now)
+    schedule_due_conversation_syncs(now=now)
     task = (
         RpaTask.objects.select_for_update()
         .select_related("boss_account")
