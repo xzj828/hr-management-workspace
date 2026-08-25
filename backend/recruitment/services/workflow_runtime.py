@@ -83,7 +83,9 @@ def _incoming(run):
 
 
 def _condition_matches(condition, output):
-    return all(output.get(key) == value for key, value in (condition or {}).items())
+    def matches(actual, expected):
+        return expected in actual if isinstance(actual, list) else actual == expected
+    return all(matches(output.get(key), value) for key, value in (condition or {}).items())
 
 
 @transaction.atomic

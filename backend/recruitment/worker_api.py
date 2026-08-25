@@ -19,7 +19,6 @@ from .services.discovery import _fingerprint, import_discoveries, sync_discoveri
 from .services.communications import complete_communication_task
 from .services.communications import sync_conversation_states
 from .services.resumes import archive_online_resume_image, archive_pdf
-from .services.human_attention import ensure_attention
 from .services.conversation_ingestion import ingest_conversation, process_pending_messages
 from .services.task_recovery import recover_stale_tasks
 from .services.account_status import apply_account_observation
@@ -242,6 +241,7 @@ def complete_task_view(request, task_id):
                     criteria=campaign.criteria, rows=rows,
                 )
                 archived = 0
+                application_ids = []
                 for item in pulled_rows:
                     candidate_row = item.get("candidate") if isinstance(item, dict) else None
                     if not isinstance(candidate_row, dict):
@@ -255,6 +255,7 @@ def complete_task_view(request, task_id):
                     import_discoveries(discoveries=[discovery], actor=task.created_by)
                     discovery.refresh_from_db(fields=["imported_candidate", "imported_at"])
                     application = JobApplication.objects.get(candidate=discovery.imported_candidate, job=campaign.job)
+                    application_ids.append(application.pk)
                     raw_path = Path(str(item.get("path", "")))
                     resolved = raw_path.resolve(strict=True)
                     if incoming not in resolved.parents or resolved.suffix.lower() != ".png":
@@ -266,14 +267,6 @@ def complete_task_view(request, task_id):
                     )
                     resolved.unlink(missing_ok=True)
                     archived += int(created)
-                    ensure_attention(
-                        attention_type="greeting_required",
-                        title=f"{discovery.display_name} 的在线简历已拉取，请 HR 确认后打招呼",
-                        idempotency_key=f"search-campaign-greet:{campaign.pk}:{application.pk}",
-                        account=task.boss_account, job=campaign.job, application=application,
-                        workflow_run=campaign.workflow_run,
-                        detail={"campaign_id": campaign.pk, "resume_id": resume.pk}, priority=10,
-                    )
                 campaign.scanned_count = min(int(result.get("scanned_count", len(rows)) or 0), campaign.max_scan_count)
                 campaign.pulled_resume_count = archived
                 campaign.status = SearchCampaign.Status.SUCCEEDED
@@ -285,7 +278,7 @@ def complete_task_view(request, task_id):
                 campaign.save(update_fields=[
                     "scanned_count", "pulled_resume_count", "status", "stop_reason", "completed_at", "updated_at",
                 ])
-                result = {"campaign_id": campaign.pk, "scanned_count": campaign.scanned_count, "pulled_resume_count": archived, "stop_reason": campaign.stop_reason}
+                result = {"campaign_id": campaign.pk, "scanned_count": campaign.scanned_count, "pulled_resume_count": archived, "stop_reason": campaign.stop_reason, "application_ids": application_ids}
             except (OSError, ValueError, JobApplication.DoesNotExist) as exc:
                 campaign.status = SearchCampaign.Status.FAILED
                 campaign.stop_reason = SearchCampaign.StopReason.ERROR
@@ -360,12 +353,13 @@ def complete_task_view(request, task_id):
                         ).order_by("-created_at").update(archived_resume=resume)
                     except (OSError, ValueError):
                         continue
-                process_pending_messages(
-                    application=application,
-                    account=task.boss_account,
-                    actor=task.created_by,
-                    schedule_actions=True,
-                )
+                if not task.request_payload.get("workflow_managed"):
+                    process_pending_messages(
+                        application=application,
+                        account=task.boss_account,
+                        actor=task.created_by,
+                        schedule_actions=True,
+                    )
             sync_result["attachments_archived"] = archived
             result = {"sync": sync_result}
         except ValueError as exc:

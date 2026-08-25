@@ -3,6 +3,7 @@ from recruitment.models import (
     ExecutionBatch,
     JobApplication,
     RpaTask,
+    Resume,
     SearchCampaign,
     WorkflowNodeRun,
     WorkflowRun,
@@ -10,6 +11,8 @@ from recruitment.models import (
 from recruitment.rpa.tasks import create_task
 from recruitment.services.communications import prepare_communication
 from recruitment.services.search_campaigns import start_search_campaign
+from recruitment.services.conversation_ingestion import _queue_resume_request, process_pending_messages
+from recruitment.services.human_attention import ensure_attention
 
 
 SOURCE_ACTIONS = {
@@ -31,6 +34,31 @@ def _task_outcome(task):
     return WorkflowNodeRun.Status.RUNNING, {"task_id": str(task.pk)}
 
 
+def _parent_outputs(node):
+    parents = []
+    for edge in node.run.graph_snapshot.get("edges", []):
+        if edge.get("target") == node.node_key:
+            parent = node.run.node_runs.filter(node_key=edge.get("source")).first()
+            if parent:
+                parents.append(parent.output or {})
+    return parents
+
+
+def _application_ids_for_intent(node, intent=None):
+    values = []
+    for output in _parent_outputs(node):
+        if intent:
+            values.extend((output.get("applications_by_intent") or {}).get(intent, []))
+        values.extend(output.get("application_ids", []))
+        values.extend((output.get("result") or {}).get("application_ids", []))
+        resume_id = output.get("resume_id")
+        if resume_id:
+            application_id = Resume.objects.filter(pk=resume_id).values_list("application_id", flat=True).first()
+            if application_id:
+                values.append(application_id)
+    return list(dict.fromkeys(int(value) for value in values if str(value).isdigit()))
+
+
 def execute_workflow_node(node):
     run = node.run
     if run.mode == WorkflowRun.Mode.DRY_RUN:
@@ -49,6 +77,7 @@ def execute_workflow_node(node):
                 "core": node.config_snapshot.get("core", criteria.get("core", [])),
                 "bonus": node.config_snapshot.get("bonus", criteria.get("bonus", [])),
                 "criteria": criteria,
+                "workflow_managed": node.node_type == "sync_messages",
             }
             task = create_task(
                 account=run.boss_account, action=SOURCE_ACTIONS[node.node_type], actor=run.actor,
@@ -56,6 +85,66 @@ def execute_workflow_node(node):
                 idempotency_key=f"workflow-task:{node.pk}:{node.attempt}",
             )
         return _task_outcome(task)
+
+    if node.node_type == "classify_intent":
+        applications = JobApplication.objects.filter(
+            job=run.job, job__boss_account=run.boss_account,
+        ).select_related("candidate", "job")
+        grouped = {}
+        messages = {}
+        for application in applications:
+            decision = process_pending_messages(
+                application=application, account=run.boss_account, actor=run.actor,
+                schedule_actions=False, create_attentions=False,
+            )
+            intent = str(decision.intent)
+            if intent == "ignore":
+                continue
+            grouped.setdefault(intent, []).append(application.pk)
+            if decision.message:
+                messages[str(application.pk)] = decision.message.pk
+        return WorkflowNodeRun.Status.SUCCEEDED, {
+            "intent": list(grouped), "applications_by_intent": grouped, "message_ids": messages,
+        }
+
+    if node.node_type == "create_attention":
+        attention_type = str(node.config_snapshot.get("attention_type", "other"))
+        intent = "observing" if attention_type == "observing_candidate" else None
+        application_ids = _application_ids_for_intent(node, intent)
+        for application in JobApplication.objects.filter(pk__in=application_ids).select_related("candidate", "job"):
+            ensure_attention(
+                attention_type=attention_type,
+                title=(f"{application.candidate.name} 希望进一步了解公司或岗位" if intent else f"请 HR 处理 {application.candidate.name}"),
+                idempotency_key=f"workflow-attention:{node.pk}:{application.pk}",
+                account=run.boss_account, job=application.job, application=application,
+                workflow_run=run, workflow_node_run=node, detail={"source": "workflow"}, priority=10,
+            )
+        return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "created": len(application_ids)}
+
+    if node.node_type == "request_resume":
+        application_ids = _application_ids_for_intent(node, "request_resume")
+        message_ids = {}
+        for output in _parent_outputs(node):
+            message_ids.update(output.get("message_ids") or {})
+        queued = []
+        for application in JobApplication.objects.filter(pk__in=application_ids).select_related("candidate", "job"):
+            source_message = application.conversation_state.messages.filter(pk=message_ids.get(str(application.pk))).first()
+            if source_message is None:
+                continue
+            first_contact = not application.conversation_state.messages.filter(direction="hr").exists()
+            task = _queue_resume_request(
+                application=application, account=run.boss_account, actor=run.actor,
+                message=str(node.config_snapshot.get("message") or "您好，这边是招聘岗位，方便发送一份简历进一步沟通吗？"),
+                first_contact=first_contact, source_message=source_message,
+            )
+            if task:
+                queued.append(str(task.pk))
+        return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "task_ids": queued}
+
+    if node.node_type == "archive_resume":
+        application_ids = _application_ids_for_intent(node, "resume_received")
+        archived = JobApplication.objects.filter(pk__in=application_ids, resumes__archived_at__isnull=True).distinct().count()
+        return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "archived": archived}
 
     if node.node_type == "search_and_pull_resumes":
         task = RpaTask.objects.filter(workflow_node_run=node).first()

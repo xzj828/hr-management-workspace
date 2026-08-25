@@ -189,7 +189,7 @@ def _queue_resume_request(*, application, account, actor, message, first_contact
 
 
 @transaction.atomic
-def process_pending_messages(*, application, account, actor=None, schedule_actions=False):
+def process_pending_messages(*, application, account, actor=None, schedule_actions=False, create_attentions=True):
     state = ConversationSyncState.objects.select_for_update().filter(
         application=application,
         boss_account=account,
@@ -214,7 +214,7 @@ def process_pending_messages(*, application, account, actor=None, schedule_actio
     latest = candidate_messages[-1]
     intent = classify_candidate_message(latest.content, has_resume_attachment=has_resume)
     attention = None
-    if intent == MessageIntent.OBSERVING:
+    if intent == MessageIntent.OBSERVING and create_attentions:
         attention, _ = ensure_attention(
             attention_type="observing_candidate",
             title=f"{application.candidate.name} 希望进一步了解公司或岗位",

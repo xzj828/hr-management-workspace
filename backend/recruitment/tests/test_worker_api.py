@@ -269,7 +269,7 @@ class WorkerApiTests(APITestCase):
         self.assertTrue(request_task.request_payload["first_contact"])
         self.assertEqual(request_task.request_payload["target"]["name"], "周青")
 
-    def test_search_campaign_completion_archives_online_resume_and_creates_hr_attention(self):
+    def test_search_campaign_completion_returns_applications_for_next_workflow_node(self):
         job = RecruitmentJob.objects.create(
             boss_account=self.account, external_id="search-pull-job", title="数据工程师", owner=self.hr,
         )
@@ -308,7 +308,9 @@ class WorkerApiTests(APITestCase):
             resume = Resume.objects.get()
             self.assertEqual(resume.source, Resume.Source.BOSS_ONLINE)
             self.assertEqual(resume.content_type, "image/png")
-            self.assertEqual(HumanAttention.objects.get().attention_type, HumanAttention.Type.GREETING_REQUIRED)
+            self.assertFalse(HumanAttention.objects.exists())
+            self.task.refresh_from_db()
+            self.assertEqual(self.task.result["application_ids"], [resume.application_id])
             campaign.refresh_from_db()
             self.assertEqual(campaign.status, SearchCampaign.Status.SUCCEEDED)
             self.assertEqual(campaign.pulled_resume_count, 1)
