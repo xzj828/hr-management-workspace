@@ -990,7 +990,10 @@ class StructuredResumeVersionViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset().filter(resume__application__job__in=accessible_jobs(self.request.user))
+        job_id = self.request.query_params.get("job")
         resume_id = self.request.query_params.get("resume")
+        if job_id:
+            queryset = queryset.filter(resume__application__job_id=job_id)
         if resume_id:
             queryset = queryset.filter(resume_id=resume_id)
         return queryset.distinct()

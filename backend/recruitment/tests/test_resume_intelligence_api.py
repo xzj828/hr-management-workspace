@@ -220,6 +220,12 @@ class StructuredResumeApiTests(APITestCase):
         self.assertEqual(resumes.data["results"][0]["latest_structure_id"], self.structured.id)
         self.assertEqual(resumes.data["results"][0]["intelligence_status"], "completed")
 
+    def test_structure_list_can_be_scoped_to_the_selected_job(self):
+        response = self.client.get(f"/api/recruitment/structured-resumes/?job={self.job.id}")
+        empty = self.client.get("/api/recruitment/structured-resumes/?job=999999")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(empty.data["count"], 0)
+
     def test_retry_actions_clear_failed_task(self):
         retried = self.client.post(f"/api/recruitment/ai-tasks/{self.task.id}/retry/", {}, format="json")
         self.assertEqual(retried.status_code, 200, retried.data)

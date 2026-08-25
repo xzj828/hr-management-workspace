@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { api, listItems } from '@/api'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
@@ -8,6 +8,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import { formatFileSize, formatRecruitmentDate } from '@/recruitment'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import JobStandardDrawer from '@/components/JobStandardDrawer.vue'
+import ResumeIntelligencePanel from '@/components/ResumeIntelligencePanel.vue'
 
 const context = useRecruitmentContextStore()
 const currentJob = computed(() => context.currentJob)
@@ -23,6 +24,12 @@ const standards = ref([])
 const standardDrawerOpen = ref(false)
 const generatingStandard = ref(false)
 const generationNote = ref('')
+const structures = ref([])
+const assessments = ref([])
+const aiTasks = ref([])
+const selectedResumeIds = ref([])
+const intelligenceTarget = ref(null)
+const scoring = ref(false)
 const wordInput = ref(null)
 const wordCategory = ref('persona')
 const wordUploading = ref(false)
@@ -30,6 +37,22 @@ const selectedVersions = computed(() => selected.value ? resumes.value.filter((i
 const fileStatusLabel = (resume) => resume.file_available ? '已入库' : '文件不可用'
 const currentStandard = computed(() => standards.value.find((item) => item.status === 'draft') || standards.value.find((item) => item.status === 'published') || standards.value[0] || null)
 let loadSequence = 0
+let intelligenceSequence = 0
+let pollTimer = null
+const activeTaskStatuses = new Set(['waiting_config', 'pending', 'extracting', 'ocr', 'model'])
+const structureFor = (resume) => structures.value.find((item) => item.resume === resume.id) || null
+const assessmentsFor = (resume) => assessments.value.filter((item) => item.resume === resume.id)
+const assessmentFor = (resume) => assessmentsFor(resume)[0] || null
+const tasksFor = (resume) => aiTasks.value.filter((item) => item.resume === resume.id)
+const parseStatus = (resume) => {
+  if (structureFor(resume)) return '已结构化'
+  const task = tasksFor(resume)[0]
+  if (!task) return '待解析'
+  if (task.status === 'failed') return '解析失败'
+  if (task.status === 'waiting_config') return '等待模型配置'
+  return activeTaskStatuses.has(task.status) ? '处理中' : task.status_label
+}
+const recommendationFor = (resume) => assessmentFor(resume)?.recommendation_label || '待评分'
 
 async function loadResumes() {
   if (!currentJob.value) return
@@ -58,6 +81,73 @@ async function loadStandards() {
   if (!currentJob.value) return
   try { standards.value = listItems(await api(`recruitment/job-standards/?job=${currentJob.value.id}`)) }
   catch (err) { error.value = err.message }
+}
+
+function stopPolling() {
+  if (pollTimer) window.clearInterval(pollTimer)
+  pollTimer = null
+}
+
+function syncPolling() {
+  const hasActive = aiTasks.value.some((task) => activeTaskStatuses.has(task.status))
+  if (hasActive && !pollTimer) pollTimer = window.setInterval(() => loadIntelligence(), 3000)
+  if (!hasActive) stopPolling()
+}
+
+async function loadIntelligence() {
+  if (!currentJob.value) return
+  const sequence = ++intelligenceSequence
+  try {
+    const job = currentJob.value.id
+    const [structurePayload, assessmentPayload, taskPayload] = await Promise.all([
+      api(`recruitment/structured-resumes/?job=${job}`),
+      api(`recruitment/resume-assessments/?job=${job}`),
+      api(`recruitment/ai-tasks/?job=${job}`),
+    ])
+    if (sequence !== intelligenceSequence) return
+    structures.value = listItems(structurePayload)
+    assessments.value = listItems(assessmentPayload)
+    aiTasks.value = listItems(taskPayload)
+    syncPolling()
+  } catch (err) {
+    if (sequence === intelligenceSequence) error.value = err.message
+  }
+}
+
+function requestId() {
+  return globalThis.crypto?.randomUUID?.() || `00000000-0000-4000-8000-${Date.now().toString().padStart(12, '0').slice(-12)}`
+}
+
+async function scoreResumes(resumeIds) {
+  if (!currentJob.value || !resumeIds.length) return
+  scoring.value = true; error.value = ''
+  try {
+    const result = await api('recruitment/resume-assessments/score/', {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId(), job: currentJob.value.id, resume_ids: resumeIds }),
+    })
+    const queued = (result.results || []).filter((item) => item.task_id).map((item) => ({ id: item.task_id, resume: item.resume_id, kind: 'resume_score', status: item.status, status_label: '等待处理' }))
+    aiTasks.value = [...queued, ...aiTasks.value]
+    syncPolling()
+  } catch (err) { error.value = err.message }
+  finally { scoring.value = false }
+}
+async function scoreSelected() { await scoreResumes([...selectedResumeIds.value]) }
+async function retryStructure(resume) {
+  try {
+    const task = await api(`recruitment/resumes/${resume.id}/retry-structure/`, { method: 'POST' })
+    aiTasks.value = [task, ...aiTasks.value.filter((item) => !(item.resume === resume.id && item.kind === 'resume_structure'))]
+    syncPolling()
+  } catch (err) { error.value = err.message }
+}
+async function rescore(resume) {
+  const assessment = assessmentFor(resume)
+  if (!assessment) return scoreResumes([resume.id])
+  try {
+    const task = await api(`recruitment/resume-assessments/${assessment.id}/rescore/`, { method: 'POST', body: JSON.stringify({ request_id: requestId() }) })
+    aiTasks.value = [task, ...aiTasks.value]
+    syncPolling()
+  } catch (err) { error.value = err.message }
 }
 
 async function generateStandard() {
@@ -109,6 +199,12 @@ watch(
   async () => {
     loadSequence += 1
     resumes.value = []
+    structures.value = []
+    assessments.value = []
+    aiTasks.value = []
+    selectedResumeIds.value = []
+    intelligenceTarget.value = null
+    stopPolling()
     selected.value = null
     lifecycleTarget.value = null
     showArchived.value = false
@@ -117,10 +213,11 @@ watch(
     standards.value = []
     standardDrawerOpen.value = false
     generationNote.value = ''
-    if (currentJob.value) await Promise.all([loadResumes(), loadJobDocuments(), loadStandards()])
+    if (currentJob.value) await Promise.all([loadResumes(), loadJobDocuments(), loadStandards(), loadIntelligence()])
   },
   { immediate: true },
 )
+onUnmounted(stopPolling)
 
 async function archiveResume() {
   if (!lifecycleTarget.value) return
@@ -210,30 +307,33 @@ async function toggleArchiveView() {
     <section class="recruitment-data-shell">
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>候选人</th><th>应聘职位</th><th>文件</th><th>来源</th><th>更新时间</th><th>文件状态</th><th></th></tr></thead>
+          <thead><tr><th v-if="!showArchived" class="resume-select-cell"></th><th>候选人</th><th>文件</th><th>解析状态</th><th>评分</th><th>AI 建议</th><th>更新时间</th><th></th></tr></thead>
           <tbody>
             <tr v-for="resume in resumes" :key="resume.id">
+              <td v-if="!showArchived" class="resume-select-cell"><input v-model="selectedResumeIds" :data-test="`select-resume-${resume.id}`" type="checkbox" :value="resume.id" :disabled="!structureFor(resume)" :aria-label="`选择${resume.candidate_name}`" /></td>
               <td><strong>{{ resume.candidate_name }}</strong></td>
-              <td>{{ resume.job_title || '—' }}</td>
-              <td><strong class="recruitment-file-name">{{ resume.original_name }}</strong><small class="block-text">{{ resumeFormat(resume) }} · {{ formatFileSize(resume.file_size) }} · V{{ resume.version || 1 }}</small></td>
-              <td>{{ resume.source_label }}</td>
+              <td><strong class="recruitment-file-name">{{ resume.original_name }}</strong><small class="block-text">{{ resumeFormat(resume) }} · {{ formatFileSize(resume.file_size) }} · V{{ resume.version || 1 }} · {{ fileStatusLabel(resume) }}</small></td>
+              <td><span :class="['intelligence-status', { 'intelligence-status--ready': structureFor(resume), 'intelligence-status--error': tasksFor(resume)[0]?.status === 'failed' }]">{{ parseStatus(resume) }}</span></td>
+              <td><strong class="resume-score">{{ assessmentFor(resume) ? Number(assessmentFor(resume).total_score) : '—' }}</strong></td>
+              <td><span :class="['recommendation-label', { 'recommendation-label--ready': assessmentFor(resume) }]">{{ recommendationFor(resume) }}</span></td>
               <td>{{ formatRecruitmentDate(resume.updated_at) }}</td>
-              <td>
-                <span v-if="resume.file_available" class="recruitment-chip">{{ fileStatusLabel(resume) }}</span>
-                <span v-else class="recruitment-chip recruitment-chip--error">文件不可用</span>
-              </td>
               <td class="recruitment-resume-actions">
-                <button v-if="resume.file_available" :data-test="`preview-${resume.id}`" type="button" class="text-button button-with-icon" @click="selected = resume"><AppIcon name="eye" :size="16" /><span>预览</span></button>
+                <button :data-test="`intelligence-${resume.id}`" type="button" class="text-button button-with-icon" @click="intelligenceTarget = resume"><AppIcon name="sparkles" :size="16" /><span>分析</span></button>
+                <button v-if="resume.file_available" :data-test="`preview-${resume.id}`" type="button" class="text-button button-with-icon" @click="selected = resume"><AppIcon name="eye" :size="16" /><span>原件</span></button>
                 <a v-if="resume.file_available" :data-test="`download-${resume.id}`" class="button-with-icon" :href="resume.download_url"><AppIcon name="download" :size="16" /><span>下载</span></a>
                 <button v-if="showArchived" :data-test="`restore-resume-${resume.id}`" type="button" class="text-button" @click="restoreResume(resume)">恢复</button>
                 <button v-else :data-test="`archive-resume-${resume.id}`" type="button" class="danger-text-button" @click="lifecycleTarget = resume">归档</button>
               </td>
             </tr>
-            <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">{{ showArchived ? '该职位暂无已归档简历' : `该职位暂无简历，可通过主动寻访拉取在线简历，或从沟通消息归档 PDF 附件。` }}</td></tr>
+            <tr v-if="!loading && !resumes.length"><td colspan="8" class="table-empty">{{ showArchived ? '该职位暂无已归档简历' : `该职位暂无简历，可通过主动寻访拉取在线简历，或从沟通消息归档 PDF 附件。` }}</td></tr>
           </tbody>
         </table>
       </div>
     </section>
+
+    <Transition name="batch-bar">
+      <div v-if="!showArchived && selectedResumeIds.length" class="resume-batch-bar" data-test="resume-batch-bar"><span>已选择 <strong>{{ selectedResumeIds.length }}</strong> 份简历</span><small>使用当前已启用的 V{{ currentStandard?.version || '—' }} 标准</small><button class="ghost-button" data-test="clear-resume-selection" @click="selectedResumeIds = []">清除</button><button class="primary-button" data-test="batch-score" :disabled="scoring || currentStandard?.status !== 'published'" @click="scoreSelected">{{ scoring ? '提交中…' : '批量评分' }}</button></div>
+    </Transition>
 
     <RecruitmentDetailDrawer v-if="selected" :title="`${selected.candidate_name}的简历`" @close="selected = null">
       <dl class="recruitment-detail-grid recruitment-detail-grid--resume">
@@ -259,6 +359,7 @@ async function toggleArchiveView() {
     </RecruitmentDetailDrawer>
     <ArchiveConfirmModal v-if="lifecycleTarget" title="归档简历" :name="lifecycleTarget.original_name" description="简历会从当前简历中心移除，文件与访问审计暂时保留，可从归档记录恢复。" action-label="确认归档" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="archiveResume" />
     <JobStandardDrawer v-if="standardDrawerOpen" :job="currentJob" :standard="currentStandard" :documents="jobDocuments" @close="standardDrawerOpen = false" @saved="replaceStandard" @published="replaceStandard" @retry="generateStandard" />
+    <ResumeIntelligencePanel v-if="intelligenceTarget" :resume="intelligenceTarget" :structure="structureFor(intelligenceTarget)" :assessment="assessmentFor(intelligenceTarget)" :assessments="assessmentsFor(intelligenceTarget)" :tasks="tasksFor(intelligenceTarget)" @close="intelligenceTarget = null" @retry-structure="retryStructure(intelligenceTarget)" @score="scoreResumes([intelligenceTarget.id])" @rescore="rescore(intelligenceTarget)" />
     </template>
   </div>
 </template>
