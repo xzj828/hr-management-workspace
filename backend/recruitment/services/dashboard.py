@@ -39,7 +39,7 @@ def _scope(user):
         jobs = RecruitmentJob.objects.filter(
             Q(boss_account__authorized_users=user) | Q(boss_account__isnull=True, owner=user)
         ).distinct()
-    applications = JobApplication.objects.filter(job__in=jobs)
+    applications = JobApplication.objects.filter(job__in=jobs, archived_at__isnull=True)
     tasks = RpaTask.objects.filter(boss_account__in=accounts)
     return accounts, jobs, applications, tasks
 
@@ -101,20 +101,37 @@ def build_recruitment_dashboard(user):
         JobApplication.Stage.TO_OFFER,
         JobApplication.Stage.HIRED,
     ]
-    job_rows = jobs.filter(status=RecruitmentJob.Status.OPEN).annotate(
-        candidate_total=Count("applications", distinct=True),
-        interview_total=Count("applications", filter=Q(applications__stage__in=interview_stages), distinct=True),
-        hired_total=Count("applications", filter=Q(applications__stage=JobApplication.Stage.HIRED), distinct=True),
+    job_rows = jobs.filter(status=RecruitmentJob.Status.OPEN).select_related("boss_account").annotate(
+        candidate_total=Count("applications", filter=Q(applications__archived_at__isnull=True), distinct=True),
+        to_screen_total=Count(
+            "applications",
+            filter=Q(applications__archived_at__isnull=True, applications__stage__in=[
+                JobApplication.Stage.RESUME_RECEIVED, JobApplication.Stage.TO_SCREEN,
+            ]),
+            distinct=True,
+        ),
+        to_interview_total=Count(
+            "applications",
+            filter=Q(applications__archived_at__isnull=True, applications__stage=JobApplication.Stage.TO_INTERVIEW),
+            distinct=True,
+        ),
+        interview_total=Count("applications", filter=Q(applications__archived_at__isnull=True, applications__stage__in=interview_stages), distinct=True),
+        hired_total=Count("applications", filter=Q(applications__archived_at__isnull=True, applications__stage=JobApplication.Stage.HIRED), distinct=True),
     ).order_by("-updated_at", "id")[:8]
     job_progress = [{
         "id": job.pk,
         "title": job.title,
         "headcount": job.headcount,
         "candidates": job.candidate_total,
+        "to_screen": job.to_screen_total,
+        "to_interview": job.to_interview_total,
         "interviews": job.interview_total,
         "hired": job.hired_total,
+        "account_name": job.boss_account.name if job.boss_account else "本地职位",
+        "account_status": job.boss_account.status if job.boss_account else "local",
+        "updated_at": job.updated_at,
         "completion": min(100, round(job.hired_total * 100 / max(job.headcount, 1))),
-        "route": f"/recruitment/jobs?job={job.pk}",
+        "route": f"/recruitment/candidates?job={job.pk}",
     } for job in job_rows]
 
     trend = []

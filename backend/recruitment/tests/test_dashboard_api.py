@@ -78,7 +78,29 @@ class RecruitmentDashboardApiTests(TestCase):
         self.assertEqual(metrics["waiting_interviews"], 0)
         self.assertEqual(metrics["boss_accounts_ready"], 1)
         self.assertEqual([item["title"] for item in response.data["job_progress"]], ["产品经理"])
+        progress = response.data["job_progress"][0]
+        self.assertEqual(progress["route"], f"/recruitment/candidates?job={self.job.pk}")
+        self.assertEqual(progress["account_name"], "看板主账号")
+        self.assertEqual(progress["account_status"], BossAccount.Status.READY)
+        self.assertEqual(progress["to_screen"], 0)
+        self.assertEqual(progress["to_interview"], 0)
+        self.assertIn("updated_at", progress)
         self.assertNotIn("不可见账号", str(response.data))
+
+    def test_dashboard_remains_global_when_job_query_is_present(self):
+        second_job = RecruitmentJob.objects.create(
+            boss_account=self.account, external_id="second-visible-job", title="后端工程师",
+            owner=self.hr, headcount=1, status=RecruitmentJob.Status.OPEN,
+        )
+
+        response = self.client.get(f"/api/recruitment/dashboard/?job={self.job.pk}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["metrics"]["open_jobs"], 2)
+        self.assertEqual(
+            {item["id"] for item in response.data["job_progress"]},
+            {self.job.pk, second_job.pk},
+        )
 
     def test_empty_dashboard_keeps_every_section(self):
         empty_user = User.objects.create_user(username="dashboard-empty")

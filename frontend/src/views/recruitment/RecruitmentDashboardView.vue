@@ -13,7 +13,7 @@ const dashboard = reactive({
 })
 
 const metricCards = [
-  { key: 'open_jobs', label: '在招职位', note: '当前开放', icon: 'briefcase', route: '/recruitment/jobs' },
+  { key: 'open_jobs', label: '全部在招职位', note: '当前开放', icon: 'briefcase', route: '/recruitment/jobs' },
   { key: 'active_candidates', label: '活跃候选人', note: '招聘流程中', icon: 'users', route: '/recruitment/candidates' },
   { key: 'waiting_resumes', label: '待收简历', note: '等待候选人', icon: 'document', route: '/recruitment/resumes' },
   { key: 'waiting_interviews', label: '待安排面试', note: '需要 HR 跟进', icon: 'calendar-check', route: '/recruitment/pipeline' },
@@ -31,6 +31,10 @@ function go(route) {
 
 function formatTime(value) {
   return value ? new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
+}
+
+function accountHealth(status) {
+  return ({ ready: '账号正常', risk: '账号风险', offline: '账号离线', local: '本地职位' })[status] || '待检查'
 }
 
 onMounted(async () => {
@@ -60,8 +64,8 @@ onMounted(async () => {
 
     <section v-if="isEmpty" class="panel recruitment-dashboard-empty">
       <span class="recruitment-dashboard-empty__icon"><AppIcon name="briefcase" :size="24" /></span>
-      <div><span class="panel-kicker">GET STARTED</span><h3>从连接 BOSS 账号开始</h3><p>完成登录后同步职位，候选人、简历与自动化进度会汇总到这里。</p></div>
-      <button class="primary-button" type="button" @click="go('/recruitment/automation')">前往自动化任务</button>
+      <div><span class="panel-kicker">GET STARTED</span><h3>先同步在招职位</h3><p>前往职位管理同步 BOSS 职位，成功后即可按岗位查看候选人、简历与招聘流程。</p></div>
+      <button class="primary-button" type="button" @click="go('/recruitment/jobs')">前往职位管理</button>
     </section>
 
     <template v-else>
@@ -84,6 +88,12 @@ onMounted(async () => {
         </section>
       </div>
 
+      <section class="panel recruitment-dashboard-panel recruitment-job-overview">
+        <header class="panel__header"><div><span class="panel-kicker">HIRING GOALS</span><h3>职位进度</h3></div><button class="text-button" type="button" @click="go('/recruitment/jobs')">全部职位</button></header>
+        <div v-if="dashboard.job_progress.length" class="job-progress-list"><button v-for="job in dashboard.job_progress" :key="job.id" type="button" :data-test="`job-progress-${job.id}`" @click="go(job.route)"><span><strong>{{ job.title }}</strong><small>{{ job.account_name }} · {{ accountHealth(job.account_status) }} · 更新于 {{ formatTime(job.updated_at) }}</small><small class="job-progress-focus">{{ job.candidates }} 位候选人 · 待筛选 {{ job.to_screen }} · 待面试 {{ job.to_interview }}</small></span><span class="job-progress-track"><i :style="{ width: `${job.completion}%` }"></i></span><b>{{ job.completion }}%</b><small>{{ job.hired }}/{{ job.headcount }} 录用</small></button></div>
+        <p v-else class="table-empty">暂无在招职位，请先到职位管理同步</p>
+      </section>
+
       <div class="recruitment-analysis-grid">
         <section class="panel recruitment-dashboard-panel">
           <header class="panel__header"><div><span class="panel-kicker">PIPELINE</span><h3>招聘漏斗</h3></div><button class="text-button" type="button" @click="go('/recruitment/pipeline')">查看流程</button></header>
@@ -99,12 +109,6 @@ onMounted(async () => {
       </div>
 
       <div class="recruitment-detail-grid-dashboard">
-        <section class="panel recruitment-dashboard-panel">
-          <header class="panel__header"><div><span class="panel-kicker">HIRING GOALS</span><h3>职位进度</h3></div><button class="text-button" type="button" @click="go('/recruitment/jobs')">全部职位</button></header>
-          <div v-if="dashboard.job_progress.length" class="job-progress-list"><button v-for="job in dashboard.job_progress" :key="job.id" type="button" @click="go(job.route)"><span><strong>{{ job.title }}</strong><small>{{ job.candidates }} 位候选人 · {{ job.interviews }} 人进入面试 · {{ job.hired }} 人录用</small></span><span class="job-progress-track"><i :style="{ width: `${job.completion}%` }"></i></span><b>{{ job.completion }}%</b><small>{{ job.hired }}/{{ job.headcount }}</small></button></div>
-          <p v-else class="table-empty">暂无在招职位</p>
-        </section>
-
         <section class="panel recruitment-dashboard-panel">
           <header class="panel__header"><div><span class="panel-kicker">AUTOMATION LOG</span><h3>最近自动化</h3></div><button class="text-button" type="button" @click="go('/recruitment/automation')">查看全部</button></header>
           <div v-if="dashboard.recent_tasks.length" class="dashboard-task-list"><button v-for="task in dashboard.recent_tasks" :key="task.id" type="button" @click="go(task.route)"><i :class="`is-${task.status}`"></i><span><strong>{{ task.action_label }}</strong><small>{{ task.account_name }} · {{ formatTime(task.created_at) }}</small></span><b>{{ task.status_label }}</b></button></div>

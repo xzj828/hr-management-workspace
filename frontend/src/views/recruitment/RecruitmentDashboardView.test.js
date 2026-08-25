@@ -23,7 +23,7 @@ const payload = () => ({
     { key: 'interview', label: '面试', count: 2 },
     { key: 'hired', label: '已录用', count: 1 },
   ],
-  job_progress: [{ id: 7, title: '产品经理', headcount: 2, candidates: 8, interviews: 2, hired: 1, completion: 50, route: '/recruitment/jobs?job=7' }],
+  job_progress: [{ id: 7, title: '产品经理', headcount: 2, candidates: 8, to_screen: 3, to_interview: 2, interviews: 2, hired: 1, completion: 50, account_name: '招聘主账号', account_status: 'ready', updated_at: '2026-08-24T08:00:00Z', route: '/recruitment/candidates?job=7' }],
   trend: [
     { date: '2026-08-18', label: '8/18', candidates: 1, resumes: 0, interviews: 0, hires: 0 },
     { date: '2026-08-19', label: '8/19', candidates: 2, resumes: 1, interviews: 0, hires: 0 },
@@ -54,9 +54,20 @@ describe('RecruitmentDashboardView', () => {
     expect(wrapper.text()).toContain('职位进度')
     expect(wrapper.text()).toContain('最近自动化')
     expect(wrapper.text()).toContain('产品经理')
+    expect(wrapper.text()).toContain('待筛选 3')
+    expect(wrapper.text()).toContain('待面试 2')
     expect(wrapper.text()).toContain('50%')
     expect(wrapper.findAll('[data-test="dashboard-metric"]')).toHaveLength(5)
     expect(wrapper.findAll('[data-test="trend-day"]')).toHaveLength(7)
+  })
+
+  it('opens a job workspace from its progress card', async () => {
+    const wrapper = mount(RecruitmentDashboardView)
+    await flushPromises()
+
+    await wrapper.get('[data-test="job-progress-7"]').trigger('click')
+
+    expect(pushMock).toHaveBeenCalledWith('/recruitment/candidates?job=7')
   })
 
   it('navigates from an actionable work item', async () => {
@@ -81,8 +92,8 @@ describe('RecruitmentDashboardView', () => {
     const wrapper = mount(RecruitmentDashboardView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('从连接 BOSS 账号开始')
-    expect(wrapper.text()).toContain('前往自动化任务')
+    expect(wrapper.text()).toContain('先同步在招职位')
+    expect(wrapper.text()).toContain('前往职位管理')
   })
 
   it('keeps the page understandable when the dashboard request fails', async () => {

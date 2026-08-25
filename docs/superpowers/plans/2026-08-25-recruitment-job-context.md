@@ -306,13 +306,13 @@ git commit -m "feat: scope pipeline and resumes by job"
 - Modify: `frontend/src/views/recruitment/RecruitmentDashboardView.test.js`
 - Modify: `frontend/src/styles.css`
 
-- [ ] **Step 1: Write failing dashboard contract tests**
+- [x] **Step 1: Write failing dashboard contract tests**
 
 Assert every job-progress entry contains `candidates`, `to_screen`, `to_interview`, `account_name`, `account_status`, `updated_at`, and route `/recruitment/candidates?job=<id>`. Assert the endpoint ignores any incoming `?job=` and still returns all authorized open jobs.
 
 In Vue tests, click a job card and assert `router.push('/recruitment/candidates?job=7')`. For an empty dashboard, assert the primary action routes to `/recruitment/jobs` and says “同步职位”, not “连接 BOSS 账号”.
 
-- [ ] **Step 2: Run focused dashboard tests and verify failure**
+- [x] **Step 2: Run focused dashboard tests and verify failure**
 
 ```powershell
 ..\.venv\Scripts\python.exe manage.py test recruitment.tests.test_dashboard_api -v 2
@@ -321,21 +321,21 @@ npm.cmd test -- src/views/recruitment/RecruitmentDashboardView.test.js
 
 Expected: FAIL on the new job-card fields, route, and empty-state action.
 
-- [ ] **Step 3: Extend dashboard aggregation**
+- [x] **Step 3: Extend dashboard aggregation**
 
 Annotate authorized open jobs with application-stage counts and select the BOSS account. Produce job cards with explicit account health and update time. Keep metrics/funnel/trend global and do not read a request job parameter in `dashboard_view`.
 
-- [ ] **Step 4: Reorder and refine dashboard UI**
+- [x] **Step 4: Reorder and refine dashboard UI**
 
 Label metrics “全部在招职位”, place today actions before risks, expand job cards with pending counts/account health, retain global funnel/trend below, and route every card to its job workspace. Replace the empty state with one action to职位管理同步职位.
 
-- [ ] **Step 5: Run focused dashboard tests**
+- [x] **Step 5: Run focused dashboard tests**
 
 Run both commands from Step 2.
 
 Expected: all focused tests pass.
 
-- [ ] **Step 6: Commit the dashboard slice**
+- [x] **Step 6: Commit the dashboard slice**
 
 ```powershell
 git add backend/recruitment/services/dashboard.py backend/recruitment/tests/test_dashboard_api.py frontend/src/views/recruitment/RecruitmentDashboardView.vue frontend/src/views/recruitment/RecruitmentDashboardView.test.js frontend/src/styles.css
