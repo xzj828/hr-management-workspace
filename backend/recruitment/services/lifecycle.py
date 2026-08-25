@@ -3,7 +3,7 @@ from django.utils import timezone
 from rest_framework.exceptions import APIException, ValidationError
 
 from recruitment.models import (
-    BossAccount, Candidate, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask,
+    BossAccount, Candidate, JobApplication, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask,
     WorkflowTemplate, WorkflowVersion,
 )
 
@@ -21,6 +21,8 @@ def _account_for(instance):
         return instance
     if isinstance(instance, RecruitmentJob):
         return instance.boss_account
+    if isinstance(instance, JobApplication):
+        return instance.job.boss_account
     if isinstance(instance, RpaTask):
         return instance.boss_account
     if isinstance(instance, Resume) and instance.application_id:
@@ -50,7 +52,7 @@ def archive_object(*, instance, actor):
         locked.versions.filter(status=WorkflowVersion.Status.ENABLED).update(status=WorkflowVersion.Status.DISABLED)
         locked.active_version = None
         update_fields = ["active_version", "archived_at", "updated_at"]
-    elif isinstance(locked, (Candidate, Resume)):
+    elif isinstance(locked, (Candidate, JobApplication, Resume)):
         update_fields = ["archived_at", "updated_at"]
     else:
         raise ValidationError("该对象不支持归档")

@@ -2,13 +2,13 @@ from dataclasses import asdict
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from django.http import FileResponse
 from django.utils import timezone
 from django.utils.http import content_disposition_header
-from rest_framework import status, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -82,6 +82,32 @@ class ArchivableViewSetMixin:
         return Response(self.get_serializer(instance).data)
 
 
+def accessible_jobs(user):
+    queryset = RecruitmentJob.objects.all()
+    if user.is_superuser:
+        return queryset
+    return queryset.filter(
+        Q(boss_account__authorized_users=user)
+        | Q(boss_account__isnull=True, owner=user)
+    ).distinct()
+
+
+def requested_open_job(request):
+    raw_job_id = request.query_params.get("job")
+    if not raw_job_id:
+        return None
+    if not raw_job_id.isdigit():
+        raise ValidationError({"job": "职位参数无效"})
+    job = accessible_jobs(request.user).filter(
+        pk=int(raw_job_id),
+        status=RecruitmentJob.Status.OPEN,
+        archived_at__isnull=True,
+    ).first()
+    if not job:
+        raise NotFound("职位不存在、已关闭或不可访问")
+    return job
+
+
 class BossAccountViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     queryset = BossAccount.objects.all().order_by("name")
     serializer_class = BossAccountSerializer
@@ -128,11 +154,10 @@ class RecruitmentJobViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        if not self.request.user.is_superuser:
-            queryset = queryset.filter(
-                Q(boss_account__authorized_users=self.request.user)
-                | Q(boss_account__isnull=True, owner=self.request.user)
-            ).distinct()
+        queryset = queryset.filter(pk__in=accessible_jobs(self.request.user))
+        job_status = self.request.query_params.get("status")
+        if job_status:
+            queryset = queryset.filter(status=job_status)
         if self.request.query_params.get("is_demo") == "true":
             queryset = queryset.filter(is_demo=True)
         return queryset
@@ -177,8 +202,15 @@ class CandidateViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
                 | Q(current_title__icontains=search)
                 | Q(current_city__icontains=search)
             )
-        if self.request.query_params.get("job"):
-            queryset = queryset.filter(applications__job_id=self.request.query_params["job"])
+        job = requested_open_job(self.request)
+        if job:
+            queryset = queryset.filter(applications__job=job).prefetch_related(
+                Prefetch(
+                    "applications",
+                    queryset=JobApplication.objects.select_related("job", "owner").filter(job=job),
+                    to_attr="scoped_applications",
+                )
+            )
         if self.request.query_params.get("stage"):
             queryset = queryset.filter(applications__stage=self.request.query_params["stage"])
         if self.request.query_params.get("is_demo") == "true":
@@ -352,18 +384,25 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(response, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
-class JobApplicationViewSet(viewsets.ModelViewSet):
+class JobApplicationViewSet(
+    ArchivableViewSetMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = JobApplication.objects.select_related(
         "candidate", "job", "owner"
     ).prefetch_related("candidate__resumes").order_by("-updated_at")
     serializer_class = JobApplicationSerializer
     permission_classes = [RecruitmentWritePermission]
-    http_method_names = ["get", "patch", "head", "options"]
+    http_method_names = ["get", "patch", "post", "head", "options"]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        if self.request.query_params.get("job"):
-            queryset = queryset.filter(job_id=self.request.query_params["job"])
+        queryset = super().get_queryset().filter(job__in=accessible_jobs(self.request.user))
+        job = requested_open_job(self.request)
+        if job:
+            queryset = queryset.filter(job=job)
         if self.request.query_params.get("stage"):
             queryset = queryset.filter(stage=self.request.query_params["stage"])
         if self.request.query_params.get("is_demo") == "true":
@@ -580,13 +619,11 @@ class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     permission_classes = [RecruitmentWritePermission]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        if self.request.user.is_superuser:
-            return queryset
-        return queryset.filter(
-            Q(application__job__boss_account__authorized_users=self.request.user)
-            | Q(application__job__boss_account__isnull=True, application__job__owner=self.request.user)
-        ).distinct()
+        queryset = super().get_queryset().filter(application__job__in=accessible_jobs(self.request.user))
+        job = requested_open_job(self.request)
+        if job:
+            queryset = queryset.filter(application__job=job)
+        return queryset.distinct()
 
     @action(detail=True, methods=["get"])
     def file(self, request, pk=None):

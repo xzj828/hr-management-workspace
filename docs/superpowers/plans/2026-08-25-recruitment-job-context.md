@@ -21,7 +21,7 @@
 - Modify `frontend/src/router.js`: mark scoped/global recruitment routes in route metadata.
 - Modify `backend/recruitment/views.py`: accessible-job helper, status filter, application access control, candidate prefetch scoping, resume job filter.
 - Modify `backend/recruitment/models.py`: add recoverable JobApplication archival state.
-- Create `backend/recruitment/migrations/0014_jobapplication_archived_at.py`: persist JobApplication archival state.
+- Create `backend/recruitment/migrations/0015_jobapplication_archived_at.py`: persist JobApplication archival state.
 - Modify `backend/recruitment/serializers.py`: application-centric candidate rows and safe related-application output.
 - Modify `backend/recruitment/services/dashboard.py`: actionable per-job progress fields and scoped drill-down routes.
 - Modify `backend/recruitment/tests/test_recruitment_pages_api.py`: authorization and job-isolation regressions.
@@ -40,12 +40,12 @@
 
 **Files:**
 - Modify: `backend/recruitment/models.py`
-- Create: `backend/recruitment/migrations/0014_jobapplication_archived_at.py`
+- Create: `backend/recruitment/migrations/0015_jobapplication_archived_at.py`
 - Modify: `backend/recruitment/views.py`
 - Modify: `backend/recruitment/serializers.py`
 - Test: `backend/recruitment/tests/test_recruitment_pages_api.py`
 
-- [ ] **Step 1: Write failing API tests for open jobs and cross-account isolation**
+- [x] **Step 1: Write failing API tests for open jobs and cross-account isolation**
 
 Add fixtures for a second HR, authorized BOSS account, open/closed jobs, a shared candidate with one application per job, and a resume per application. Add assertions equivalent to:
 
@@ -64,7 +64,7 @@ def test_open_job_filter_and_application_scope_do_not_leak_other_accounts(self):
 
 Add a candidate assertion that `applications` contains only the requested job, plus resume assertions that `?job=<id>` returns only that job and a hidden resume detail returns 404. Add an application lifecycle assertion: archiving one JobApplication hides only that application, leaves the shared Candidate and its other application active, and restore returns it.
 
-- [ ] **Step 2: Run the focused backend tests and verify failure**
+- [x] **Step 2: Run the focused backend tests and verify failure**
 
 Run:
 
@@ -74,7 +74,7 @@ Run:
 
 Expected: FAIL because job status is ignored, application detail is not user-scoped, candidate serialization contains unrelated applications, or resume job filtering is absent.
 
-- [ ] **Step 3: Implement shared accessible-job and related queryset rules**
+- [x] **Step 3: Implement shared accessible-job and related queryset rules**
 
 In `views.py`, introduce a focused helper and apply it consistently:
 
@@ -91,20 +91,20 @@ def accessible_jobs(user):
 
 Filter `RecruitmentJobViewSet` by `status` when supplied. Filter `JobApplicationViewSet` with `job__in=accessible_jobs(request.user)` before applying `job` and `stage`. Filter `ResumeViewSet` by accessible jobs for every user and apply `application__job_id` when `job` is supplied.
 
-Add `archived_at = models.DateTimeField(null=True, blank=True, db_index=True)` to `JobApplication`, generate migration `0014_jobapplication_archived_at.py`, and apply `ArchivableViewSetMixin` to `JobApplicationViewSet`. Archive/restore actions must operate only on the already user-scoped queryset.
+Add `archived_at = models.DateTimeField(null=True, blank=True, db_index=True)` to `JobApplication`, generate migration `0015_jobapplication_archived_at.py`, and apply `ArchivableViewSetMixin` to `JobApplicationViewSet`. Archive/restore actions must operate only on the already user-scoped queryset.
 
 For `CandidateViewSet`, build a `Prefetch("applications", queryset=JobApplication.objects.select_related("job", "owner").filter(job_id=job_id), to_attr="scoped_applications")` whenever `job` is present. In `CandidateSerializer`, return `scoped_applications` when available and fall back to the prefetched `applications` manager otherwise.
 
-- [ ] **Step 4: Run focused backend tests**
+- [x] **Step 4: Run focused backend tests**
 
 Run the command from Step 2.
 
 Expected: all `RecruitmentPagesApiTests` pass.
 
-- [ ] **Step 5: Commit the backend isolation slice**
+- [x] **Step 5: Commit the backend isolation slice**
 
 ```powershell
-git add backend/recruitment/models.py backend/recruitment/migrations/0014_jobapplication_archived_at.py backend/recruitment/views.py backend/recruitment/serializers.py backend/recruitment/tests/test_recruitment_pages_api.py
+git add backend/recruitment/models.py backend/recruitment/migrations/0015_jobapplication_archived_at.py backend/recruitment/views.py backend/recruitment/serializers.py backend/recruitment/tests/test_recruitment_pages_api.py
 git commit -m "fix: isolate recruitment data by job"
 ```
 

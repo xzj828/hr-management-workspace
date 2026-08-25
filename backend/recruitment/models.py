@@ -115,6 +115,7 @@ class JobApplication(models.Model):
     priority = models.PositiveSmallIntegerField(default=0)
     last_interaction_at = models.DateTimeField(null=True, blank=True)
     is_demo = models.BooleanField(default=False, db_index=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

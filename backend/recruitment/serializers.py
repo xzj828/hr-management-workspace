@@ -104,8 +104,14 @@ class RecruitmentJobSerializer(serializers.ModelSerializer):
 
 
 class CandidateSerializer(serializers.ModelSerializer):
-    applications = JobApplicationSummarySerializer(many=True, read_only=True)
+    applications = serializers.SerializerMethodField()
     resume_count = serializers.IntegerField(read_only=True)
+
+    def get_applications(self, obj):
+        applications = getattr(obj, "scoped_applications", None)
+        if applications is None:
+            applications = obj.applications.all()
+        return JobApplicationSummarySerializer(applications, many=True).data
 
     class Meta:
         model = Candidate
@@ -138,11 +144,12 @@ class JobApplicationSerializer(serializers.ModelSerializer):
         fields = [
             "id", "candidate", "job", "job_title", "source", "stage", "stage_label",
             "owner", "owner_name", "priority", "last_interaction_at", "is_demo",
-            "stage_reason", "stage_history", "created_at", "updated_at",
+            "stage_reason", "stage_history", "archived_at", "created_at", "updated_at",
         ]
         read_only_fields = [
             "id", "candidate", "job", "job_title", "source", "stage_label", "owner",
             "owner_name", "priority", "last_interaction_at", "is_demo", "created_at", "updated_at",
+            "archived_at",
         ]
 
     def update(self, instance, validated_data):

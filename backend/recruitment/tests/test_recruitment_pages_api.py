@@ -6,7 +6,7 @@ from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
 from recruitment.demo_data import load_demo_data
-from recruitment.models import JobApplication, Resume
+from recruitment.models import BossAccount, Candidate, JobApplication, RecruitmentJob, Resume
 
 
 class RecruitmentPagesApiTests(APITestCase):
@@ -126,3 +126,133 @@ class RecruitmentPagesApiTests(APITestCase):
         response = self.client.get(f"/api/recruitment/resumes/{resume.pk}/file/")
 
         self.assertEqual(response.status_code, 403)
+
+    def test_job_scoped_endpoints_do_not_leak_other_jobs_or_accounts(self):
+        other = User.objects.create_user(username="workspace-other-hr")
+        AccountProfile.objects.create(user=other, role=AccountProfile.Role.HR)
+        visible_account = BossAccount.objects.create(
+            name="可见招聘账号",
+            browser_profile="visible-recruitment-account",
+            cdp_port=53601,
+        )
+        visible_account.authorized_users.add(self.hr)
+        hidden_account = BossAccount.objects.create(
+            name="隐藏招聘账号",
+            browser_profile="hidden-recruitment-account",
+            cdp_port=53602,
+        )
+        hidden_account.authorized_users.add(other)
+        visible_job = RecruitmentJob.objects.create(
+            boss_account=visible_account,
+            owner=self.hr,
+            external_id="visible-open-job",
+            title="可见在招职位",
+            status=RecruitmentJob.Status.OPEN,
+        )
+        closed_job = RecruitmentJob.objects.create(
+            boss_account=visible_account,
+            owner=self.hr,
+            external_id="visible-closed-job",
+            title="可见关闭职位",
+            status=RecruitmentJob.Status.CLOSED,
+        )
+        hidden_job = RecruitmentJob.objects.create(
+            boss_account=hidden_account,
+            owner=other,
+            external_id="hidden-open-job",
+            title="隐藏在招职位",
+            status=RecruitmentJob.Status.OPEN,
+        )
+        shared_candidate = Candidate.objects.create(identity_key="shared-candidate", name="跨岗位候选人")
+        visible_application = JobApplication.objects.create(
+            candidate=shared_candidate,
+            job=visible_job,
+            owner=self.hr,
+            source="boss",
+        )
+        hidden_application = JobApplication.objects.create(
+            candidate=shared_candidate,
+            job=hidden_job,
+            owner=other,
+            source="boss",
+        )
+        closed_candidate = Candidate.objects.create(identity_key="closed-candidate", name="关闭职位候选人")
+        closed_application = JobApplication.objects.create(
+            candidate=closed_candidate,
+            job=closed_job,
+            owner=self.hr,
+            source="boss",
+        )
+        visible_resume = Resume.objects.create(
+            candidate=shared_candidate,
+            application=visible_application,
+            original_name="visible.pdf",
+            file="recruitment/resumes/visible.pdf",
+        )
+        Resume.objects.create(
+            candidate=closed_candidate,
+            application=closed_application,
+            original_name="closed.pdf",
+            file="recruitment/resumes/closed.pdf",
+        )
+
+        jobs = self.client.get("/api/recruitment/jobs/?status=open")
+        self.assertIn(visible_job.id, {item["id"] for item in jobs.data["results"]})
+        self.assertNotIn(closed_job.id, {item["id"] for item in jobs.data["results"]})
+        self.assertNotIn(hidden_job.id, {item["id"] for item in jobs.data["results"]})
+
+        applications = self.client.get(f"/api/recruitment/applications/?job={visible_job.id}")
+        self.assertEqual(applications.data["count"], 1)
+        self.assertEqual(applications.data["results"][0]["id"], visible_application.id)
+        self.assertEqual(
+            self.client.get(f"/api/recruitment/applications/{hidden_application.id}/").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/recruitment/applications/?job={hidden_job.id}").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/recruitment/applications/?job={closed_job.id}").status_code,
+            404,
+        )
+
+        candidates = self.client.get(f"/api/recruitment/candidates/?job={visible_job.id}")
+        self.assertEqual(candidates.data["count"], 1)
+        self.assertEqual(
+            [item["job"] for item in candidates.data["results"][0]["applications"]],
+            [visible_job.id],
+        )
+
+        resumes = self.client.get(f"/api/recruitment/resumes/?job={visible_job.id}")
+        self.assertEqual(resumes.data["count"], 1)
+        self.assertEqual(resumes.data["results"][0]["id"], visible_resume.id)
+
+    def test_archiving_application_keeps_candidate_and_other_application(self):
+        target = JobApplication.objects.filter(is_demo=True).select_related("candidate", "job").first()
+        other_job = RecruitmentJob.objects.filter(is_demo=True).exclude(pk=target.job_id).first()
+        other = JobApplication.objects.create(
+            candidate=target.candidate,
+            job=other_job,
+            owner=self.hr,
+            source="demo",
+            is_demo=True,
+        )
+        candidate_id = target.candidate_id
+
+        archived = self.client.post(f"/api/recruitment/applications/{target.id}/archive/")
+
+        self.assertEqual(archived.status_code, 200)
+        target.refresh_from_db()
+        self.assertIsNotNone(target.archived_at)
+        self.assertTrue(Candidate.objects.filter(pk=candidate_id).exists())
+        self.assertTrue(JobApplication.objects.filter(pk=other.id, archived_at__isnull=True).exists())
+        self.assertFalse(
+            any(item["id"] == target.id for item in self.client.get("/api/recruitment/applications/").data["results"])
+        )
+
+        restored = self.client.post(f"/api/recruitment/applications/{target.id}/restore/?archived=1")
+
+        self.assertEqual(restored.status_code, 200)
+        target.refresh_from_db()
+        self.assertIsNone(target.archived_at)
