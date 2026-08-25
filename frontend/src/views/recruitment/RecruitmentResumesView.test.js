@@ -31,6 +31,7 @@ describe('RecruitmentResumesView', () => {
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [resumes[0]] })
       if (path === 'recruitment/job-documents/?job=1') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/job-standards/?job=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/resumes/?job=1&archived=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/resumes/1/archive/') return Promise.resolve({ ...resumes[0], archived_at: '2026-08-24T10:00:00Z' })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
@@ -69,16 +70,15 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.get('.recruitment-download-link').findComponent(AppIcon).props('name')).toBe('download')
   })
 
-  it('offers Word requirement upload while keeping parsing and scoring in the next phase', async () => {
+  it('offers Word requirement upload and a real standard generation action', async () => {
     const wrapper = mount(RecruitmentResumesView)
     await flushPromises()
 
     const preview = wrapper.get('[data-test="resume-screening-preview"]')
-    expect(preview.text()).toContain('智能初筛')
-    expect(preview.text()).toContain('下一阶段')
+    expect(preview.text()).toContain('岗位评分标准')
+    expect(preview.text()).toContain('尚未生成')
     expect(preview.text()).toContain('上传 Word')
-    expect(preview.text()).toContain('提取初筛标准')
-    expect(preview.text()).toContain('生成简历评分')
+    expect(wrapper.get('[data-test="generate-standard"]').text()).toContain('生成标准')
 
     const upload = wrapper.get('[data-test="word-upload"]')
     expect(upload.attributes()).not.toHaveProperty('disabled')
@@ -94,6 +94,7 @@ describe('RecruitmentResumesView', () => {
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [{ ...resumes[0], id: 4, file_available: false }] })
       if (path === 'recruitment/job-documents/?job=1') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/job-standards/?job=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
@@ -124,6 +125,7 @@ describe('RecruitmentResumesView', () => {
         preview_url: '/api/recruitment/resumes/8/file/', download_url: '/api/recruitment/resumes/8/file/?download=1',
       }] })
       if (path === 'recruitment/job-documents/?job=1') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/job-standards/?job=1') return Promise.resolve({ results: [] })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
     const wrapper = mount(RecruitmentResumesView)
