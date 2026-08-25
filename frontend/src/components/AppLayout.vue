@@ -1,7 +1,8 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useModelCredentialStore } from '@/stores/modelCredential'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import {
   modules,
@@ -10,20 +11,24 @@ import {
   navigationForModule,
   rememberModuleRoute,
 } from '@/navigation'
-import RecruitmentCopilotDrawer from '@/components/RecruitmentCopilotDrawer.vue'
+import ModelSwitcher from '@/components/ModelSwitcher.vue'
+import ModelProfileDrawer from '@/components/ModelProfileDrawer.vue'
 import UserAccountMenu from '@/components/UserAccountMenu.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import RecruitmentJobContext from '@/components/RecruitmentJobContext.vue'
 
 const auth = useAuthStore()
+const modelCredentials = useModelCredentialStore()
 const recruitmentContext = useRecruitmentContextStore()
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
-const copilotOpen = ref(false)
+const modelSettingsOpen = ref(false)
 
 const currentModule = computed(() => moduleForRoute(route))
-const topNavigation = computed(() => navigationForModule(currentModule.value))
+const topNavigation = computed(() => navigationForModule(currentModule.value).filter((item) => (
+  item.name !== 'recruitment-admin' || auth.canManage
+)))
 
 watch(
   () => route.name,
@@ -34,6 +39,7 @@ watch(
 watch(
   () => auth.user?.id,
   async (userId) => {
+    modelCredentials.reset()
     if (!userId) {
       recruitmentContext.reset()
       return
@@ -44,7 +50,10 @@ watch(
 )
 
 function moduleRoute(moduleId) {
-  const name = moduleDestination(moduleId)
+  const destination = moduleDestination(moduleId)
+  const name = moduleId === 'recruitment' && destination === 'recruitment-admin' && !auth.canManage
+    ? 'recruitment-workbench'
+    : destination
   const item = navigationForModule(moduleId).find((entry) => entry.name === name)
   return topNavigationRoute(item || { name })
 }
@@ -57,9 +66,15 @@ function topNavigationRoute(item) {
 }
 
 async function signOut() {
+  modelCredentials.reset()
   await auth.logout()
   recruitmentContext.reset()
   router.push({ name: 'login' })
+}
+
+function closeAccountModelSettings() {
+  modelSettingsOpen.value = false
+  nextTick(() => document.querySelector('[data-testid="account-trigger"]')?.focus())
 }
 </script>
 
@@ -102,15 +117,15 @@ async function signOut() {
           ><AppIcon :name="item.icon" :size="18" /><span>{{ item.label }}</span></router-link>
         </nav>
         <div class="topbar__actions">
-          <RecruitmentJobContext v-if="currentModule === 'recruitment'" />
-          <button v-if="currentModule === 'recruitment'" class="copilot-entry" type="button" @click="copilotOpen = true">
-            <AppIcon name="sparkles" :size="17" /> Copilot
-          </button>
-          <UserAccountMenu :user="auth.user" @model-settings="copilotOpen = true" @logout="signOut" />
+          <RecruitmentJobContext
+            v-if="currentModule === 'recruitment' && route.meta.recruitmentScope === 'job' && !route.meta.inlineJobContext"
+          />
+          <ModelSwitcher v-if="currentModule === 'recruitment'" />
+          <UserAccountMenu :user="auth.user" @model-settings="modelSettingsOpen = true" @logout="signOut" />
         </div>
       </header>
       <section class="page-container"><router-view /></section>
     </main>
-    <RecruitmentCopilotDrawer v-if="copilotOpen" @close="copilotOpen = false" />
+    <ModelProfileDrawer v-if="modelSettingsOpen" @close="closeAccountModelSettings" @saved="closeAccountModelSettings" />
   </div>
 </template>

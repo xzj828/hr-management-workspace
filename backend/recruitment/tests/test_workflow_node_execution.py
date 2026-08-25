@@ -4,6 +4,8 @@ from django.test import TestCase
 from attendance.models import AccountProfile
 from recruitment.models import AutomationApproval, BossAccount, Candidate, HumanAttention, JobApplication, RecruitmentJob, RpaTask, WorkflowNodeRun, WorkflowRun, WorkflowTemplate
 from recruitment.services.conversation_ingestion import ingest_conversation
+from recruitment.services.approvals import approve
+from recruitment.services.communications import materialize_communication_batch
 from recruitment.services.workflow_nodes import execute_workflow_node, resume_workflow_for_task
 from recruitment.services.workflow_runtime import advance_run, create_run, decide_node, retry_node
 from recruitment.services.workflows import create_version
@@ -109,11 +111,13 @@ class WorkflowNodeExecutionTests(TestCase):
         edges = [{"source": "sync", "target": "intent"}]
         if include_request:
             nodes.extend([
+                {"key": "approve_request", "type": "human_approval", "position": {}, "config": {}},
                 {"key": "request", "type": "request_resume", "position": {}, "config": {"message": "请发送简历"}},
                 {"key": "wait", "type": "wait_resume", "position": {}, "config": {"wake_event": "resume.archived"}},
             ])
             edges.extend([
-                {"source": "intent", "target": "request", "condition": {"intent": "request_resume"}},
+                {"source": "intent", "target": "approve_request", "condition": {"intent": "request_resume"}},
+                {"source": "approve_request", "target": "request"},
                 {"source": "request", "target": "wait"},
             ])
         else:
@@ -132,7 +136,7 @@ class WorkflowNodeExecutionTests(TestCase):
         )
         return application
 
-    def test_passive_canvas_request_node_queues_native_resume_action(self):
+    def test_passive_canvas_request_waits_for_two_persisted_hr_confirmations(self):
         self._candidate_message()
         run = create_run(
             version=self._passive_version(True), actor=self.user, mode=WorkflowRun.Mode.FORMAL,
@@ -143,9 +147,28 @@ class WorkflowNodeExecutionTests(TestCase):
         sync.save(update_fields=["status", "updated_at"])
         advance_run(run, executor=execute_workflow_node)
 
+        gate = run.node_runs.get(node_key="approve_request")
+        self.assertEqual(gate.status, WorkflowNodeRun.Status.WAITING_HUMAN)
+        self.assertFalse(RpaTask.objects.filter(action=RpaTask.Action.REQUEST_RESUME).exists())
+        decide_node(gate, approved=True, actor=self.user)
+        advance_run(run, executor=execute_workflow_node)
+
+        approval = AutomationApproval.objects.get(action=AutomationApproval.Action.REQUEST_RESUME)
+        self.assertEqual(approval.status, AutomationApproval.Status.DRAFT)
+        self.assertFalse(RpaTask.objects.filter(action=RpaTask.Action.REQUEST_RESUME).exists())
+        approve(approval=approval, actor=self.user)
+        materialize_communication_batch(approval=approval, actor=self.user)
+        advance_run(run, executor=execute_workflow_node)
         task = RpaTask.objects.get(action=RpaTask.Action.REQUEST_RESUME)
         self.assertEqual(task.request_payload["message"], "请发送简历")
-        self.assertEqual(run.node_runs.get(node_key="wait").status, WorkflowNodeRun.Status.WAITING_HUMAN)
+        self.assertEqual(task.approval, approval)
+        self.assertEqual(task.request_payload["target"]["name"], approval.payload["items"][0]["name"])
+        self.assertEqual(task.request_payload["target"]["external_id"], "boss-1")
+        self.assertTrue(task.request_payload["first_contact"])
+        request_node = run.node_runs.get(node_key="request")
+        self.assertEqual(request_node.status, WorkflowNodeRun.Status.RUNNING)
+        advance_run(run, executor=execute_workflow_node)
+        self.assertEqual(RpaTask.objects.filter(action=RpaTask.Action.REQUEST_RESUME).count(), 1)
 
     def test_deleting_request_node_from_canvas_prevents_resume_action(self):
         self._candidate_message()

@@ -3,7 +3,22 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
-from recruitment.models import BossAccount, RecruitmentAuditLog, RpaTask, RpaWorker
+from recruitment.models import (
+    AutomationApproval,
+    AutomationUsage,
+    BossAccount,
+    Candidate,
+    ConversationAction,
+    JobApplication,
+    RecruitmentAuditLog,
+    RecruitmentJob,
+    RpaTask,
+    RpaWorker,
+    SearchCampaign,
+)
+from recruitment.services.search_campaigns import _campaign_snapshot
+from recruitment.services.approvals import approve
+from recruitment.services.communications import materialize_communication_batch, prepare_communication
 
 
 class RpaTaskApiTests(APITestCase):
@@ -58,7 +73,78 @@ class RpaTaskApiTests(APITestCase):
         response = self.create_task(action="greet", payload={"candidate_ids": [1]})
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("HR 确认", str(response.data))
+        self.assertIn("专用", str(response.data))
+
+    def test_generic_endpoint_rejects_reused_approved_action_with_blank_idempotency(self):
+        approval = AutomationApproval.objects.create(
+            action=AutomationApproval.Action.DEEP_MATCH,
+            boss_account=self.account,
+            created_by=self.hr,
+            approved_by=self.hr,
+            status=AutomationApproval.Status.APPROVED,
+            payload={"job": 1, "job_title": "测试", "core": [], "bonus": []},
+        )
+        self.client.force_login(self.hr)
+        body = {
+            "boss_account": self.account.pk,
+            "action": RpaTask.Action.DEEP_MATCH,
+            "approval": str(approval.pk),
+            "idempotency_key": "",
+            "request_payload": approval.payload,
+        }
+
+        first = self.client.post("/api/recruitment/rpa-tasks/", body, format="json")
+        second = self.client.post("/api/recruitment/rpa-tasks/", body, format="json")
+
+        self.assertEqual(first.status_code, 400)
+        self.assertEqual(second.status_code, 400)
+        self.assertFalse(RpaTask.objects.exists())
+        self.assertFalse(AutomationUsage.objects.exists())
+
+    def test_generic_endpoint_cannot_bypass_search_campaign_start_service(self):
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="generic-search-pull",
+            title="后端工程师",
+            owner=self.hr,
+        )
+        campaign = SearchCampaign.objects.create(
+            name="禁止直建",
+            boss_account=self.account,
+            job=job,
+            source="search",
+            target_resume_count=1,
+            max_scan_count=3,
+            created_by=self.hr,
+        )
+        payload = _campaign_snapshot(campaign)
+        approval = AutomationApproval.objects.create(
+            action=AutomationApproval.Action.SEARCH_AND_PULL_RESUMES,
+            boss_account=self.account,
+            created_by=self.hr,
+            approved_by=self.hr,
+            status=AutomationApproval.Status.APPROVED,
+            payload=payload,
+            item_count=payload["resume_view_budget"],
+        )
+        self.client.force_login(self.hr)
+
+        response = self.client.post(
+            "/api/recruitment/rpa-tasks/",
+            {
+                "boss_account": self.account.pk,
+                "action": RpaTask.Action.SEARCH_AND_PULL_RESUMES,
+                "approval": str(approval.pk),
+                "request_payload": payload,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.status, SearchCampaign.Status.DRAFT)
+        self.assertFalse(RpaTask.objects.exists())
+        self.assertFalse(AutomationUsage.objects.exists())
 
     def test_idempotency_key_returns_the_existing_task(self):
         self.client.force_login(self.hr)
@@ -86,6 +172,19 @@ class RpaTaskApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_superuser_can_create_safe_task_without_account_assignment(self):
+        admin = User.objects.create_superuser(username="task-admin", email="task-admin@example.com")
+        self.client.force_login(admin)
+
+        response = self.client.post(
+            "/api/recruitment/rpa-tasks/",
+            {"boss_account": self.account.pk, "action": RpaTask.Action.CHECK_STATUS},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(RpaTask.objects.get(pk=response.data["id"]).created_by, admin)
+
     def test_multiple_pending_tasks_are_queued_for_serial_execution(self):
         self.assertEqual(self.create_task().status_code, 201)
 
@@ -102,6 +201,44 @@ class RpaTaskApiTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["status"], "cancelled")
 
+    def test_pending_communication_task_cannot_be_cancelled_outside_its_domain_batch(self):
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="communication-cancel",
+            title="产品经理",
+            owner=self.hr,
+        )
+        candidate = Candidate.objects.create(
+            identity_key="communication-cancel-candidate",
+            external_id="boss-communication-cancel",
+            name="候选人",
+        )
+        application = JobApplication.objects.create(candidate=candidate, job=job, source="boss")
+        approval = prepare_communication(
+            account=self.account,
+            applications=[application],
+            action=ConversationAction.Action.GREET,
+            message="你好",
+            actor=self.hr,
+            request_id="communication-cancel-request",
+        )
+        approve(approval=approval, actor=self.hr)
+        batch = materialize_communication_batch(approval=approval, actor=self.hr)
+        task = batch.rpa_tasks.get()
+        action = ConversationAction.objects.get(approval=approval)
+        self.client.force_login(self.hr)
+
+        response = self.client.post(f"/api/recruitment/rpa-tasks/{task.pk}/cancel/")
+
+        self.assertEqual(response.status_code, 400)
+        task.refresh_from_db()
+        batch.refresh_from_db()
+        action.refresh_from_db()
+        action.step.refresh_from_db()
+        self.assertEqual(task.status, RpaTask.Status.PENDING)
+        self.assertEqual(action.status, ConversationAction.Status.PENDING)
+        self.assertEqual(action.step.status, "pending")
+
     def test_failed_task_can_be_retried(self):
         old_task = RpaTask.objects.create(
             boss_account=self.account,
@@ -116,6 +253,32 @@ class RpaTaskApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 201, response.data)
         self.assertNotEqual(response.data["id"], str(old_task.pk))
+
+    def test_approved_task_cannot_be_retried_through_generic_endpoint(self):
+        approval = AutomationApproval.objects.create(
+            action=AutomationApproval.Action.DEEP_MATCH,
+            boss_account=self.account,
+            created_by=self.hr,
+            approved_by=self.hr,
+            status=AutomationApproval.Status.APPROVED,
+            payload={"job": 1, "job_title": "测试", "core": [], "bonus": []},
+        )
+        old_task = RpaTask.objects.create(
+            boss_account=self.account,
+            action=RpaTask.Action.DEEP_MATCH,
+            status=RpaTask.Status.FAILED,
+            created_by=self.hr,
+            approval=approval,
+            idempotency_key=f"deep-match-task:{approval.pk}",
+            request_payload=approval.payload,
+            completed_at=timezone.now(),
+        )
+        self.client.force_login(self.hr)
+
+        response = self.client.post(f"/api/recruitment/rpa-tasks/{old_task.pk}/retry/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(RpaTask.objects.count(), 1)
 
     def test_summary_reads_persisted_worker_state(self):
         RpaWorker.objects.create(

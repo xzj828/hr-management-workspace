@@ -38,6 +38,7 @@ from .models import (
     SearchCampaign,
     WorkflowTemplate,
     WorkflowVersion,
+    WorkflowNodeRun,
     WorkflowRun,
 )
 from .permissions import RecruitmentWritePermission
@@ -72,7 +73,7 @@ from .serializers import (
     WorkflowVersionSerializer,
     WorkflowRunSerializer,
 )
-from .services.approvals import approve
+from .services.approvals import approve, reject
 from .services.access import accessible_jobs
 from .services.communications import materialize_communication_batch, prepare_communication
 from .services.communications import _identity_snapshot
@@ -92,8 +93,51 @@ from .services.job_standards import publish_standard, update_standard_draft
 from .services.human_attention import archive_attention, resolve_attention
 from .services.standard_workflows import create_standard_workflow
 from .services.workflow_nodes import execute_workflow_node
-from .services.workflow_runtime import advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
-from .services.search_campaigns import start_search_campaign, stop_search_campaign
+from .services.workflow_runtime import HUMAN_NODE_TYPES, WorkflowConflict, advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
+from .services.search_campaigns import prepare_search_campaign, start_search_campaign, stop_search_campaign
+
+
+def _materialize_deep_match_task(*, approval, actor, workflow_node_run=None):
+    payload = approval.payload if isinstance(approval.payload, dict) else {}
+    node_id = payload.get("workflow_node_run_id")
+    node = workflow_node_run
+    if node is None and node_id:
+        node = WorkflowNodeRun.objects.select_for_update().select_related("run").filter(pk=node_id).first()
+    if node is not None:
+        expected_job_id = node.run.job_id or node.run.input_snapshot.get("job")
+        if (
+            str(node.pk) != str(node_id)
+            or node.node_type != "deep_search"
+            or node.run.boss_account_id != approval.boss_account_id
+            or node.run.actor_id != approval.created_by_id
+            or expected_job_id != payload.get("job")
+            or node.attempt != payload.get("workflow_node_attempt")
+            or str((node.output or {}).get("approval_id", "")) != str(approval.pk)
+        ):
+            raise ValidationError("深度匹配确认与流程节点的冻结范围不一致")
+    elif node_id:
+        raise ValidationError("深度匹配确认引用的流程节点不存在")
+    return create_task(
+        account=approval.boss_account,
+        action=RpaTask.Action.DEEP_MATCH,
+        actor=actor,
+        approval=approval,
+        workflow_node_run=node,
+        request_payload={
+            "job": payload["job"],
+            "job_title": payload["job_title"],
+            "core": payload.get("core", []),
+            "bonus": payload.get("bonus", []),
+            "criteria": {
+                "mode": "deep_search",
+                "core": payload.get("core", []),
+                "bonus": payload.get("bonus", []),
+            },
+        },
+        idempotency_key=f"deep-match-task:{approval.pk}",
+        creation_path="deep_match_approval",
+        return_created=True,
+    )
 
 
 class ArchivableViewSetMixin:
@@ -574,30 +618,18 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def approve(self, request, pk=None):
-        approval = approve(approval=self.get_object(), actor=request.user)
+        approval_target = self.get_object()
+        try:
+            approval = approve(approval=approval_target, actor=request.user)
+        except ValidationError:
+            approval_target.refresh_from_db()
+            if approval_target.status == AutomationApproval.Status.EXPIRED:
+                return Response({"detail": "该确认项已过期"}, status=status.HTTP_400_BAD_REQUEST)
+            raise
         task = None
         created = False
         if approval.action == AutomationApproval.Action.DEEP_MATCH:
-            payload = approval.payload
-            task, created = create_task(
-                account=approval.boss_account,
-                action=RpaTask.Action.DEEP_MATCH,
-                actor=request.user,
-                approval=approval,
-                request_payload={
-                    "job": payload["job"],
-                    "job_title": payload["job_title"],
-                    "core": payload.get("core", []),
-                    "bonus": payload.get("bonus", []),
-                    "criteria": {
-                        "mode": "deep_search",
-                        "core": payload.get("core", []),
-                        "bonus": payload.get("bonus", []),
-                    },
-                },
-                idempotency_key=f"deep-match-task:{approval.pk}",
-                return_created=True,
-            )
+            task, created = _materialize_deep_match_task(approval=approval, actor=request.user)
         elif approval.action == AutomationApproval.Action.VIEW_ONLINE_RESUME:
             payload = approval.payload
             task, created = create_task(
@@ -610,8 +642,22 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
                     "target": payload["target"],
                 },
                 idempotency_key=f"online-resume-task:{approval.pk}",
+                creation_path="view_online_resume_approval",
                 return_created=True,
             )
+        elif approval.action == AutomationApproval.Action.SEARCH_AND_PULL_RESUMES:
+            campaign = SearchCampaign.objects.filter(
+                pk=approval.payload.get("campaign_id"),
+                boss_account=approval.boss_account,
+            ).first()
+            if campaign is None:
+                raise ValidationError("主动寻访任务不存在")
+            task = start_search_campaign(
+                campaign=campaign,
+                actor=request.user,
+                approval=approval,
+            )
+            created = True
         response = AutomationApprovalSerializer(approval).data
         if approval.action in {
             AutomationApproval.Action.GREET,
@@ -715,6 +761,12 @@ class ConversationActionViewSet(viewsets.ReadOnlyModelViewSet):
         request_id = str(request.data.get("request_id", "")).strip()
         if not request_id:
             return Response({"detail": "request_id 必填"}, status=status.HTTP_400_BAD_REQUEST)
+        target = _identity_snapshot(application, account)
+        if not target.get("fingerprint") or not target.get("verification"):
+            return Response(
+                {"detail": "候选人缺少可刷新的唯一身份来源，请转人工查看"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         approval, created = AutomationApproval.objects.get_or_create(
             idempotency_key=f"online-resume:{account.pk}:{request_id}",
             defaults={
@@ -723,7 +775,7 @@ class ConversationActionViewSet(viewsets.ReadOnlyModelViewSet):
                 "created_by": request.user,
                 "payload": {
                     "application_id": application.pk,
-                    "target": _identity_snapshot(application, account),
+                    "target": target,
                     "estimated_consumption": 1,
                 },
                 "expires_at": timezone.now() + timedelta(minutes=15),
@@ -878,6 +930,7 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(self.get_serializer(cancel_run(self.get_object(), actor=request.user)).data)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def decision(self, request, pk=None):
         run = self.get_object()
         node = run.node_runs.filter(pk=request.data.get("node_id")).first()
@@ -885,7 +938,54 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
             raise ValidationError({"node_id": "运行节点不存在"})
         if not isinstance(request.data.get("approved"), bool):
             raise ValidationError({"approved": "必须明确通过或跳过"})
-        decide_node(node, approved=request.data["approved"], actor=request.user, note=str(request.data.get("note", ""))[:500])
+        note = str(request.data.get("note", ""))[:500]
+        approval_id = (node.output or {}).get("approval_id")
+        if node.node_type in HUMAN_NODE_TYPES:
+            decide_node(node, approved=request.data["approved"], actor=request.user, note=note)
+        elif approval_id:
+            if node.status != "waiting_human":
+                raise WorkflowConflict("该执行节点当前不等待确认")
+            approval = AutomationApproval.objects.select_for_update().filter(
+                pk=approval_id,
+                boss_account=run.boss_account,
+            ).first()
+            if approval is None:
+                raise ValidationError({"node_id": "执行节点确认快照不存在"})
+            if request.data["approved"]:
+                try:
+                    approval = approve(approval=approval, actor=request.user)
+                except ValidationError:
+                    approval.refresh_from_db()
+                    if approval.status == AutomationApproval.Status.EXPIRED:
+                        return Response({"detail": "该确认项已过期"}, status=status.HTTP_400_BAD_REQUEST)
+                    raise
+                if approval.action in {
+                    AutomationApproval.Action.GREET,
+                    AutomationApproval.Action.REQUEST_RESUME,
+                    AutomationApproval.Action.SEND_INTERVIEW,
+                }:
+                    materialize_communication_batch(approval=approval, actor=request.user)
+                elif approval.action == AutomationApproval.Action.SEARCH_AND_PULL_RESUMES:
+                    campaign = SearchCampaign.objects.filter(
+                        pk=approval.payload.get("campaign_id"),
+                        boss_account=approval.boss_account,
+                    ).first()
+                    if campaign is None:
+                        raise ValidationError("主动寻访任务不存在")
+                    start_search_campaign(campaign=campaign, actor=request.user, approval=approval)
+                elif approval.action == AutomationApproval.Action.DEEP_MATCH:
+                    _materialize_deep_match_task(
+                        approval=approval,
+                        actor=request.user,
+                        workflow_node_run=node,
+                    )
+                else:
+                    raise ValidationError("该流程执行确认类型不受支持")
+            else:
+                reject(approval=approval, actor=request.user, note=note)
+                decide_node(node, approved=False, actor=request.user, note=note)
+        else:
+            raise WorkflowConflict("该节点等待外部事件，不能人工标记完成")
         return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
 
     @action(detail=True, methods=["post"])
@@ -919,9 +1019,13 @@ class SearchCampaignViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
         campaign = self.get_object()
-        task = start_search_campaign(campaign=campaign, actor=request.user)
-        campaign.refresh_from_db()
-        return Response({"campaign": self.get_serializer(campaign).data, "task_id": str(task.pk)})
+        approval = prepare_search_campaign(campaign=campaign, actor=request.user)
+        return Response({
+            "campaign": self.get_serializer(campaign).data,
+            "approval_id": str(approval.pk),
+            "approval_status": approval.status,
+            "resume_view_budget": approval.item_count,
+        })
 
     @action(detail=True, methods=["post"])
     def stop(self, request, pk=None):
@@ -1151,8 +1255,22 @@ class RpaTaskViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
         return Response(serializer.data, status=response_status, headers=headers)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def cancel(self, request, pk=None):
-        task = cancel_task(task=self.get_object(), actor=request.user)
+        task = self.get_object()
+        if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:
+            if task.status != RpaTask.Status.PENDING:
+                raise ValidationError("当前主动寻访任务不能通过通用取消入口处理")
+            campaign = SearchCampaign.objects.filter(
+                pk=task.request_payload.get("campaign_id"),
+                boss_account=task.boss_account,
+            ).first()
+            if campaign is None:
+                raise ValidationError("主动寻访任务缺少有效 campaign，无法安全取消")
+            stop_search_campaign(campaign=campaign)
+            task.refresh_from_db()
+        else:
+            task = cancel_task(task=task, actor=request.user)
         return Response(self.get_serializer(task).data)
 
     @action(detail=True, methods=["post"])

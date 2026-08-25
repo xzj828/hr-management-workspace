@@ -1,8 +1,10 @@
 from datetime import timedelta
+from dataclasses import dataclass
 import hashlib
-import uuid
 import threading
+import uuid
 
+from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.utils import timezone
 
@@ -17,26 +19,80 @@ PROMPT_REVISION = "phase3-v2"
 LEASE_SECONDS = 180
 
 
-def _has_model_configuration(user) -> bool:
-    credential = UserModelCredential.objects.filter(user=user).first()
-    return bool(
-        credential
-        and str(credential.api_url or "").strip()
-        and str(credential.model or "").strip()
-        and credential.encrypted_api_key
+@dataclass(frozen=True, repr=False)
+class TaskModelCredential:
+    api_url: str
+    model: str
+    encrypted_api_key: str
+    fingerprint: str
+
+
+def _credential_snapshot(credential) -> TaskModelCredential | None:
+    if not credential:
+        return None
+    api_url = str(credential.api_url or "").strip()
+    model = str(credential.model or "").strip()
+    encrypted_api_key = str(credential.encrypted_api_key or "")
+    if not api_url or not model or not encrypted_api_key:
+        return None
+    fingerprint = hashlib.sha256(
+        "\0".join((api_url, model, encrypted_api_key)).encode("utf-8")
+    ).hexdigest()
+    return TaskModelCredential(
+        api_url=api_url,
+        model=model,
+        encrypted_api_key=encrypted_api_key,
+        fingerprint=fingerprint,
     )
 
 
-def _initial_status(user):
-    return AiProcessingTask.Status.PENDING if _has_model_configuration(user) else AiProcessingTask.Status.WAITING_CONFIG
+def _capture_current_snapshot_locked(user) -> TaskModelCredential | None:
+    credential = UserModelCredential.objects.select_for_update().filter(user=user).first()
+    return _credential_snapshot(credential)
 
 
-def _model_fingerprint(user):
-    credential = UserModelCredential.objects.filter(user=user).first()
-    if not credential:
-        return "unconfigured"
-    raw = f"{credential.pk}|{credential.api_url}|{credential.model}|{credential.updated_at.isoformat()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+def _lock_user_and_capture_snapshot(user):
+    locked_user = get_user_model().objects.select_for_update().get(pk=user.pk)
+    return locked_user, _capture_current_snapshot_locked(locked_user)
+
+
+def _snapshot_fingerprint(snapshot: TaskModelCredential | None) -> str:
+    return snapshot.fingerprint[:12] if snapshot else "unconfigured"
+
+
+def _snapshot_defaults(snapshot: TaskModelCredential | None) -> dict:
+    if not snapshot:
+        return {"status": AiProcessingTask.Status.WAITING_CONFIG}
+    return {
+        "status": AiProcessingTask.Status.PENDING,
+        "model_api_url_snapshot": snapshot.api_url,
+        "model_name_snapshot": snapshot.model,
+        "encrypted_model_api_key_snapshot": snapshot.encrypted_api_key,
+        "model_snapshot_fingerprint": snapshot.fingerprint,
+        "model_snapshot_bound_at": timezone.now(),
+    }
+
+
+def _apply_snapshot(task: AiProcessingTask, snapshot: TaskModelCredential, *, bound_at=None):
+    task.model_api_url_snapshot = snapshot.api_url
+    task.model_name_snapshot = snapshot.model
+    task.encrypted_model_api_key_snapshot = snapshot.encrypted_api_key
+    task.model_snapshot_fingerprint = snapshot.fingerprint
+    task.model_snapshot_bound_at = bound_at or timezone.now()
+
+
+def task_model_credential(task: AiProcessingTask) -> TaskModelCredential:
+    if task.model_snapshot_bound_at is None:
+        raise ModelGatewayError("model_not_configured", "AI 任务尚未绑定可用的模型连接")
+    snapshot = TaskModelCredential(
+        api_url=str(task.model_api_url_snapshot or "").strip(),
+        model=str(task.model_name_snapshot or "").strip(),
+        encrypted_api_key=str(task.encrypted_model_api_key_snapshot or ""),
+        fingerprint=str(task.model_snapshot_fingerprint or ""),
+    )
+    if not all((snapshot.api_url, snapshot.model, snapshot.encrypted_api_key, snapshot.fingerprint)):
+        raise ModelGatewayError("model_snapshot_invalid", "AI 任务绑定的模型连接快照不完整")
+    return snapshot
 
 
 def _current_document_versions(job):
@@ -48,63 +104,167 @@ def _current_document_versions(job):
     )
 
 
+@transaction.atomic
 def enqueue_job_standard(*, job, requested_by, request_id=None) -> tuple[AiProcessingTask, bool]:
+    locked_user, snapshot = _lock_user_and_capture_snapshot(requested_by)
     versions = _current_document_versions(job)
     if not versions:
         raise ValueError("该职位没有可解析的岗位 Word 文档")
     fingerprint = ":".join(sha[:12] for _, sha in versions)
     generation = str(request_id or "auto")
-    key = f"job-standard:{job.pk}:{requested_by.pk}:{_model_fingerprint(requested_by)}:{PROMPT_REVISION}:{fingerprint}:{generation}"
+    key = f"job-standard:{job.pk}:{locked_user.pk}:{_snapshot_fingerprint(snapshot)}:{PROMPT_REVISION}:{fingerprint}:{generation}"
     return AiProcessingTask.objects.get_or_create(
         idempotency_key=key,
         defaults={
             "kind": AiProcessingTask.Kind.JOB_STANDARD,
-            "status": _initial_status(requested_by),
-            "requested_by": requested_by,
+            "requested_by": locked_user,
             "job": job,
             "document_version_id": versions[-1][0],
+            **_snapshot_defaults(snapshot),
         },
     )
 
 
+@transaction.atomic
 def enqueue_resume_structure(*, resume, requested_by, request_id=None) -> tuple[AiProcessingTask, bool]:
-    key = f"resume-structure:{resume.pk}:{requested_by.pk}:{_model_fingerprint(requested_by)}:{PROMPT_REVISION}:{resume.sha256 or resume.version}:{request_id or 'auto'}"
+    locked_user, snapshot = _lock_user_and_capture_snapshot(requested_by)
+    key = f"resume-structure:{resume.pk}:{locked_user.pk}:{_snapshot_fingerprint(snapshot)}:{PROMPT_REVISION}:{resume.sha256 or resume.version}:{request_id or 'auto'}"
     return AiProcessingTask.objects.get_or_create(
         idempotency_key=key,
         defaults={
             "kind": AiProcessingTask.Kind.RESUME_STRUCTURE,
-            "status": _initial_status(requested_by),
-            "requested_by": requested_by,
+            "requested_by": locked_user,
             "job": resume.application.job if resume.application_id else None,
             "resume": resume,
+            **_snapshot_defaults(snapshot),
         },
     )
 
 
+@transaction.atomic
 def enqueue_resume_score(*, structured_resume, standard, requested_by, request_id=None) -> tuple[AiProcessingTask, bool]:
+    locked_user, snapshot = _lock_user_and_capture_snapshot(requested_by)
     request_id = request_id or uuid.uuid4()
     key = f"resume-score:{request_id}:{structured_resume.pk}:{standard.pk}"
     return AiProcessingTask.objects.get_or_create(
         idempotency_key=key,
         defaults={
             "kind": AiProcessingTask.Kind.RESUME_SCORE,
-            "status": _initial_status(requested_by),
-            "requested_by": requested_by,
+            "requested_by": locked_user,
             "job": standard.job,
             "resume": structured_resume.resume,
             "standard": standard,
+            **_snapshot_defaults(snapshot),
         },
     )
 
 
+@transaction.atomic
+def _bind_waiting_tasks_for_user(user_id) -> int:
+    locked_user = get_user_model().objects.select_for_update().get(pk=user_id)
+    snapshot = _capture_current_snapshot_locked(locked_user)
+    if not snapshot:
+        return 0
+    now = timezone.now()
+    return AiProcessingTask.objects.filter(
+        requested_by_id=locked_user.pk,
+        status=AiProcessingTask.Status.WAITING_CONFIG,
+        model_snapshot_bound_at__isnull=True,
+    ).update(
+        status=AiProcessingTask.Status.PENDING,
+        available_at=now,
+        error_code="",
+        error_message="",
+        model_api_url_snapshot=snapshot.api_url,
+        model_name_snapshot=snapshot.model,
+        encrypted_model_api_key_snapshot=snapshot.encrypted_api_key,
+        model_snapshot_fingerprint=snapshot.fingerprint,
+        model_snapshot_bound_at=now,
+        updated_at=now,
+    )
+
+
 def _restore_configured_tasks():
-    waiting = AiProcessingTask.objects.filter(status=AiProcessingTask.Status.WAITING_CONFIG).select_related("requested_by")
-    ready_ids = [task.pk for task in waiting if _has_model_configuration(task.requested_by)]
-    if ready_ids:
-        AiProcessingTask.objects.filter(pk__in=ready_ids).update(status=AiProcessingTask.Status.PENDING, available_at=timezone.now())
+    now = timezone.now()
+    AiProcessingTask.objects.filter(
+        status__in=[
+            AiProcessingTask.Status.PENDING,
+            AiProcessingTask.Status.EXTRACTING,
+            AiProcessingTask.Status.OCR,
+            AiProcessingTask.Status.MODEL,
+        ],
+        model_snapshot_bound_at__isnull=True,
+    ).update(
+        status=AiProcessingTask.Status.WAITING_CONFIG,
+        leased_at=None,
+        lease_expires_at=None,
+        lease_token=None,
+        error_code="model_not_configured",
+        error_message="等待该任务首次绑定可用的大模型配置",
+        updated_at=now,
+    )
+    AiProcessingTask.objects.filter(
+        status=AiProcessingTask.Status.WAITING_CONFIG,
+        model_snapshot_bound_at__isnull=False,
+    ).update(status=AiProcessingTask.Status.PENDING, available_at=now, updated_at=now)
+    user_ids = list(
+        AiProcessingTask.objects.filter(
+            status=AiProcessingTask.Status.WAITING_CONFIG,
+            model_snapshot_bound_at__isnull=True,
+        )
+        .order_by()
+        .values_list("requested_by_id", flat=True)
+        .distinct()
+    )
+    for user_id in user_ids:
+        _bind_waiting_tasks_for_user(user_id)
+
+
+def _bind_task_snapshot_once(task: AiProcessingTask) -> AiProcessingTask:
+    current = AiProcessingTask.objects.select_related("requested_by").get(pk=task.pk)
+    if current.model_snapshot_bound_at is not None:
+        return current
+    with transaction.atomic():
+        locked_user = get_user_model().objects.select_for_update().get(pk=current.requested_by_id)
+        locked = AiProcessingTask.objects.select_for_update().select_related("requested_by").get(pk=current.pk)
+        if locked.model_snapshot_bound_at is not None:
+            return locked
+        snapshot = _capture_current_snapshot_locked(locked_user)
+        if not snapshot:
+            return locked
+        _apply_snapshot(locked, snapshot)
+        if locked.status == AiProcessingTask.Status.WAITING_CONFIG:
+            locked.status = AiProcessingTask.Status.PENDING
+            locked.available_at = timezone.now()
+        locked.error_code = ""
+        locked.error_message = ""
+        locked.save()
+        return locked
 
 
 @transaction.atomic
+def _lease_pending_task(*, lease_seconds=180) -> AiProcessingTask | None:
+    now = timezone.now()
+    queryset = AiProcessingTask.objects.filter(
+        status=AiProcessingTask.Status.PENDING,
+        available_at__lte=now,
+        model_snapshot_bound_at__isnull=False,
+    ).order_by("available_at", "created_at")
+    if connection.features.has_select_for_update_skip_locked:
+        queryset = queryset.select_for_update(skip_locked=True)
+    else:
+        queryset = queryset.select_for_update()
+    task = queryset.first()
+    if not task:
+        return None
+    task.status = AiProcessingTask.Status.MODEL
+    task.leased_at = now
+    task.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    task.lease_token = uuid.uuid4()
+    task.save(update_fields=["status", "leased_at", "lease_expires_at", "lease_token", "updated_at"])
+    return task
+
+
 def lease_next_task(*, lease_seconds=180) -> AiProcessingTask | None:
     now = timezone.now()
     AiProcessingTask.objects.filter(
@@ -120,23 +280,7 @@ def lease_next_task(*, lease_seconds=180) -> AiProcessingTask | None:
         available_at=now,
     )
     _restore_configured_tasks()
-    queryset = AiProcessingTask.objects.filter(
-        status=AiProcessingTask.Status.PENDING,
-        available_at__lte=now,
-    ).order_by("available_at", "created_at")
-    if connection.features.has_select_for_update_skip_locked:
-        queryset = queryset.select_for_update(skip_locked=True)
-    else:
-        queryset = queryset.select_for_update()
-    task = queryset.first()
-    if not task:
-        return None
-    task.status = AiProcessingTask.Status.MODEL
-    task.leased_at = now
-    task.lease_expires_at = now + timedelta(seconds=lease_seconds)
-    task.lease_token = uuid.uuid4()
-    task.save(update_fields=["status", "leased_at", "lease_expires_at", "lease_token", "updated_at"])
-    return task
+    return _lease_pending_task(lease_seconds=lease_seconds)
 
 
 def _execute_job_standard(task):
@@ -197,11 +341,20 @@ def _run_with_heartbeat(task):
 
 
 def execute_task(task: AiProcessingTask) -> AiProcessingTask:
-    task.refresh_from_db()
-    if not _has_model_configuration(task.requested_by):
+    task = _bind_task_snapshot_once(task)
+    if task.model_snapshot_bound_at is None:
         task.status = AiProcessingTask.Status.WAITING_CONFIG
         task.error_code = "model_not_configured"
-        task.error_message = "等待当前账号配置可用的大模型"
+        task.error_message = "等待该任务首次绑定可用的大模型配置"
+        _clear_lease(task)
+        task.save()
+        return task
+    try:
+        task_model_credential(task)
+    except ModelGatewayError as exc:
+        task.status = AiProcessingTask.Status.FAILED
+        task.error_code = exc.code
+        task.error_message = str(exc)[:500]
         _clear_lease(task)
         task.save()
         return task
@@ -255,19 +408,29 @@ def execute_task(task: AiProcessingTask) -> AiProcessingTask:
     return task
 
 
-@transaction.atomic
 def retry_task(*, task, requested_by) -> AiProcessingTask:
-    locked = AiProcessingTask.objects.select_for_update().get(pk=task.pk)
-    if locked.requested_by_id != requested_by.id and not requested_by.is_superuser:
-        raise PermissionError("无权重试该 AI 任务")
-    if locked.status not in {AiProcessingTask.Status.FAILED, AiProcessingTask.Status.WAITING_CONFIG}:
-        raise ValueError("只有失败或等待模型配置的任务可以重试")
-    locked.status = _initial_status(requested_by)
-    locked.progress = 0
-    locked.attempt_count = 0
-    locked.available_at = timezone.now()
-    locked.error_code = ""
-    locked.error_message = ""
-    _clear_lease(locked)
-    locked.save()
-    return locked
+    owner_id = AiProcessingTask.objects.values_list("requested_by_id", flat=True).get(pk=task.pk)
+    with transaction.atomic():
+        locked_owner = get_user_model().objects.select_for_update().get(pk=owner_id)
+        locked = AiProcessingTask.objects.select_for_update().get(pk=task.pk)
+        if locked.requested_by_id != requested_by.id and not requested_by.is_superuser:
+            raise PermissionError("无权重试该 AI 任务")
+        if locked.status not in {AiProcessingTask.Status.FAILED, AiProcessingTask.Status.WAITING_CONFIG}:
+            raise ValueError("只有失败或等待模型配置的任务可以重试")
+        if locked.model_snapshot_bound_at is None:
+            snapshot = _capture_current_snapshot_locked(locked_owner)
+            if snapshot:
+                _apply_snapshot(locked, snapshot)
+        locked.status = (
+            AiProcessingTask.Status.PENDING
+            if locked.model_snapshot_bound_at is not None
+            else AiProcessingTask.Status.WAITING_CONFIG
+        )
+        locked.progress = 0
+        locked.attempt_count = 0
+        locked.available_at = timezone.now()
+        locked.error_code = ""
+        locked.error_message = ""
+        _clear_lease(locked)
+        locked.save()
+        return locked

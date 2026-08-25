@@ -4,6 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from recruitment.models import BossAccount, RecruitmentAuditLog, RpaTask, RpaTaskEvent
+from recruitment.services.search_campaigns import fail_stale_search_campaign_task
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,14 @@ def recover_stale_tasks(*, now=None):
     failed = 0
     for task in expired:
         account = task.boss_account
+        if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:
+            if fail_stale_search_campaign_task(
+                task=task,
+                observed_at=observed_at,
+                account_status=_account_idle_status(account),
+            ):
+                failed += 1
+            continue
         if task.status == RpaTask.Status.LEASED:
             task.status = RpaTask.Status.PENDING
             task.worker = None

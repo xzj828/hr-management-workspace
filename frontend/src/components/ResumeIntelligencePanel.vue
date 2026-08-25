@@ -42,7 +42,7 @@ function showEvidence(blockId) {
       </nav>
 
       <main class="intelligence-panel__body">
-        <div v-if="isBusy" class="intelligence-task-state"><span class="intelligence-pulse"></span><div><strong>{{ latestTask.status_label || '正在处理' }}</strong><p>{{ latestTask.status === 'waiting_config' ? '请先在 Copilot 中配置并测试大模型。' : '后台任务正在提取和整理信息，可离开此页。' }}</p></div></div>
+        <div v-if="isBusy" class="intelligence-task-state"><span class="intelligence-pulse"></span><div><strong>{{ latestTask.status_label || '正在处理' }}</strong><p>{{ latestTask.status === 'waiting_config' ? '请先通过“切换模型”新增并测试可用模型。' : '后台任务正在提取和整理信息，可离开此页。' }}</p></div></div>
         <div v-else-if="latestTask?.status === 'failed'" class="intelligence-task-state intelligence-task-state--error"><AppIcon name="alert-circle" :size="20" /><div><strong>处理失败</strong><p>{{ latestTask.error_message || '任务未完成，请重试。' }}</p></div><button v-if="structureTask?.status === 'failed'" class="secondary-button" data-test="retry-structure" @click="emit('retry-structure')">重新解析</button></div>
 
         <section v-if="activeTab === 'original'" class="intelligence-original">

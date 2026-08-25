@@ -2,6 +2,7 @@ from unittest.mock import Mock
 
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, override_settings
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
@@ -153,7 +154,12 @@ class CandidateWorkerApiTests(APITestCase):
             created_by=self.hr,
             approved_by=self.hr,
             status=AutomationApproval.Status.APPROVED,
-            payload={"job": self.job.pk},
+            payload={
+                "job": self.job.pk,
+                "job_title": self.job.title,
+                "core": [],
+                "bonus": [],
+            },
         )
 
         task = create_task(
@@ -161,7 +167,14 @@ class CandidateWorkerApiTests(APITestCase):
             action=RpaTask.Action.DEEP_MATCH,
             actor=self.hr,
             approval=approval,
-            idempotency_key="deep:one",
+            request_payload={
+                "job": self.job.pk,
+                "job_title": self.job.title,
+                "core": [],
+                "bonus": [],
+            },
+            idempotency_key=f"deep-match-task:{approval.pk}",
+            creation_path="deep_match_approval",
         )
 
         self.assertEqual(task.approval, approval)
@@ -171,3 +184,32 @@ class CandidateWorkerApiTests(APITestCase):
             ).used,
             1,
         )
+
+    def test_deep_match_approved_snapshot_still_requires_dedicated_creation_path(self):
+        payload = {
+            "job": self.job.pk,
+            "job_title": self.job.title,
+            "core": [],
+            "bonus": [],
+        }
+        approval = AutomationApproval.objects.create(
+            action=AutomationApproval.Action.DEEP_MATCH,
+            boss_account=self.account,
+            created_by=self.hr,
+            approved_by=self.hr,
+            status=AutomationApproval.Status.APPROVED,
+            payload=payload,
+        )
+
+        with self.assertRaisesMessage(ValidationError, "专用编排服务"):
+            create_task(
+                account=self.account,
+                action=RpaTask.Action.DEEP_MATCH,
+                actor=self.hr,
+                approval=approval,
+                request_payload=payload,
+                idempotency_key=f"deep-match-task:{approval.pk}",
+            )
+
+        self.assertFalse(RpaTask.objects.exists())
+        self.assertFalse(AutomationUsage.objects.exists())

@@ -54,3 +54,16 @@ class WorkflowServiceTests(TestCase):
         with self.assertRaises(ValidationError):
             validate_graph(nodes=SAFE_NODES[1:], edges=SAFE_EDGES[1:], boss_account=self.account)
 
+    def test_request_resume_is_a_send_node_and_requires_human_ancestor(self):
+        nodes = [
+            {"key": "source", "type": "sync_messages", "config": {}},
+            {"key": "request", "type": "request_resume", "config": {"message": "请发送简历"}},
+            {"key": "end", "type": "end", "config": {}},
+        ]
+        edges = [
+            {"source": "source", "target": "request"},
+            {"source": "request", "target": "end"},
+        ]
+
+        with self.assertRaisesMessage(ValidationError, "人工确认"):
+            validate_graph(nodes=nodes, edges=edges, boss_account=self.account)

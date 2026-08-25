@@ -2,7 +2,16 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import APIException, ValidationError
 
-from recruitment.models import WorkflowNodeRun, WorkflowRun, WorkflowRunEvent
+from recruitment.models import (
+    AutomationApproval,
+    ConversationAction,
+    RecruitmentAuditLog,
+    RpaTask,
+    SearchCampaign,
+    WorkflowNodeRun,
+    WorkflowRun,
+    WorkflowRunEvent,
+)
 
 
 HUMAN_NODE_TYPES = {"human_screen", "human_approval", "human_review"}
@@ -179,6 +188,9 @@ def advance_run(run, *, executor=None):
     if any(status == WorkflowNodeRun.Status.FAILED for status in statuses):
         locked.status = WorkflowRun.Status.FAILED
         locked.completed_at = now
+    elif any(status == WorkflowNodeRun.Status.CANCELLED for status in statuses):
+        locked.status = WorkflowRun.Status.CANCELLED
+        locked.completed_at = now
     elif all(status in SUCCESS_STATES for status in statuses):
         locked.status = WorkflowRun.Status.SUCCEEDED
         locked.completed_at = now
@@ -234,9 +246,105 @@ def cancel_run(run, *, actor):
     if locked.status in RUN_TERMINAL_STATES:
         return locked
     now = timezone.now()
-    locked.node_runs.filter(status__in=[WorkflowNodeRun.Status.BLOCKED, WorkflowNodeRun.Status.READY]).update(
-        status=WorkflowNodeRun.Status.CANCELLED, completed_at=now, updated_at=now,
+    nodes = list(locked.node_runs.select_for_update().all())
+    node_ids = [node.pk for node in nodes]
+    tasks = RpaTask.objects.select_for_update().filter(workflow_node_run_id__in=node_ids)
+    active_node_ids = set(tasks.filter(
+        status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING]
+    ).values_list("workflow_node_run_id", flat=True))
+
+    from recruitment.rpa.tasks import append_event
+    from recruitment.services.approvals import reject
+    from recruitment.services.communications import cancel_workflow_communication
+    from recruitment.services.search_campaigns import stop_search_campaign
+
+    communication_node_ids = set(tasks.filter(execution_batch__isnull=False).values_list(
+        "workflow_node_run_id", flat=True
+    ))
+    for node in nodes:
+        if node.pk in communication_node_ids:
+            cancel_workflow_communication(workflow_node_run=node, actor=actor, now=now)
+
+    stopped_campaign_ids = set()
+    for task in tasks.filter(status=RpaTask.Status.PENDING):
+        if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:
+            campaign = SearchCampaign.objects.select_for_update().filter(
+                pk=task.request_payload.get("campaign_id"),
+                boss_account=locked.boss_account,
+            ).first()
+            if campaign is not None:
+                stop_search_campaign(campaign=campaign)
+                stopped_campaign_ids.add(campaign.pk)
+                continue
+        if task.status != RpaTask.Status.PENDING:
+            continue
+        task.status = RpaTask.Status.CANCELLED
+        task.error_code = "workflow_cancelled"
+        task.error_message = "所属流程已取消，任务未进入外部适配器"
+        task.completed_at = now
+        task.lease_expires_at = None
+        task.save(update_fields=[
+            "status", "error_code", "error_message", "completed_at", "lease_expires_at", "updated_at",
+        ])
+        append_event(task=task, event="cancelled", message="所属流程已取消，任务未执行")
+        RecruitmentAuditLog.objects.create(
+            actor=actor,
+            boss_account=locked.boss_account,
+            action="workflow_task_cancelled",
+            target_id=str(task.pk),
+            detail={"workflow_run_id": str(locked.pk), "task_action": task.action},
+        )
+
+    approval_ids = {
+        str((node.output or {}).get("approval_id"))
+        for node in nodes
+        if (node.output or {}).get("approval_id")
+    }
+    approvals = AutomationApproval.objects.select_for_update().filter(
+        pk__in=approval_ids,
+        boss_account=locked.boss_account,
     )
+    for approval in approvals:
+        if approval.status == AutomationApproval.Status.DRAFT:
+            reject(approval=approval, actor=actor, note="所属流程已取消")
+            ConversationAction.objects.filter(
+                approval=approval,
+                status__in=[ConversationAction.Status.DRAFT, ConversationAction.Status.APPROVED],
+            ).update(
+                status=ConversationAction.Status.CANCELLED,
+                error_code="workflow_cancelled",
+                error_message="所属流程已取消",
+                completed_at=now,
+                updated_at=now,
+            )
+
+    for node in nodes:
+        if node.node_type != "search_and_pull_resumes" or node.pk in active_node_ids:
+            continue
+        campaign_id = (node.output or {}).get("campaign_id")
+        if not campaign_id or campaign_id in stopped_campaign_ids:
+            continue
+        campaign = SearchCampaign.objects.select_for_update().filter(
+            pk=campaign_id,
+            workflow_run=locked,
+        ).first()
+        if campaign is not None and campaign.status not in {
+            SearchCampaign.Status.SUCCEEDED,
+            SearchCampaign.Status.CANCELLED,
+        }:
+            stop_search_campaign(campaign=campaign)
+
+    for node in nodes:
+        if node.pk in active_node_ids or node.status in NODE_TERMINAL_STATES:
+            continue
+        node.status = WorkflowNodeRun.Status.CANCELLED
+        node.completed_at = now
+        node.error_code = "workflow_cancelled"
+        node.error_message = "流程已由用户取消"
+        node.save(update_fields=[
+            "status", "completed_at", "error_code", "error_message", "updated_at",
+        ])
+        _event(locked, "node.cancelled", f"节点 {node.node_key} 已取消", node=node, actor=actor)
     locked.status = WorkflowRun.Status.CANCELLED
     locked.completed_at = now
     locked.save(update_fields=["status", "completed_at", "updated_at"])
@@ -251,10 +359,13 @@ def retry_node(node, *, actor):
         raise WorkflowConflict("只有失败节点可以重试")
     locked.status = WorkflowNodeRun.Status.READY
     locked.attempt += 1
+    locked.output = {}
     locked.error_code = ""
     locked.error_message = ""
     locked.completed_at = None
-    locked.save(update_fields=["status", "attempt", "error_code", "error_message", "completed_at", "updated_at"])
+    locked.save(update_fields=[
+        "status", "attempt", "output", "error_code", "error_message", "completed_at", "updated_at",
+    ])
     locked.run.status = WorkflowRun.Status.RUNNING
     locked.run.completed_at = None
     locked.run.save(update_fields=["status", "completed_at", "updated_at"])

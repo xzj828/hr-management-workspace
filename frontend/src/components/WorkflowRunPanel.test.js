@@ -16,4 +16,18 @@ describe('WorkflowRunPanel', () => {
     expect(wrapper.emitted('decision')[0][0]).toEqual({ nodeId: 2, approved: true })
     expect(wrapper.emitted('pause')).toHaveLength(1)
   })
+
+  it('labels approval-backed waiting nodes as a real confirmation', () => {
+    const wrapper = mount(WorkflowRunPanel, {
+      props: {
+        run: {
+          id: 'run-2', status: 'waiting_human', mode: 'formal', account_name: 'BOSS 账号', events: [],
+          node_runs: [{ id: 22, node_key: 'search_pull', status: 'waiting_human', attempt: 0, output: { approval_id: 'approval-1' } }],
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('确认并继续')
+    expect(wrapper.text()).toContain('拒绝')
+  })
 })

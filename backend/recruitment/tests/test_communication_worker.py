@@ -18,6 +18,10 @@ class FakeRunner:
     def request_resume(self, account, name, *, message="", first_contact=False):
         self.calls.append(("request_resume", name, message, first_contact))
 
+    def conversations(self, account):
+        self.calls.append(("conversations",))
+        return "1. 林然｜产品经理｜external_id:boss-1｜未读 1"
+
     def send_text(self, account, name, message):
         self.calls.append(("send_text", name, message))
 
@@ -26,13 +30,13 @@ class CommunicationWorkerTests(SimpleTestCase):
     def setUp(self):
         self.account = CliAccountConfig("edge.exe", "profile", 53470)
 
-    def test_greet_refreshes_discovery_and_requires_exact_fingerprint(self):
+    def test_greet_does_not_use_name_based_adapter_even_with_fingerprint(self):
         runner = FakeRunner()
         outcome = execute_greet({"request_payload": {
             "target": {"name": "林然", "fingerprint": "fp-safe", "job_title": "测试工程师"}
         }}, self.account, runner)
-        self.assertEqual(outcome["status"], "succeeded")
-        self.assertEqual(runner.calls[-1], ("greet", "林然", "测试工程师"))
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertNotIn("greet", [call[0] for call in runner.calls])
 
     def test_greet_with_missing_identity_waits_for_human(self):
         runner = FakeRunner()
@@ -54,7 +58,7 @@ class CommunicationWorkerTests(SimpleTestCase):
         self.assertEqual(outcome["status"], "waiting_human")
         self.assertNotIn("greet", [call[0] for call in runner.calls])
 
-    def test_request_resume_and_interview_use_confirmed_snapshots(self):
+    def test_matching_list_id_still_does_not_authorize_name_based_send_actions(self):
         runner = FakeRunner()
         resume = execute_request_resume({"request_payload": {
             "target": {"name": "林然", "external_id": "boss-1"},
@@ -64,7 +68,47 @@ class CommunicationWorkerTests(SimpleTestCase):
         interview = execute_send_interview({"request_payload": {
             "target": {"name": "林然", "external_id": "boss-1"}, "message": "周五上午十点面试"
         }}, self.account, runner)
-        self.assertEqual(resume["status"], "succeeded")
-        self.assertEqual(interview["status"], "succeeded")
-        self.assertIn(("request_resume", "林然", "请发送简历", True), runner.calls)
-        self.assertIn(("send_text", "林然", "周五上午十点面试"), runner.calls)
+        self.assertEqual(resume["status"], "waiting_human")
+        self.assertEqual(interview["status"], "waiting_human")
+        self.assertEqual(resume["error_code"], "stable_identity_action_unavailable")
+        self.assertNotIn("request_resume", [call[0] for call in runner.calls])
+        self.assertNotIn("send_text", [call[0] for call in runner.calls])
+
+    def test_request_resume_stops_when_refreshed_conversation_name_is_ambiguous(self):
+        runner = FakeRunner()
+        runner.conversations = lambda account: "1. 林然｜产品经理\n2. 林然｜测试工程师"
+
+        outcome = execute_request_resume({"request_payload": {
+            "target": {"name": "林然", "external_id": "boss-1"},
+            "message": "请发送简历",
+            "first_contact": True,
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertNotIn("request_resume", [call[0] for call in runner.calls])
+
+    def test_request_resume_wrong_external_id_probe_never_calls_action(self):
+        runner = FakeRunner()
+        runner.conversations = lambda account: "1. 林然｜产品经理｜external_id:boss-other"
+
+        outcome = execute_request_resume({"request_payload": {
+            "target": {"name": "林然", "external_id": "boss-1"},
+            "message": "请发送简历",
+            "first_contact": True,
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertNotIn("request_resume", [call[0] for call in runner.calls])
+
+    def test_request_resume_name_only_probe_never_calls_action(self):
+        runner = FakeRunner()
+        runner.conversations = lambda account: "1. 林然｜产品经理"
+
+        outcome = execute_request_resume({"request_payload": {
+            "target": {"name": "林然", "external_id": "boss-1"},
+            "message": "请发送简历",
+            "first_contact": True,
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertNotIn("request_resume", [call[0] for call in runner.calls])

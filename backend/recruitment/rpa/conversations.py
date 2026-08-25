@@ -9,11 +9,23 @@ def parse_conversation_list(output):
         if not match:
             continue
         preview_match = re.search(r"(?:^|[｜|])消息[:：]([^｜|]+)", line)
+        external_id_match = re.search(
+            r"(?:^|[｜|])\s*(?:external[_ -]?id|候选人ID|平台ID)\s*[:：=]\s*([^｜|\s]+)",
+            line,
+            re.I,
+        )
+        fingerprint_match = re.search(
+            r"(?:^|[｜|])\s*(?:fingerprint|指纹)\s*[:：=]\s*([0-9a-z_-]+)",
+            line,
+            re.I,
+        )
         rows.append({
             "index": int(match.group(1)),
             "name": " ".join(match.group(2).split()).strip(),
             "unread": "未读" in line,
             **({"preview": " ".join(preview_match.group(1).split()).strip()} if preview_match else {}),
+            **({"external_id": external_id_match.group(1).strip()} if external_id_match else {}),
+            **({"fingerprint": fingerprint_match.group(1).strip()} if fingerprint_match else {}),
         })
     return rows
 

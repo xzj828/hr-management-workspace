@@ -1,16 +1,13 @@
 export const modules = [
-  { id: 'recruitment', label: '招聘管理', routeName: 'recruitment-dashboard', icon: 'briefcase' },
+  { id: 'recruitment', label: '招聘管理', routeName: 'recruitment-workbench', icon: 'briefcase' },
   { id: 'attendance', label: '考勤管理', routeName: 'attendance-dashboard', icon: 'calendar-check' },
 ]
 
 const navigation = {
   recruitment: [
-    { name: 'recruitment-dashboard', label: '招聘看板', icon: 'dashboard', scope: 'global' },
-    { name: 'recruitment-jobs', label: '职位管理', icon: 'briefcase', scope: 'global' },
-    { name: 'recruitment-candidates', label: '候选人', icon: 'user', scope: 'job' },
-    { name: 'recruitment-pipeline', label: '招聘流程', icon: 'workflow', scope: 'job' },
-    { name: 'recruitment-automation', label: '自动化任务', icon: 'refresh', scope: 'global' },
-    { name: 'recruitment-resumes', label: '简历中心', icon: 'document', scope: 'job' },
+    { name: 'recruitment-workbench', label: '招聘作业台', icon: 'briefcase', scope: 'job' },
+    { name: 'recruitment-results', label: '结果中心', icon: 'dashboard', scope: 'job' },
+    { name: 'recruitment-admin', label: '管理后台', icon: 'sliders', scope: 'global' },
   ],
   attendance: [
     { name: 'attendance-dashboard', label: '考勤看板', icon: 'dashboard' },
@@ -30,7 +27,9 @@ function moduleDefinition(moduleId) {
 
 export function moduleDestination(moduleId) {
   const module = moduleDefinition(moduleId) || modules.find((item) => item.id === 'attendance')
-  return sessionStorage.getItem(`${storagePrefix}${module.id}`) || module.routeName
+  const remembered = sessionStorage.getItem(`${storagePrefix}${module.id}`)
+  const allowedNames = navigationForModule(module.id).map((item) => item.name)
+  return allowedNames.includes(remembered) ? remembered : module.routeName
 }
 
 export function rememberModuleRoute(route) {

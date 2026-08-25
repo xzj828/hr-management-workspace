@@ -90,27 +90,40 @@ def archive_online_resume_image(*, application, filename, content, external_id="
         external_id=str(external_id or "")[:160],
         acquired_at=timezone.now(),
     )
-    resume.file.save(safe_name, ContentFile(data), save=False)
-    resume.save()
-    advance_for_event(application=application, event="resume_archived", actor=actor)
-    RecruitmentAuditLog.objects.create(
-        actor=actor,
-        boss_account=application.job.boss_account,
-        action="online_resume_archived",
-        target_id=str(resume.pk),
-        detail={"candidate_id": application.candidate_id, "version": version, "sha256": digest[:12]},
-    )
-    from recruitment.services.workflow_events import publish_workflow_event
-    transaction.on_commit(
-        lambda: publish_workflow_event(
-            event="resume.archived", application=application,
-            event_key=f"resume:{resume.pk}", payload={"resume_id": resume.pk},
+    storage = resume.file.storage
+    stored_name = ""
+    try:
+        resume.file.save(safe_name, ContentFile(data), save=False)
+        stored_name = resume.file.name
+        resume.save()
+        advance_for_event(application=application, event="resume_archived", actor=actor)
+        RecruitmentAuditLog.objects.create(
+            actor=actor,
+            boss_account=application.job.boss_account,
+            action="online_resume_archived",
+            target_id=str(resume.pk),
+            detail={"candidate_id": application.candidate_id, "version": version, "sha256": digest[:12]},
         )
-    )
-    from recruitment.services.ai_tasks import enqueue_resume_structure
+        from recruitment.services.workflow_events import publish_workflow_event
+        transaction.on_commit(
+            lambda: publish_workflow_event(
+                event="resume.archived", application=application,
+                event_key=f"resume:{resume.pk}", payload={"resume_id": resume.pk},
+            )
+        )
+        from recruitment.services.ai_tasks import enqueue_resume_structure
 
-    requested_by = actor or application.job.owner or application.job.boss_account.authorized_users.order_by("id").first()
-    if requested_by:
-        transaction.on_commit(lambda: enqueue_resume_structure(resume=resume, requested_by=requested_by))
-    return resume, True
+        requested_by = actor or application.job.owner or application.job.boss_account.authorized_users.order_by("id").first()
+        if requested_by:
+            transaction.on_commit(lambda: enqueue_resume_structure(resume=resume, requested_by=requested_by))
+        return resume, True
+    except Exception:
+        # FileField writes storage before the surrounding database transaction commits.
+        # Compensate if any later database or workflow bookkeeping step fails.
+        if stored_name:
+            try:
+                storage.delete(stored_name)
+            except OSError:
+                pass
+        raise
 

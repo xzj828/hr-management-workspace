@@ -1,9 +1,11 @@
+import hashlib
 import secrets
 from pathlib import Path
-from datetime import timedelta
+from datetime import datetime, timedelta
 from dataclasses import asdict
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -12,7 +14,7 @@ from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import BossAccount, CandidateDiscovery, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker, SearchCampaign
+from .models import AutomationApproval, AutomationEvidence, BossAccount, CandidateDiscovery, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker, SearchCampaign, WorkflowNodeRun, WorkflowRun
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
 from .services.discovery import _fingerprint, import_discoveries, sync_discoveries
@@ -118,6 +120,21 @@ def lease_task_view(request):
         RpaTask.objects.select_for_update()
         .select_related("boss_account")
         .filter(Q(status=RpaTask.Status.PENDING) | Q(status=RpaTask.Status.LEASED, lease_expires_at__lt=now))
+        .filter(
+            Q(workflow_node_run__isnull=True)
+            | Q(
+                workflow_node_run__status__in=[
+                    WorkflowNodeRun.Status.BLOCKED,
+                    WorkflowNodeRun.Status.READY,
+                    WorkflowNodeRun.Status.RUNNING,
+                    WorkflowNodeRun.Status.WAITING_HUMAN,
+                ],
+                workflow_node_run__run__status__in=[
+                    WorkflowRun.Status.RUNNING,
+                    WorkflowRun.Status.WAITING_HUMAN,
+                ],
+            )
+        )
         .order_by("created_at")
         .first()
     )
@@ -145,12 +162,661 @@ def lease_task_view(request):
     }})
 
 
-def _assigned_task(request, task_id):
+def _assigned_task(request, task_id, *, for_update=False):
     worker = _worker(request)
     if worker is None:
         return None, None
-    task = RpaTask.objects.select_related("boss_account").filter(pk=task_id, worker=worker).first()
+    tasks = RpaTask.objects.select_related("boss_account")
+    if for_update:
+        tasks = tasks.select_for_update()
+    task = tasks.filter(pk=task_id, worker=worker).first()
     return worker, task
+
+
+class SearchPullResultError(ValueError):
+    def __init__(self, message, *, evidence_context=None):
+        super().__init__(message)
+        self.evidence_context = evidence_context
+
+
+def _schedule_workflow_resume(task):
+    if not task.workflow_node_run_id:
+        return
+    task_id = task.pk
+
+    def resume_workflow():
+        from .services.workflow_nodes import resume_workflow_for_task
+        resume_workflow_for_task(RpaTask.objects.get(pk=task_id))
+
+    transaction.on_commit(resume_workflow)
+
+
+def _validate_search_pull_result(*, task, campaign, result):
+    """Validate the immutable approval scope and all worker output before writes."""
+    approval = task.approval
+    approved_payload = approval.payload if approval and isinstance(approval.payload, dict) else {}
+    if (
+        approval is None
+        or approval.action != AutomationApproval.Action.SEARCH_AND_PULL_RESUMES
+        or approval.status != AutomationApproval.Status.APPROVED
+        or approved_payload != task.request_payload
+        or approved_payload.get("campaign_id") != campaign.pk
+    ):
+        raise SearchPullResultError("主动寻访任务缺少有效的已确认快照")
+    expected_task_key = f"search-campaign:{campaign.pk}:approval:{approval.pk}"
+    conflicting_task = RpaTask.objects.filter(
+        action=RpaTask.Action.SEARCH_AND_PULL_RESUMES,
+        boss_account=task.boss_account,
+        request_payload__campaign_id=campaign.pk,
+        status__in=[
+            RpaTask.Status.PENDING,
+            RpaTask.Status.LEASED,
+            RpaTask.Status.RUNNING,
+            RpaTask.Status.WAITING_HUMAN,
+            RpaTask.Status.SUCCEEDED,
+        ],
+    ).exclude(pk=task.pk).exists()
+    if (
+        task.idempotency_key != expected_task_key
+        or campaign.status not in {SearchCampaign.Status.QUEUED, SearchCampaign.Status.RUNNING}
+        or approval.rpa_tasks.exclude(pk=task.pk).exists()
+        or conflicting_task
+    ):
+        raise SearchPullResultError("主动寻访 task、approval 与 campaign 的唯一关联无效")
+
+    try:
+        max_scan_count = int(approved_payload.get("max_scan_count", 0) or 0)
+        target_resume_count = int(approved_payload.get("target_resume_count", 0) or 0)
+        resume_view_budget = int(approved_payload.get("resume_view_budget", 0) or 0)
+        scanned_count = int(result.get("scanned_count", -1))
+        view_attempt_count = int(result.get("view_attempt_count", -1))
+        reported_budget = int(result.get("resume_view_budget", -1))
+    except (TypeError, ValueError) as exc:
+        raise SearchPullResultError("主动寻访结果中的数量字段无效") from exc
+
+    rows = result.get("candidates")
+    pulled_rows = result.get("resumes")
+    raw_attempts = result.get("attempts")
+    if not isinstance(rows, list) or not isinstance(pulled_rows, list) or not isinstance(raw_attempts, list):
+        raise SearchPullResultError("主动寻访结果缺少候选人、简历或逐次查看证据")
+    if (
+        max_scan_count < 1
+        or target_resume_count < 1
+        or resume_view_budget != approval.item_count
+        or resume_view_budget != reported_budget
+        or len(rows) > max_scan_count
+        or scanned_count != len(rows)
+        or view_attempt_count < 0
+        or view_attempt_count > resume_view_budget
+        or len(pulled_rows) > target_resume_count
+        or len(raw_attempts) > max_scan_count
+    ):
+        raise SearchPullResultError("主动寻访结果超出已确认的搜索或简历查看范围")
+
+    candidate_identities = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SearchPullResultError("候选人发现结果无效")
+        name = str(row.get("display_name", "")).strip()
+        external_id = str(row.get("external_id", "")).strip()
+        if not name:
+            raise SearchPullResultError("候选人缺少展示名称")
+        fingerprint = _fingerprint(task.boss_account_id, row)
+        existing_identity = candidate_identities.get(fingerprint)
+        identity = {"name": name, "external_id": external_id}
+        if existing_identity is not None and existing_identity != identity:
+            raise SearchPullResultError("候选人身份指纹冲突")
+        candidate_identities[fingerprint] = identity
+
+    attempts = []
+    attempt_fingerprints = set()
+    successful_fingerprints = set()
+    actual_attempts = 0
+    controlled_attempt_errors = {
+        "identity_ambiguous": "identity_ambiguous",
+        "target_identity_unverifiable": "target_identity_unverifiable",
+        "stable_action_unavailable": "stable_action_unavailable",
+        "preview_failed": "preview_failed",
+        "preview_succeeded": "",
+    }
+    for expected_sequence, raw_attempt in enumerate(raw_attempts, start=1):
+        if not isinstance(raw_attempt, dict):
+            raise SearchPullResultError("在线简历查看证据无效")
+        name = str(raw_attempt.get("name", "")).strip()
+        fingerprint = str(raw_attempt.get("fingerprint", "")).strip()
+        verified = raw_attempt.get("verified")
+        preview_attempted = raw_attempt.get("preview_attempted")
+        outcome = str(raw_attempt.get("outcome", "")).strip()
+        error_code = str(raw_attempt.get("error_code", "")).strip()
+        sequence = raw_attempt.get("sequence")
+        timestamp = str(raw_attempt.get("timestamp", "")).strip()
+        expected_external_id = str(raw_attempt.get("expected_external_id", "")).strip()
+        observed_external_id = str(raw_attempt.get("observed_external_id", "")).strip()
+        error = raw_attempt.get("error", "")
+        if not isinstance(error, str):
+            raise SearchPullResultError("在线简历查看错误证据无效")
+        try:
+            parsed_timestamp = datetime.fromisoformat(timestamp)
+        except ValueError as exc:
+            raise SearchPullResultError("在线简历查看证据时间无效") from exc
+        if (
+            not name
+            or fingerprint not in candidate_identities
+            or candidate_identities[fingerprint]["name"] != name
+            or candidate_identities[fingerprint]["external_id"] != expected_external_id
+            or fingerprint in attempt_fingerprints
+            or not isinstance(verified, bool)
+            or not isinstance(preview_attempted, bool)
+            or sequence != expected_sequence
+            or parsed_timestamp.tzinfo is None
+            or outcome not in controlled_attempt_errors
+            or error_code != controlled_attempt_errors[outcome]
+        ):
+            raise SearchPullResultError("在线简历查看身份或去重证据无效")
+        if preview_attempted:
+            if (
+                verified is not True
+                or outcome not in {"preview_succeeded", "preview_failed"}
+                or not expected_external_id
+                or observed_external_id != expected_external_id
+            ):
+                raise SearchPullResultError("在线简历实际查看结果无效")
+            actual_attempts += 1
+        else:
+            valid_blocked_outcomes = {
+                "identity_ambiguous": False,
+                "target_identity_unverifiable": False,
+                "stable_action_unavailable": True,
+            }
+            if outcome not in valid_blocked_outcomes or verified is not valid_blocked_outcomes[outcome]:
+                raise SearchPullResultError("未执行查看的身份核验结果无效")
+            if outcome == "stable_action_unavailable" and (
+                not expected_external_id or observed_external_id != expected_external_id
+            ):
+                raise SearchPullResultError("转人工查看的稳定身份复核结果无效")
+            if outcome == "target_identity_unverifiable" and (
+                expected_external_id or observed_external_id
+            ):
+                raise SearchPullResultError("缺少稳定身份的查看证据无效")
+            if outcome == "identity_ambiguous" and observed_external_id:
+                raise SearchPullResultError("身份不唯一时不得声明已观察到稳定身份")
+        attempt_fingerprints.add(fingerprint)
+        if outcome == "preview_succeeded":
+            successful_fingerprints.add(fingerprint)
+        attempts.append({
+            "name": name,
+            "fingerprint": fingerprint,
+            "verified": verified,
+            "preview_attempted": preview_attempted,
+            "outcome": outcome,
+            "error_code": error_code,
+            "sequence": sequence,
+            "timestamp": timestamp,
+            "expected_external_id": expected_external_id,
+            "observed_external_id": observed_external_id,
+            "error": error[:1000],
+        })
+
+    evidence_context = {
+        "campaign_id": campaign.pk,
+        "attempts": attempts,
+        "reserved_resume_views": resume_view_budget,
+        "actual_preview_attempts": actual_attempts,
+        "unused_resume_views": resume_view_budget - actual_attempts,
+        "scanned_count": scanned_count,
+        "actual_known": True,
+        "evidence_untrusted": False,
+    }
+    if actual_attempts != view_attempt_count:
+        raise SearchPullResultError(
+            "在线简历实际查看次数与逐次证据不一致",
+            evidence_context=evidence_context,
+        )
+
+    prepared_resumes = []
+    pulled_fingerprints = set()
+    resolved_paths = set()
+    incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
+    for item in pulled_rows:
+        candidate_row = item.get("candidate") if isinstance(item, dict) else None
+        identity = item.get("identity_snapshot") if isinstance(item, dict) else None
+        if not isinstance(candidate_row, dict) or not isinstance(identity, dict):
+            raise SearchPullResultError(
+                "在线简历缺少执行前身份复核证据",
+                evidence_context=evidence_context,
+            )
+        fingerprint = _fingerprint(task.boss_account_id, candidate_row)
+        name = str(candidate_row.get("display_name", "")).strip()
+        external_id = str(candidate_row.get("external_id", "")).strip()
+        if (
+            identity.get("verified") is not True
+            or not name
+            or not external_id
+            or str(identity.get("name", "")).strip() != name
+            or str(identity.get("external_id", "")).strip() != external_id
+            or str(identity.get("expected_external_id", "")).strip() != external_id
+            or str(identity.get("observed_external_id", "")).strip() != external_id
+            or str(identity.get("fingerprint", "")) != fingerprint
+            or fingerprint in pulled_fingerprints
+            or fingerprint not in successful_fingerprints
+        ):
+            raise SearchPullResultError(
+                "在线简历身份复核证据无效或重复",
+                evidence_context=evidence_context,
+            )
+        raw_path = Path(str(item.get("path", "")))
+        try:
+            resolved = raw_path.resolve(strict=True)
+            content = resolved.read_bytes()
+        except OSError as exc:
+            raise SearchPullResultError(
+                "在线简历结果文件不可读",
+                evidence_context=evidence_context,
+            ) from exc
+        if (
+            incoming not in resolved.parents
+            or resolved.suffix.lower() != ".png"
+            or resolved in resolved_paths
+            or not content.startswith(b"\x89PNG\r\n\x1a\n")
+            or len(content) > 25 * 1024 * 1024
+        ):
+            raise SearchPullResultError(
+                "在线简历路径或文件内容无效",
+                evidence_context=evidence_context,
+            )
+        pulled_fingerprints.add(fingerprint)
+        resolved_paths.add(resolved)
+        prepared_resumes.append({
+            "candidate": candidate_row,
+            "fingerprint": fingerprint,
+            "path": resolved,
+            "content": content,
+            "filename": item.get("filename", f"{name}-在线简历.png"),
+        })
+
+    if pulled_fingerprints != successful_fingerprints:
+        raise SearchPullResultError(
+            "在线简历成功查看证据与归档结果不一致",
+            evidence_context=evidence_context,
+        )
+    return {
+        **evidence_context,
+        "rows": rows,
+        "prepared_resumes": prepared_resumes,
+    }
+
+
+def _controlled_search_pull_failure_code(failure_code):
+    allowed_failure_codes = {
+        "",
+        "search_pull_persist_failed",
+        "search_pull_result_invalid",
+        "search_campaign_missing",
+        "cancelled_by_user",
+        "stable_identity_action_unavailable",
+        "target_identity_unverifiable",
+        "worker_reported_failure",
+    }
+    value = str(failure_code)
+    return value if value in allowed_failure_codes else "worker_reported_failure"
+
+
+def _unknown_search_pull_evidence_context(*, task, campaign=None):
+    approval = task.approval
+    payload = task.request_payload if isinstance(task.request_payload, dict) else {}
+    if (
+        approval is not None
+        and approval.action == AutomationApproval.Action.SEARCH_AND_PULL_RESUMES
+        and approval.boss_account_id == task.boss_account_id
+    ):
+        reserved = approval.item_count
+    else:
+        try:
+            reserved = int(payload.get("resume_view_budget", 0) or 0)
+        except (TypeError, ValueError):
+            reserved = 0
+    reserved = max(0, reserved)
+    return {
+        "campaign_id": campaign.pk if campaign is not None else payload.get("campaign_id"),
+        "attempts": [],
+        "reserved_resume_views": reserved,
+        "actual_preview_attempts": None,
+        "unused_resume_views": None,
+        "scanned_count": None,
+        "actual_known": False,
+        "evidence_untrusted": True,
+    }
+
+
+def _persist_search_pull_evidence(*, task, context, final_status, failure_code=""):
+    controlled_failure_code = _controlled_search_pull_failure_code(failure_code)
+    actual_known = context.get("actual_known") is True
+    evidence_untrusted = context.get("evidence_untrusted") is True
+    common = {
+        "campaign_id": context["campaign_id"],
+        "final_status": final_status,
+        "failure_code": controlled_failure_code,
+        "actual_known": actual_known,
+        "actual_unknown": not actual_known,
+        "evidence_untrusted": evidence_untrusted,
+    }
+    safe_attempts = [
+        {
+            "sequence": attempt["sequence"],
+            "timestamp": attempt["timestamp"],
+            "external_id_hash": (
+                hashlib.sha256(
+                    f"{task.boss_account_id}:{attempt['expected_external_id']}".encode("utf-8")
+                ).hexdigest()
+                if attempt["expected_external_id"]
+                else None
+            ),
+            "verified": attempt["verified"],
+            "preview_attempted": attempt["preview_attempted"],
+            "outcome": attempt["outcome"],
+            "error_code": attempt["error_code"],
+        }
+        for attempt in context.get("attempts", [])
+    ]
+    AutomationEvidence.objects.update_or_create(
+        task=task,
+        kind="resume_preview_attempts",
+        defaults={
+            "summary": f"记录 {len(context.get('attempts', []))} 条候选人身份核验与在线简历查看尝试",
+            "metadata": {
+                **common,
+                "attempts": safe_attempts,
+                "scanned_count": context.get("scanned_count"),
+                "actual_preview_attempts": context.get("actual_preview_attempts") if actual_known else None,
+            },
+        },
+    )
+    AutomationEvidence.objects.update_or_create(
+        task=task,
+        kind="resume_view_usage",
+        defaults={
+            "summary": "主动寻访在线简历查看额度对账",
+            "metadata": {
+                **common,
+                "metric": "resume_view",
+                "search_reserved": 1,
+                "reserved": context["reserved_resume_views"],
+                "actual": context.get("actual_preview_attempts") if actual_known else None,
+                "unused": context.get("unused_resume_views") if actual_known else None,
+                "unused_disposition": "retained_no_refund",
+            },
+        },
+    )
+
+
+def _complete_search_pull_success(*, task, campaign, context):
+    created_files = []
+    incoming_paths = []
+    try:
+        with transaction.atomic():
+            sync_discoveries(
+                account=task.boss_account,
+                job=campaign.job,
+                source=campaign.source,
+                criteria=campaign.criteria,
+                rows=context["rows"],
+            )
+            archived = 0
+            application_ids = []
+            for item in context["prepared_resumes"]:
+                discovery = CandidateDiscovery.objects.get(
+                    boss_account=task.boss_account,
+                    job=campaign.job,
+                    fingerprint=item["fingerprint"],
+                )
+                import_discoveries(discoveries=[discovery], actor=task.created_by)
+                discovery.refresh_from_db(fields=["imported_candidate", "imported_at"])
+                application = JobApplication.objects.get(
+                    candidate=discovery.imported_candidate,
+                    job=campaign.job,
+                )
+                application_ids.append(application.pk)
+                resume, created = archive_online_resume_image(
+                    application=application,
+                    filename=item["filename"],
+                    content=item["content"],
+                    external_id=discovery.external_id,
+                    actor=task.created_by,
+                )
+                if created and resume.file.name:
+                    created_files.append((resume.file.storage, resume.file.name))
+                archived += int(created)
+                incoming_paths.append(item["path"])
+
+            campaign.scanned_count = context["scanned_count"]
+            campaign.pulled_resume_count = archived
+            campaign.status = SearchCampaign.Status.SUCCEEDED
+            campaign.stop_reason = (
+                SearchCampaign.StopReason.TARGET_REACHED
+                if archived >= campaign.target_resume_count
+                else SearchCampaign.StopReason.SCAN_LIMIT
+            )
+            campaign.error_message = ""
+            campaign.completed_at = timezone.now()
+            campaign.save(update_fields=[
+                "scanned_count", "pulled_resume_count", "status", "stop_reason",
+                "error_message", "completed_at", "updated_at",
+            ])
+            normalized_result = {
+                "campaign_id": campaign.pk,
+                "scanned_count": campaign.scanned_count,
+                "pulled_resume_count": archived,
+                "stop_reason": campaign.stop_reason,
+                "application_ids": application_ids,
+                "resume_view_usage": {
+                    "reserved": context["reserved_resume_views"],
+                    "actual": context["actual_preview_attempts"],
+                    "unused": context["unused_resume_views"],
+                    "unused_disposition": "retained_no_refund",
+                },
+            }
+            _persist_search_pull_evidence(
+                task=task,
+                context=context,
+                final_status=RpaTask.Status.SUCCEEDED,
+            )
+            task.status = RpaTask.Status.SUCCEEDED
+            task.result = normalized_result
+            task.error_code = ""
+            task.error_message = ""
+            task.completed_at = timezone.now()
+            task.lease_expires_at = None
+            task.save(update_fields=[
+                "status", "result", "error_code", "error_message", "completed_at",
+                "lease_expires_at", "updated_at",
+            ])
+            append_event(
+                task=task,
+                event="completed",
+                message="主动寻访任务执行结束",
+                data={"status": task.status},
+            )
+            account = task.boss_account
+            account.status = BossAccount.Status.READY
+            account.save(update_fields=["status", "updated_at"])
+            RecruitmentAuditLog.objects.create(
+                boss_account=account,
+                action="task_completed",
+                target_id=str(task.pk),
+                detail={"status": task.status, "error_code": ""},
+            )
+            _schedule_workflow_resume(task)
+            for path in incoming_paths:
+                transaction.on_commit(lambda resolved=path: resolved.unlink(missing_ok=True))
+            return normalized_result
+    except Exception:
+        # Database rollback cannot remove FileField objects already written to storage.
+        for storage, name in created_files:
+            try:
+                storage.delete(name)
+            except OSError:
+                pass
+        raise
+
+
+def _fail_search_pull_completion(
+    *, task, campaign, error_message, context=None, failure_code="search_pull_persist_failed"
+):
+    controlled_failure_code = _controlled_search_pull_failure_code(failure_code)
+    context = context or _unknown_search_pull_evidence_context(task=task, campaign=campaign)
+    message = str(error_message or "主动寻访回写失败")[:2000]
+    campaign.status = SearchCampaign.Status.FAILED
+    campaign.stop_reason = SearchCampaign.StopReason.ERROR
+    campaign.error_message = message
+    campaign.pulled_resume_count = 0
+    if context.get("scanned_count") is not None:
+        campaign.scanned_count = context["scanned_count"]
+    campaign.completed_at = timezone.now()
+    campaign.save(update_fields=[
+        "status", "stop_reason", "error_message", "scanned_count",
+        "pulled_resume_count", "completed_at", "updated_at",
+    ])
+    _persist_search_pull_evidence(
+        task=task,
+        context=context,
+        final_status=RpaTask.Status.FAILED,
+        failure_code=controlled_failure_code,
+    )
+    task.status = RpaTask.Status.FAILED
+    task.result = {
+        "campaign_id": campaign.pk,
+        "persistence_status": "rolled_back",
+        "resume_view_usage": {
+            "reserved": context["reserved_resume_views"],
+            "actual_known": context.get("actual_known") is True,
+            "actual": context.get("actual_preview_attempts") if context.get("actual_known") is True else None,
+            "unused": context.get("unused_resume_views") if context.get("actual_known") is True else None,
+            "unused_disposition": "retained_no_refund",
+        },
+    }
+    task.error_code = controlled_failure_code
+    task.error_message = message
+    task.completed_at = timezone.now()
+    task.lease_expires_at = None
+    task.save(update_fields=[
+        "status", "result", "error_code", "error_message", "completed_at",
+        "lease_expires_at", "updated_at",
+    ])
+    append_event(
+        task=task,
+        event="failed",
+        message="主动寻访结果未写入，业务变更已回滚",
+        data={"status": task.status, "error_code": task.error_code},
+        level="error",
+    )
+    account = task.boss_account
+    account.status = BossAccount.Status.READY
+    account.save(update_fields=["status", "updated_at"])
+    _schedule_workflow_resume(task)
+
+
+def _fail_orphaned_search_pull_task(*, task):
+    context = _unknown_search_pull_evidence_context(task=task)
+    _persist_search_pull_evidence(
+        task=task,
+        context=context,
+        final_status=RpaTask.Status.FAILED,
+        failure_code="search_campaign_missing",
+    )
+    task.status = RpaTask.Status.FAILED
+    task.result = {
+        "campaign_id": task.request_payload.get("campaign_id"),
+        "persistence_status": "rolled_back",
+        "resume_view_usage": {
+            "reserved": context["reserved_resume_views"],
+            "actual_known": False,
+            "actual": None,
+            "unused": None,
+            "unused_disposition": "retained_no_refund",
+        },
+    }
+    task.error_code = "search_campaign_missing"
+    task.error_message = "主动寻访任务引用的 campaign 不存在或不属于当前账号"
+    task.completed_at = timezone.now()
+    task.lease_expires_at = None
+    task.save(update_fields=[
+        "status", "result", "error_code", "error_message", "completed_at",
+        "lease_expires_at", "updated_at",
+    ])
+    append_event(
+        task=task,
+        event="failed",
+        message="主动寻访任务引用无效，已终止回写",
+        data={"status": task.status, "error_code": task.error_code},
+        level="error",
+    )
+    account = task.boss_account
+    account.status = BossAccount.Status.READY
+    account.save(update_fields=["status", "updated_at"])
+    _schedule_workflow_resume(task)
+
+
+def _complete_search_pull_waiting_human(*, task, campaign, context, error_code, error_message):
+    if context["prepared_resumes"]:
+        raise SearchPullResultError(
+            "等待人工处理的主动寻访结果不得包含未归档的在线简历",
+            evidence_context=context,
+        )
+    with transaction.atomic():
+        sync_discoveries(
+            account=task.boss_account,
+            job=campaign.job,
+            source=campaign.source,
+            criteria=campaign.criteria,
+            rows=context["rows"],
+        )
+        campaign.scanned_count = context["scanned_count"]
+        campaign.pulled_resume_count = 0
+        campaign.status = SearchCampaign.Status.PAUSED
+        campaign.stop_reason = SearchCampaign.StopReason.NONE
+        campaign.error_message = str(error_message)[:2000]
+        campaign.completed_at = None
+        campaign.save(update_fields=[
+            "scanned_count", "pulled_resume_count", "status", "stop_reason",
+            "error_message", "completed_at", "updated_at",
+        ])
+        usage = {
+            "reserved": context["reserved_resume_views"],
+            "actual": context["actual_preview_attempts"],
+            "unused": context["unused_resume_views"],
+            "unused_disposition": "retained_no_refund",
+        }
+        _persist_search_pull_evidence(
+            task=task,
+            context=context,
+            final_status=RpaTask.Status.WAITING_HUMAN,
+            failure_code=error_code,
+        )
+        task.status = RpaTask.Status.WAITING_HUMAN
+        task.result = {
+            "campaign_id": campaign.pk,
+            "scanned_count": context["scanned_count"],
+            "pulled_resume_count": 0,
+            "resume_view_usage": usage,
+        }
+        task.error_code = str(error_code or "stable_identity_action_unavailable")[:64]
+        task.error_message = str(error_message)[:2000]
+        task.completed_at = timezone.now()
+        task.lease_expires_at = None
+        task.save(update_fields=[
+            "status", "result", "error_code", "error_message", "completed_at",
+            "lease_expires_at", "updated_at",
+        ])
+        append_event(
+            task=task,
+            event="waiting_human",
+            message="主动寻访已保留搜索结果，在线简历查看转人工",
+            data={"status": task.status, "error_code": task.error_code},
+        )
+        account = task.boss_account
+        account.status = BossAccount.Status.PAUSED
+        account.save(update_fields=["status", "updated_at"])
+        _schedule_workflow_resume(task)
 
 
 @api_view(["POST"])
@@ -181,7 +847,7 @@ def task_event_view(request, task_id):
 @permission_classes([HasRpaWorkerToken])
 @transaction.atomic
 def complete_task_view(request, task_id):
-    _, task = _assigned_task(request, task_id)
+    _, task = _assigned_task(request, task_id, for_update=True)
     if task is None:
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
     if task.status not in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}:
@@ -191,6 +857,8 @@ def complete_task_view(request, task_id):
     if completed_status not in terminal:
         return Response({"detail": "任务完成状态无效"}, status=status.HTTP_400_BAD_REQUEST)
     result = request.data.get("result") if isinstance(request.data.get("result"), dict) else {}
+    completion_error_code = str(request.data.get("error_code", ""))[:64]
+    completion_error_message = str(request.data.get("error_message", ""))[:2000]
     if task.action == RpaTask.Action.SYNC_POSITIONS and completed_status == RpaTask.Status.SUCCEEDED:
         rows = result.get("positions")
         if not isinstance(rows, list):
@@ -230,68 +898,60 @@ def complete_task_view(request, task_id):
             pk=task.request_payload.get("campaign_id"), boss_account=task.boss_account,
         ).first()
         if campaign is None:
-            return Response({"detail": "主动寻访任务不存在"}, status=status.HTTP_400_BAD_REQUEST)
-        if completed_status == RpaTask.Status.SUCCEEDED:
-            rows = result.get("candidates") if isinstance(result.get("candidates"), list) else []
-            pulled_rows = result.get("resumes") if isinstance(result.get("resumes"), list) else []
-            incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
+            _fail_orphaned_search_pull_task(task=task)
+            return Response({
+                "id": str(task.pk),
+                "status": task.status,
+                "error_code": task.error_code,
+            })
+        if completed_status in {RpaTask.Status.SUCCEEDED, RpaTask.Status.WAITING_HUMAN}:
+            context = None
+            validation_failed = True
             try:
-                sync_discoveries(
-                    account=task.boss_account, job=campaign.job, source=campaign.source,
-                    criteria=campaign.criteria, rows=rows,
-                )
-                archived = 0
-                application_ids = []
-                for item in pulled_rows:
-                    candidate_row = item.get("candidate") if isinstance(item, dict) else None
-                    if not isinstance(candidate_row, dict):
-                        continue
-                    discovery = CandidateDiscovery.objects.filter(
-                        boss_account=task.boss_account, job=campaign.job,
-                        fingerprint=_fingerprint(task.boss_account_id, candidate_row),
-                    ).first()
-                    if discovery is None:
-                        continue
-                    import_discoveries(discoveries=[discovery], actor=task.created_by)
-                    discovery.refresh_from_db(fields=["imported_candidate", "imported_at"])
-                    application = JobApplication.objects.get(candidate=discovery.imported_candidate, job=campaign.job)
-                    application_ids.append(application.pk)
-                    raw_path = Path(str(item.get("path", "")))
-                    resolved = raw_path.resolve(strict=True)
-                    if incoming not in resolved.parents or resolved.suffix.lower() != ".png":
-                        raise ValueError("在线简历路径无效")
-                    resume, created = archive_online_resume_image(
-                        application=application,
-                        filename=item.get("filename", f"{discovery.display_name}-在线简历.png"),
-                        content=resolved.read_bytes(), external_id=discovery.external_id, actor=task.created_by,
+                context = _validate_search_pull_result(task=task, campaign=campaign, result=result)
+                validation_failed = False
+                if completed_status == RpaTask.Status.SUCCEEDED:
+                    _complete_search_pull_success(task=task, campaign=campaign, context=context)
+                else:
+                    _complete_search_pull_waiting_human(
+                        task=task,
+                        campaign=campaign,
+                        context=context,
+                        error_code=completion_error_code,
+                        error_message=completion_error_message,
                     )
-                    resolved.unlink(missing_ok=True)
-                    archived += int(created)
-                campaign.scanned_count = min(int(result.get("scanned_count", len(rows)) or 0), campaign.max_scan_count)
-                campaign.pulled_resume_count = archived
-                campaign.status = SearchCampaign.Status.SUCCEEDED
-                campaign.stop_reason = (
-                    SearchCampaign.StopReason.TARGET_REACHED
-                    if archived >= campaign.target_resume_count else SearchCampaign.StopReason.SCAN_LIMIT
+            except Exception as exc:
+                if context is None and isinstance(exc, SearchPullResultError):
+                    context = exc.evidence_context
+                _fail_search_pull_completion(
+                    task=task,
+                    campaign=campaign,
+                    error_message=exc,
+                    context=context,
+                    failure_code=(
+                        "search_pull_result_invalid"
+                        if validation_failed
+                        else "search_pull_persist_failed"
+                    ),
                 )
-                campaign.completed_at = timezone.now()
-                campaign.save(update_fields=[
-                    "scanned_count", "pulled_resume_count", "status", "stop_reason", "completed_at", "updated_at",
-                ])
-                result = {"campaign_id": campaign.pk, "scanned_count": campaign.scanned_count, "pulled_resume_count": archived, "stop_reason": campaign.stop_reason, "application_ids": application_ids}
-            except (OSError, ValueError, JobApplication.DoesNotExist) as exc:
-                campaign.status = SearchCampaign.Status.FAILED
-                campaign.stop_reason = SearchCampaign.StopReason.ERROR
-                campaign.error_message = str(exc)[:2000]
-                campaign.completed_at = timezone.now()
-                campaign.save(update_fields=["status", "stop_reason", "error_message", "completed_at", "updated_at"])
-                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({
+                    "id": str(task.pk),
+                    "status": task.status,
+                    "error_code": task.error_code,
+                })
+            return Response({"id": str(task.pk), "status": task.status})
         else:
-            campaign.status = SearchCampaign.Status.FAILED
-            campaign.stop_reason = SearchCampaign.StopReason.ERROR
-            campaign.error_message = str(request.data.get("error_message", "执行失败"))[:2000]
-            campaign.completed_at = timezone.now()
-            campaign.save(update_fields=["status", "stop_reason", "error_message", "completed_at", "updated_at"])
+            _fail_search_pull_completion(
+                task=task,
+                campaign=campaign,
+                error_message=completion_error_message or "Worker 报告主动寻访失败",
+                failure_code="worker_reported_failure",
+            )
+            return Response({
+                "id": str(task.pk),
+                "status": task.status,
+                "error_code": task.error_code,
+            })
     if task.action == RpaTask.Action.SYNC_CONVERSATIONS and completed_status == RpaTask.Status.SUCCEEDED:
         rows = result.get("conversations")
         try:
@@ -368,6 +1028,25 @@ def complete_task_view(request, task_id):
         raw_path = Path(str(result.get("image_path", "")))
         incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
         try:
+            target = task.request_payload.get("target") if isinstance(task.request_payload.get("target"), dict) else {}
+            approval = task.approval
+            approved_payload = approval.payload if approval and isinstance(approval.payload, dict) else {}
+            expected_external_id = str(target.get("external_id", "")).strip()
+            if (
+                approval is None
+                or approval.action != AutomationApproval.Action.VIEW_ONLINE_RESUME
+                or approval.status != AutomationApproval.Status.APPROVED
+                or approved_payload != task.request_payload
+                or task.idempotency_key != f"online-resume-task:{approval.pk}"
+                or approval.rpa_tasks.exclude(pk=task.pk).exists()
+                or result.get("verified") is not True
+                or not expected_external_id
+                or str(result.get("expected_external_id", "")).strip() != expected_external_id
+                or str(result.get("observed_external_id", "")).strip() != expected_external_id
+                or not target.get("fingerprint")
+                or result.get("identity_fingerprint") != target.get("fingerprint")
+            ):
+                raise ValueError
             resolved = raw_path.resolve(strict=True)
             if incoming not in resolved.parents or resolved.suffix.lower() != ".png":
                 raise ValueError
@@ -379,12 +1058,22 @@ def complete_task_view(request, task_id):
                 application=application,
                 filename=result.get("filename", "在线简历.png"),
                 content=resolved.read_bytes(),
+                external_id=expected_external_id,
                 actor=task.created_by,
             )
-            resolved.unlink(missing_ok=True)
-            result = {"resume_id": resume.pk, "created": created, "verified": True}
-        except (OSError, ValueError, JobApplication.DoesNotExist):
-            return Response({"detail": "在线简历结果文件无效"}, status=status.HTTP_400_BAD_REQUEST)
+            transaction.on_commit(lambda path=resolved: path.unlink(missing_ok=True))
+            result = {
+                "resume_id": resume.pk,
+                "created": created,
+                "verified": True,
+                "expected_external_id": expected_external_id,
+                "observed_external_id": expected_external_id,
+            }
+        except Exception:
+            completed_status = RpaTask.Status.WAITING_HUMAN
+            completion_error_code = "target_identity_unverifiable"
+            completion_error_message = "在线简历回执缺少与批准快照一致的平台稳定 ID，未执行归档"
+            result = {"verified": False, "identity_validation": "rejected"}
     communication_actions = {
         RpaTask.Action.GREET,
         RpaTask.Action.REQUEST_RESUME,
@@ -395,12 +1084,13 @@ def complete_task_view(request, task_id):
             task=task,
             status=completed_status,
             result=result,
-            error_code=request.data.get("error_code", ""),
-            error_message=request.data.get("error_message", ""),
+            error_code=completion_error_code,
+            error_message=completion_error_message,
         )
-        append_event(task=task, event="completed", message="沟通任务执行结束", data={"status": completed_status})
+        effective_status = task.status
+        append_event(task=task, event="completed", message="沟通任务执行结束", data={"status": effective_status})
         account = task.boss_account
-        if completed_status == RpaTask.Status.WAITING_HUMAN:
+        if effective_status == RpaTask.Status.WAITING_HUMAN:
             account.status = BossAccount.Status.PAUSED
         else:
             account.status = BossAccount.Status.READY
@@ -409,16 +1099,14 @@ def complete_task_view(request, task_id):
             boss_account=account,
             action="communication_task_completed",
             target_id=str(task.pk),
-            detail={"status": completed_status, "error_code": task.error_code},
+            detail={"status": effective_status, "error_code": task.error_code},
         )
-        if task.workflow_node_run_id:
-            from .services.workflow_nodes import resume_workflow_for_task
-            resume_workflow_for_task(task)
+        _schedule_workflow_resume(task)
         return Response({"id": str(task.pk), "status": task.status})
     task.status = completed_status
     task.result = result
-    task.error_code = str(request.data.get("error_code", ""))[:64]
-    task.error_message = str(request.data.get("error_message", ""))[:2000]
+    task.error_code = completion_error_code
+    task.error_message = completion_error_message
     task.completed_at = timezone.now()
     task.lease_expires_at = None
     task.save(update_fields=["status", "result", "error_code", "error_message", "completed_at", "lease_expires_at", "updated_at"])
@@ -445,13 +1133,14 @@ def complete_task_view(request, task_id):
     elif task.action in {RpaTask.Action.SYNC_POSITIONS, *discovery_sources} and completed_status == RpaTask.Status.SUCCEEDED:
         account.status = BossAccount.Status.READY
         account.save(update_fields=["status", "updated_at"])
+    elif completed_status == RpaTask.Status.WAITING_HUMAN:
+        account.status = BossAccount.Status.PAUSED
+        account.save(update_fields=["status", "updated_at"])
     RecruitmentAuditLog.objects.create(
         boss_account=account,
         action="task_completed",
         target_id=str(task.pk),
         detail={"status": completed_status, "error_code": task.error_code},
     )
-    if task.workflow_node_run_id:
-        from .services.workflow_nodes import resume_workflow_for_task
-        resume_workflow_for_task(task)
+    _schedule_workflow_resume(task)
     return Response({"id": str(task.pk), "status": task.status})

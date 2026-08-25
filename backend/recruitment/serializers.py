@@ -545,10 +545,22 @@ class RpaTaskSerializer(serializers.ModelSerializer):
             approval=validated_data.get("approval"),
             execution_batch=validated_data.get("execution_batch"),
             idempotency_key=validated_data.get("idempotency_key", ""),
+            creation_path="generic",
             return_created=True,
         )
         task._was_existing = not created
         return task
+
+    def validate(self, attrs):
+        from recruitment.rpa.tasks import GENERIC_CREATE_ACTIONS
+
+        if attrs.get("action") not in GENERIC_CREATE_ACTIONS:
+            raise serializers.ValidationError({
+                "action": "该自动化动作必须通过确认、批次或主动寻访专用入口创建"
+            })
+        if attrs.get("approval") is not None or attrs.get("execution_batch") is not None:
+            raise serializers.ValidationError("通用任务入口不接受确认记录或执行批次")
+        return attrs
 
 
 class PositionSyncRequestSerializer(serializers.Serializer):

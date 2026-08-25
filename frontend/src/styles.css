@@ -82,8 +82,6 @@ a { color: inherit; text-decoration: none; }
 .recruitment-job-context__options p { margin: 0; padding: 16px 10px; color: var(--muted); font-size: 11px; text-align: center; }
 .job-context-menu-enter-active,.job-context-menu-leave-active { transition: opacity 160ms ease, transform 180ms cubic-bezier(.2,.8,.2,1); }
 .job-context-menu-enter-from,.job-context-menu-leave-to { opacity: 0; transform: translateY(-5px); }
-.copilot-entry { display: inline-flex; align-items: center; gap: 6px; padding: 7px 2px; color: var(--muted); background: transparent; border: 0; font-size: 12px; font-weight: 700; }
-.copilot-entry:hover { color: var(--teal-dark); }
 .avatar { width: 34px; height: 34px; display: grid; place-content: center; border-radius: 11px; color: #fff; background: #334155; font-size: 13px; font-weight: 800; }
 .page-container { max-width: 1660px; margin: 0 auto; padding: 28px 34px 42px; }
 .page-stack { display: grid; gap: 22px; }
@@ -439,23 +437,9 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .remember-row input { width: 15px; height: 15px; margin: 0; accent-color: var(--teal); }
 .remember-row input:focus-visible { outline: 3px solid rgba(15,159,143,.22); outline-offset: 2px; }
 
-.drawer-backdrop { position: fixed; inset: 0; z-index: 80; display: flex; justify-content: flex-end; background: rgba(15,23,42,.35); backdrop-filter: blur(2px); }
-.copilot-drawer { width: min(520px, 100%); height: 100vh; overflow-y: auto; padding: 26px; background: var(--paper); border-left: 1px solid var(--line); box-shadow: -24px 0 55px rgba(15,23,42,.16); }
-.copilot-drawer header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.copilot-drawer h2 { margin: 5px 0 0; color: var(--ink); }
-.copilot-drawer > .muted { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 1.7; }
-.copilot-drawer .field-label { display: grid; gap: 7px; margin-top: 14px; color: var(--slate); font-size: 11px; font-weight: 700; }
-.copilot-actions { display: flex; gap: 9px; margin-top: 20px; }
-.copilot-capabilities { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 24px; }
-.copilot-capabilities button { min-height: 42px; color: var(--muted); background: #f8fafc; border: 1px solid var(--line); border-radius: 9px; }
-.success-note { padding: 10px 12px; color: #0d766d; background: #e5f8f4; border-radius: 8px; font-size: 11px; }
-.model-connection-note { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-radius: 9px; font-size: 11px; }
-.model-connection-note span { width: 7px; height: 7px; border-radius: 50%; background: #16a394; box-shadow: 0 0 0 4px rgba(22,163,148,.1); }
-.model-connection-note small { margin-left: auto; color: inherit; opacity: .75; }
-.model-connection-note--success { color: #0d766d; background: #e9f8f5; border: 1px solid #c9ece5; }
-.model-connection-note--error { color: #a43f49; background: #fff3f3; border: 1px solid #f2d3d6; }
 .account-menu { position: relative; }
 .account-menu__trigger { min-height: 40px; display: flex; align-items: center; gap: 9px; padding: 0; color: var(--ink); background: transparent; border: 0; }
+.account-menu__trigger:focus-visible,.account-menu__panel button:focus-visible { outline: 3px solid rgba(15,159,143,.22); outline-offset: 2px; }
 .account-menu__name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
 .account-menu__chevron { color: #94a3b8; }
 .account-menu__panel { position: absolute; right: 0; top: calc(100% + 8px); width: 190px; overflow: hidden; padding: 6px; background: #fff; border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 16px 42px rgba(15,23,42,.14); }

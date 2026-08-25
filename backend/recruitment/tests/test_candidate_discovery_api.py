@@ -10,6 +10,7 @@ from recruitment.models import (
     BossAccount,
     Candidate,
     CandidateDiscovery,
+    JobApplication,
     RecruitmentJob,
     RpaTask,
 )
@@ -158,6 +159,44 @@ class CandidateDiscoveryApiTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         approval.refresh_from_db()
         self.assertEqual(approval.status, AutomationApproval.Status.DRAFT)
+
+    def test_online_resume_confirmation_includes_refreshable_identity_source(self):
+        self.client.post(
+            "/api/recruitment/candidate-discoveries/import-selected/",
+            {"ids": [str(self.discovery.pk)]},
+            format="json",
+        )
+        application = JobApplication.objects.get(job=self.job)
+
+        response = self.client.post(
+            "/api/recruitment/communication-actions/prepare-online-resume/",
+            {
+                "application_id": application.pk,
+                "request_id": "55555555-5555-4555-8555-555555555555",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        target = response.data["payload"]["target"]
+        self.assertEqual(target["fingerprint"], self.discovery.fingerprint)
+        self.assertEqual(target["verification"]["source"], self.discovery.source)
+
+    def test_online_resume_without_discovery_identity_is_routed_to_manual(self):
+        candidate = Candidate.objects.create(identity_key="manual-online", name="人工候选人")
+        application = JobApplication.objects.create(candidate=candidate, job=self.job, source="boss")
+
+        response = self.client.post(
+            "/api/recruitment/communication-actions/prepare-online-resume/",
+            {
+                "application_id": application.pk,
+                "request_id": "66666666-6666-4666-8666-666666666666",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("转人工", response.data["detail"])
 
     def test_other_hr_cannot_list_or_import_discovery(self):
         self.client.force_authenticate(self.other)

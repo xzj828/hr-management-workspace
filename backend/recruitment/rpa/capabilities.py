@@ -53,7 +53,7 @@ REGISTRY = {
         name="request_resume",
         adapter="cli",
         read_only=False,
-        requires_approval=False,
+        requires_approval=True,
         consumes="message",
         enabled=True,
     ),
@@ -92,8 +92,7 @@ REGISTRY = {
         name="search_pull_resumes",
         adapter="cli",
         read_only=True,
-        requires_approval=False,
-        consumes="search",
+        requires_approval=True,
         enabled=True,
     ),
 }

@@ -1,3 +1,7 @@
+from datetime import timedelta
+
+from django.utils import timezone
+
 from recruitment.models import (
     AutomationApproval,
     ExecutionBatch,
@@ -10,15 +14,14 @@ from recruitment.models import (
 )
 from recruitment.rpa.tasks import create_task
 from recruitment.services.communications import prepare_communication
-from recruitment.services.search_campaigns import start_search_campaign
-from recruitment.services.conversation_ingestion import _queue_resume_request, process_pending_messages
+from recruitment.services.search_campaigns import prepare_search_campaign
+from recruitment.services.conversation_ingestion import process_pending_messages
 from recruitment.services.human_attention import ensure_attention
 
 
 SOURCE_ACTIONS = {
     "recommend": RpaTask.Action.RECOMMEND_CANDIDATES,
     "search": RpaTask.Action.SEARCH_CANDIDATES,
-    "deep_search": RpaTask.Action.DEEP_MATCH,
     "sync_messages": RpaTask.Action.SYNC_CONVERSATIONS,
 }
 MESSAGE_ACTIONS = {"greet": "greet", "request_resume": "request_resume", "send_interview": "send_interview"}
@@ -29,8 +32,10 @@ def _task_outcome(task):
         return WorkflowNodeRun.Status.SUCCEEDED, {"task_id": str(task.pk), "result": task.result}
     if task.status == RpaTask.Status.FAILED:
         return WorkflowNodeRun.Status.FAILED, {"task_id": str(task.pk), "error": task.error_message}
-    if task.status in {RpaTask.Status.WAITING_HUMAN, RpaTask.Status.CANCELLED}:
+    if task.status == RpaTask.Status.WAITING_HUMAN:
         return WorkflowNodeRun.Status.WAITING_HUMAN, {"task_id": str(task.pk), "reason": task.error_code or task.status}
+    if task.status == RpaTask.Status.CANCELLED:
+        return WorkflowNodeRun.Status.CANCELLED, {"task_id": str(task.pk), "reason": task.error_code or task.status}
     return WorkflowNodeRun.Status.RUNNING, {"task_id": str(task.pk)}
 
 
@@ -46,7 +51,8 @@ def _parent_outputs(node):
 
 def _application_ids_for_intent(node, intent=None):
     values = []
-    for output in _parent_outputs(node):
+    for candidate_node in node.run.node_runs.all():
+        output = candidate_node.output or {}
         if intent:
             values.extend((output.get("applications_by_intent") or {}).get(intent, []))
         values.extend(output.get("application_ids", []))
@@ -63,6 +69,55 @@ def execute_workflow_node(node):
     run = node.run
     if run.mode == WorkflowRun.Mode.DRY_RUN:
         return WorkflowNodeRun.Status.SUCCEEDED, {"simulated": True}
+
+    if node.node_type == "deep_search":
+        config = node.config_snapshot
+        criteria = config.get("criteria") if isinstance(config.get("criteria"), dict) else {}
+        payload = {
+            "job": run.job_id or run.input_snapshot.get("job"),
+            "job_title": run.job.title if run.job_id else str(run.input_snapshot.get("job_title", "")),
+            "core": config.get("core", criteria.get("core", [])),
+            "bonus": config.get("bonus", criteria.get("bonus", [])),
+            "request_id": f"workflow-{node.pk}-{node.attempt}",
+            "estimated_consumption": 1,
+            "workflow_node_run_id": node.pk,
+            "workflow_node_attempt": node.attempt,
+        }
+        approval_key = f"workflow-deep-match:{node.pk}:{node.attempt}"
+        approval_id = (node.output or {}).get("approval_id")
+        approval = (
+            AutomationApproval.objects.filter(pk=approval_id, idempotency_key=approval_key).first()
+            if approval_id
+            else AutomationApproval.objects.filter(idempotency_key=approval_key).first()
+        )
+        task = (
+            RpaTask.objects.filter(workflow_node_run=node, approval=approval).first()
+            if approval is not None
+            else None
+        )
+        if task is not None:
+            return _task_outcome(task)
+        if approval is not None and approval.status == AutomationApproval.Status.REJECTED:
+            return WorkflowNodeRun.Status.SKIPPED, {
+                "approval_id": str(approval.pk),
+                "approved": False,
+            }
+        if approval is None:
+            approval, _ = AutomationApproval.objects.get_or_create(
+                idempotency_key=approval_key,
+                defaults={
+                    "action": AutomationApproval.Action.DEEP_MATCH,
+                    "boss_account": run.boss_account,
+                    "created_by": run.actor,
+                    "payload": payload,
+                    "item_count": 1,
+                    "expires_at": timezone.now() + timedelta(minutes=15),
+                },
+            )
+        return WorkflowNodeRun.Status.WAITING_HUMAN, {
+            "approval_id": str(approval.pk),
+            "estimated_consumption": approval.item_count,
+        }
 
     if node.node_type in SOURCE_ACTIONS:
         task_key = f"workflow-task:{node.pk}:{node.attempt}"
@@ -122,35 +177,18 @@ def execute_workflow_node(node):
             )
         return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "created": len(application_ids)}
 
-    if node.node_type == "request_resume":
-        application_ids = _application_ids_for_intent(node, "request_resume")
-        message_ids = {}
-        for output in _parent_outputs(node):
-            message_ids.update(output.get("message_ids") or {})
-        queued = []
-        for application in JobApplication.objects.filter(pk__in=application_ids).select_related("candidate", "job"):
-            source_message = application.conversation_state.messages.filter(pk=message_ids.get(str(application.pk))).first()
-            if source_message is None:
-                continue
-            first_contact = not application.conversation_state.messages.filter(direction="hr").exists()
-            task = _queue_resume_request(
-                application=application, account=run.boss_account, actor=run.actor,
-                message=str(node.config_snapshot.get("message") or "您好，这边是招聘岗位，方便发送一份简历进一步沟通吗？"),
-                first_contact=first_contact, source_message=source_message,
-            )
-            if task:
-                queued.append(str(task.pk))
-        return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "task_ids": queued}
-
     if node.node_type == "archive_resume":
         application_ids = _application_ids_for_intent(node, "resume_received")
         archived = JobApplication.objects.filter(pk__in=application_ids, resumes__archived_at__isnull=True).distinct().count()
         return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "archived": archived}
 
     if node.node_type == "search_and_pull_resumes":
-        task_key = f"workflow-search:{node.pk}:{node.attempt}"
-        task = RpaTask.objects.filter(workflow_node_run=node, idempotency_key=task_key).first()
-        if task is None:
+        task = RpaTask.objects.filter(workflow_node_run=node).order_by("-created_at").first()
+        if task is not None:
+            return _task_outcome(task)
+        campaign_id = node.output.get("campaign_id")
+        campaign = SearchCampaign.objects.filter(pk=campaign_id, workflow_run=run).first()
+        if campaign is None:
             config = node.config_snapshot
             criteria = {
                 "keyword": str(config.get("keyword", "")),
@@ -169,11 +207,25 @@ def execute_workflow_node(node):
                 criteria=criteria,
                 created_by=run.actor,
             )
-            task = start_search_campaign(
-                campaign=campaign, actor=run.actor, workflow_node_run=node,
-                idempotency_key=task_key,
+        approval_id = node.output.get("approval_id")
+        approval = AutomationApproval.objects.filter(pk=approval_id).first() if approval_id else None
+        if approval is not None and approval.status == AutomationApproval.Status.REJECTED:
+            return WorkflowNodeRun.Status.SKIPPED, {
+                "campaign_id": campaign.pk,
+                "approval_id": str(approval.pk),
+                "approved": False,
+            }
+        if approval is None:
+            approval = prepare_search_campaign(
+                campaign=campaign,
+                actor=run.actor,
+                workflow_node_run=node,
             )
-        return _task_outcome(task)
+        return WorkflowNodeRun.Status.WAITING_HUMAN, {
+            "campaign_id": campaign.pk,
+            "approval_id": str(approval.pk),
+            "resume_view_budget": approval.item_count,
+        }
 
     if node.node_type in MESSAGE_ACTIONS:
         approval_id = node.output.get("approval_id")
@@ -187,19 +239,37 @@ def execute_workflow_node(node):
                     return WorkflowNodeRun.Status.SUCCEEDED, {"approval_id": approval_id, "batch_id": str(batch.pk)}
                 if batch.status in {ExecutionBatch.Status.FAILED, ExecutionBatch.Status.PARTIAL}:
                     return WorkflowNodeRun.Status.FAILED, {"approval_id": approval_id, "batch_id": str(batch.pk)}
+                if batch.status in {ExecutionBatch.Status.PENDING, ExecutionBatch.Status.RUNNING}:
+                    return WorkflowNodeRun.Status.RUNNING, {"approval_id": approval_id, "batch_id": str(batch.pk)}
             return WorkflowNodeRun.Status.WAITING_HUMAN, {"approval_id": approval_id}
 
-        application_ids = run.input_snapshot.get("application_ids", [])
+        application_ids = (
+            _application_ids_for_intent(node, "request_resume")
+            if node.node_type == "request_resume"
+            else run.input_snapshot.get("application_ids", [])
+        )
         applications = JobApplication.objects.filter(pk__in=application_ids).select_related("candidate", "job")
         message = node.config_snapshot.get("message") or {
             "greet": "您好，我们正在招聘相关岗位，想和您进一步沟通。",
             "request_resume": "方便发送一份 PDF 简历吗？",
             "send_interview": "诚邀您参加面试，请确认时间安排。",
         }[node.node_type]
+        item_contexts = None
+        if node.node_type == "request_resume":
+            message_ids = {}
+            for candidate_node in run.node_runs.all():
+                message_ids.update((candidate_node.output or {}).get("message_ids") or {})
+            item_contexts = {
+                application.pk: {
+                    "first_contact": not application.conversation_state.messages.filter(direction="hr").exists(),
+                    "source_message_id": message_ids.get(str(application.pk)),
+                }
+                for application in applications
+            }
         approval = prepare_communication(
             account=run.boss_account, applications=applications, action=MESSAGE_ACTIONS[node.node_type],
             message=message, actor=run.actor, request_id=f"workflow-{node.pk}-{node.attempt}",
-            invitation=node.config_snapshot.get("invitation"),
+            invitation=node.config_snapshot.get("invitation"), item_contexts=item_contexts,
         )
         approval.payload["workflow_node_run_id"] = node.pk
         approval.save(update_fields=["payload"])
@@ -219,7 +289,11 @@ def resume_workflow_for_task(task):
     node.output = output
     node.error_code = task.error_code
     node.error_message = task.error_message
-    node.completed_at = task.completed_at if status in {WorkflowNodeRun.Status.SUCCEEDED, WorkflowNodeRun.Status.FAILED} else None
+    node.completed_at = task.completed_at if status in {
+        WorkflowNodeRun.Status.SUCCEEDED,
+        WorkflowNodeRun.Status.FAILED,
+        WorkflowNodeRun.Status.CANCELLED,
+    } else None
     node.save(update_fields=["status", "output", "error_code", "error_message", "completed_at", "updated_at"])
     from recruitment.services.workflow_runtime import advance_run
     return advance_run(node.run, executor=execute_workflow_node)

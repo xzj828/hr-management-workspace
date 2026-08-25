@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from recruitment.models import ConversationMessage, ConversationSyncState, MessageAttachment, RpaTask
+from recruitment.models import ConversationAction, ConversationMessage, ConversationSyncState, MessageAttachment
 from recruitment.services.human_attention import ensure_attention
 from recruitment.services.message_intent import MessageIntent, classify_candidate_message
 
@@ -144,8 +144,7 @@ def ingest_conversation(*, application, account, messages, cursor=""):
 
 @transaction.atomic
 def _queue_resume_request(*, application, account, actor, message, first_contact, source_message):
-    from recruitment.rpa.tasks import create_task
-    from recruitment.services.communications import _identity_snapshot
+    from recruitment.services.communications import _identity_snapshot, prepare_communication
 
     target = _identity_snapshot(application, account)
     if not target.get("external_id") and not target.get("fingerprint"):
@@ -161,18 +160,19 @@ def _queue_resume_request(*, application, account, actor, message, first_contact
         )
         return None
     try:
-        return create_task(
+        return prepare_communication(
             account=account,
-            action=RpaTask.Action.REQUEST_RESUME,
+            applications=[application],
+            action=ConversationAction.Action.REQUEST_RESUME,
+            message=message,
             actor=actor,
-            request_payload={
-                "target": target,
-                "message": message,
-                "first_contact": first_contact,
-                "policy_authorized": True,
-                "source_message_id": source_message.pk,
+            request_id=f"auto-request-resume:{application.pk}:{source_message.pk}",
+            item_contexts={
+                application.pk: {
+                    "first_contact": first_contact,
+                    "source_message_id": source_message.pk,
+                }
             },
-            idempotency_key=f"auto-request-resume:{application.pk}:{source_message.pk}",
         )
     except (PermissionDenied, ValidationError) as exc:
         ensure_attention(

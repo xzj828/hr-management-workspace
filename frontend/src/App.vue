@@ -13,4 +13,3 @@ onMounted(() => auth.restore())
   </div>
   <router-view v-else />
 </template>
-

@@ -2,6 +2,7 @@ import uuid
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from rest_framework.exceptions import ValidationError
 
 from attendance.models import AccountProfile
 from recruitment.models import (
@@ -13,8 +14,10 @@ from recruitment.models import (
     ExecutionBatch,
     JobApplication,
     RecruitmentJob,
+    RpaTask,
     StepExecution,
 )
+from recruitment.rpa.tasks import create_task
 from recruitment.services.approvals import approve
 from recruitment.services.communications import (
     complete_communication_task,
@@ -37,7 +40,11 @@ class CommunicationServiceTests(TestCase):
         )
         self.applications = []
         for index in range(2):
-            candidate = Candidate.objects.create(identity_key=f"candidate-{index}", name=f"候选人{index}")
+            candidate = Candidate.objects.create(
+                identity_key=f"candidate-{index}",
+                external_id=f"boss-candidate-{index}",
+                name=f"候选人{index}",
+            )
             self.applications.append(JobApplication.objects.create(
                 candidate=candidate, job=self.job, source="boss", owner=self.user
             ))
@@ -105,8 +112,15 @@ class CommunicationServiceTests(TestCase):
         executed_application = ConversationAction.objects.get(
             pk=first_task.request_payload["conversation_action_id"]
         ).application
+        expected_external_id = first_task.request_payload["target"]["external_id"]
         complete_communication_task(
-            task=first_task, status="succeeded", result={"verified": True},
+            task=first_task,
+            status="succeeded",
+            result={
+                "verified": True,
+                "expected_external_id": expected_external_id,
+                "observed_external_id": expected_external_id,
+            },
             error_code="", error_message="",
         )
         batch.refresh_from_db()
@@ -114,3 +128,103 @@ class CommunicationServiceTests(TestCase):
         self.assertEqual(batch.succeeded_items, 1)
         self.assertEqual(executed_application.stage, JobApplication.Stage.WAITING_RESUME)
         self.assertEqual(batch.rpa_tasks.count(), 2)
+
+    def test_verified_result_without_observed_platform_id_waits_for_human(self):
+        approval = prepare_communication(
+            account=self.account,
+            applications=[self.applications[0]],
+            action="request_resume",
+            message="请发送 PDF 简历",
+            actor=self.user,
+            request_id=uuid.uuid4(),
+        )
+        approve(approval=approval, actor=self.user)
+        batch = materialize_communication_batch(approval=approval, actor=self.user)
+        task = batch.rpa_tasks.get()
+
+        complete_communication_task(
+            task=task,
+            status="succeeded",
+            result={
+                "verified": True,
+                "expected_external_id": task.request_payload["target"]["external_id"],
+            },
+            error_code="",
+            error_message="",
+        )
+
+        task.refresh_from_db()
+        action = ConversationAction.objects.get(pk=task.request_payload["conversation_action_id"])
+        action.application.refresh_from_db()
+        self.assertEqual(task.status, RpaTask.Status.WAITING_HUMAN)
+        self.assertEqual(action.status, ConversationAction.Status.WAITING_HUMAN)
+        self.assertEqual(action.step.status, StepExecution.Status.WAITING_HUMAN)
+        self.assertEqual(action.application.stage, JobApplication.Stage.NEW)
+
+    def test_verified_result_with_wrong_observed_platform_id_waits_for_human(self):
+        approval = prepare_communication(
+            account=self.account,
+            applications=[self.applications[0]],
+            action="request_resume",
+            message="请发送 PDF 简历",
+            actor=self.user,
+            request_id=uuid.uuid4(),
+        )
+        approve(approval=approval, actor=self.user)
+        batch = materialize_communication_batch(approval=approval, actor=self.user)
+        task = batch.rpa_tasks.get()
+
+        complete_communication_task(
+            task=task,
+            status="succeeded",
+            result={
+                "verified": True,
+                "expected_external_id": task.request_payload["target"]["external_id"],
+                "observed_external_id": "boss-other-candidate",
+            },
+            error_code="",
+            error_message="",
+        )
+
+        task.refresh_from_db()
+        action = ConversationAction.objects.get(pk=task.request_payload["conversation_action_id"])
+        action.application.refresh_from_db()
+        self.assertEqual(task.status, RpaTask.Status.WAITING_HUMAN)
+        self.assertEqual(action.status, ConversationAction.Status.WAITING_HUMAN)
+        self.assertEqual(action.step.status, StepExecution.Status.WAITING_HUMAN)
+        self.assertEqual(action.application.stage, JobApplication.Stage.NEW)
+
+    def test_request_resume_cannot_be_created_without_approval(self):
+        with self.assertRaisesMessage(ValidationError, "需要 HR 确认"):
+            create_task(
+                account=self.account,
+                action=RpaTask.Action.REQUEST_RESUME,
+                actor=self.user,
+                request_payload={"message": "请发送简历", "target": {"name": "候选人0"}},
+            )
+
+    def test_approved_resume_request_rejects_target_or_message_substitution(self):
+        approval = prepare_communication(
+            account=self.account,
+            applications=[self.applications[0]],
+            action=ConversationAction.Action.REQUEST_RESUME,
+            message="请发送 PDF 简历",
+            actor=self.user,
+            request_id=uuid.uuid4(),
+        )
+        approve(approval=approval, actor=self.user)
+        action = ConversationAction.objects.get(approval=approval)
+
+        with self.assertRaisesMessage(ValidationError, "身份快照不一致"):
+            create_task(
+                account=self.account,
+                action=RpaTask.Action.REQUEST_RESUME,
+                actor=self.user,
+                approval=approval,
+                request_payload={
+                    "conversation_action_id": str(action.pk),
+                    "message": action.message_snapshot,
+                    "target": {**action.target_snapshot, "name": "被替换的候选人"},
+                    "first_contact": False,
+                },
+            )

@@ -21,7 +21,8 @@
 |---|---|---|
 | Django User | username, first_name, is_active, is_superuser | Session 身份 |
 | AccountProfile | role, department | User 1:1；角色 admin/hr/supervisor/viewer |
-| UserModelCredential | api_url, model, encrypted_api_key, key_last4 | User 1:1；Key 由 SECRET_KEY 派生 Fernet 加密 |
+| UserModelProfile | name, api_url, model, encrypted_api_key, key_last4, is_active | User N:1；用户内名称不区分大小写唯一；每用户最多一个活动档案；Key 加密 |
+| UserModelCredential | api_url, model, encrypted_api_key, key_last4 | User 1:1；活动档案的兼容投影，供既有 AI 服务读取 |
 
 ### 考勤域
 
@@ -51,7 +52,7 @@
 | JobStandardVersion | job, version, criteria, hard requirements, status | 同职位仅一个 published；发布后不可变 |
 | StructuredResumeVersion | resume, version, data, evidence, warnings | PDF/PNG 共用结构；原始未知字段保持 null |
 | ResumeAssessment | structure, standard, version, score, hard failures, evidence, recommendation | 请求 UUID 唯一；重评新增版本 |
-| AiProcessingTask | kind, lease/status, resume/job/standard, error/result | DB 租约；岗位标准、结构化、评分三类任务 |
+| AiProcessingTask | kind, lease/status, resume/job/standard, error/result, private model snapshot/bound_at | DB 租约；岗位标准、结构化、评分三类任务；连接快照字段永不序列化 |
 
 ### 自动化与流程域
 
@@ -69,6 +70,16 @@
 | WorkflowNode / WorkflowEdge | 有向图 | 节点 key 唯一；禁止环和未确认发送 |
 | WorkflowRun / WorkflowNodeRun / WorkflowRunEvent | 试运行/正式运行快照与控制 | request_id 幂等；节点执行顺序持久化 |
 
+对抗审查补充约束（2026-08-25）：`request_resume` 必须绑定已批准的不可变动作快照；主动搜索只产生候选摘要，打开/归档在线简历必须逐份计入 `resume_view`。外部动作只能由适配器在同一次原子调用中按平台稳定 ID（或平台原生等价标识）定位、复核并执行；组合指纹、展示名唯一或“先核验 ID、再按姓名执行”均不满足动作身份契约。缺少该能力时必须转人工提醒。批量任务的审批快照必须冻结候选集合或确定性搜索条件、最大数量和额度预算。
+
+任务级自动化证据必须覆盖批量在线简历的每次尝试（目标稳定身份、核验结果、动作结果、错误与时间），并关联 `RpaTask`；额度记录需区分批准预算/预留值与实际尝试数。批量完成回写若任一身份、路径或归档失败，候选导入、简历归档、Campaign 统计等业务写入必须整体回滚，再单独写入 Task/Campaign 的失败终态。
+
+任务级证据只持久化平台稳定 ID 的不可逆哈希、序号、时间、布尔核验值和受控结果码，不保存姓名、原始组合指纹、原始平台 ID、文件路径或 Worker 原始错误。主动寻访的所有终态（含 Worker 主动失败、回执预校验失败、取消及租约超时）都必须写额度账本；无法安全确认实际次数时使用 `actual_known=false`、`actual=null`、`unused=null` 和 `evidence_untrusted=true`，预留额度保持不退款。
+
+通用 `POST /api/recruitment/rpa-tasks/` 仅允许 `check_status`、`sync_positions`、`sync_conversations`。沟通、在线简历、深度匹配和主动寻访必须通过各自专用确认/物化服务，并使用服务端规范幂等键和 Approval/Batch/Campaign/Workflow 关联；关联任务不得通过通用取消或重试拆离领域状态。主动寻访取消或租约超时时，Task、Campaign、额度证据、账号状态与关联 Workflow 必须在同一领域收口中结束。
+
+取消 WorkflowRun 后，草稿 Approval、未执行的领域 Task/Batch/Step 和后续 Node 一并终结；Worker lease 必须排除暂停或终态 Run/Node，`create_task` 也必须校验 Workflow 生命周期与 node attempt。已进入适配器的任务不能伪装取消，其真实完成回执只更新动作审计，不恢复已取消 Run。直接停止 SearchCampaign 与从 Task 入口停止使用同一领域服务，并在提交后同步 Workflow。失败的 `deep_search` 重试必须创建新 attempt 的确认、幂等键和 Task。
+
 ## 认证与授权
 
 | API 类别 | Anonymous | Viewer/Supervisor | HR | Admin | Worker Token |
@@ -77,7 +88,7 @@
 | 登录后普通读取 | 否 | 是 | 是 | 是 | 否 |
 | 考勤/招聘写入 | 否 | 否 | 是 | 是 | 否 |
 | BOSS 账号动作 | 否 | 否 | 仅授权账号 | 全部/按实现 | 否 |
-| 模型凭证 | 否 | 自己 | 自己 | 自己 | 否 |
+| 模型档案与凭证 | 否 | 自己 | 自己 | 自己 | 否 |
 | Worker 心跳/租约/回写 | 否 | 否 | 否 | 否 | 是 |
 
 [待确认] Supervisor 的 `department` 尚未用于 queryset 过滤，当前登录用户可读取全局业务数据。
@@ -92,8 +103,16 @@
 | POST | `/api/auth/login/` | 登录页；username/password/remember |
 | POST | `/api/auth/logout/` | 用户菜单退出 |
 | GET | `/api/auth/me/` | Shell 恢复会话 |
-| GET/PUT/DELETE | `/api/account/model-credential/` | Copilot 模型配置 |
-| POST | `/api/account/model-credential/test/` | 测试 OpenAI 兼容连接；只返回模型与延迟，不返回 Key |
+| GET/PUT/DELETE | `/api/account/model-credential/` | 兼容端点；读写当前活动模型投影，并同步对应活动档案 |
+| POST | `/api/account/model-credential/test/` | 测试当前活动连接；只返回模型与延迟，不返回 Key |
+| GET/POST | `/api/account/model-profiles/` | 列出自己的模型档案；新增档案，首个自动启用，可显式 `make_active` |
+| GET/PATCH | `/api/account/model-profiles/{id}/` | 读取或编辑自己的档案；活动档案编辑后同步兼容投影 |
+| POST | `/api/account/model-profiles/{id}/activate/` | 原子切换当前模型；重复激活幂等 |
+| POST | `/api/account/model-profiles/{id}/test/` | 测试指定档案；响应不含 API Key 或加密文本 |
+
+模型档案规则：所有查询按 Session 用户过滤，其他用户的 ID 返回 404；输出只含 `has_api_key/key_last4`。创建首个档案自动激活，之后新增默认不切换，除非请求 `make_active=true`。切换、活动档案编辑和旧凭证写入在事务内同步 `UserModelCredential`；活动档案不能出现两个，数据库条件唯一约束作为最后防线。API 地址规范化前后都不得超过 500 字符；API Key 必须为 8–4096 字符，序列化器与领域服务双层校验，历史末四位提示通过独立迁移清除后由新写入重建。
+
+模型出网规则：默认拒绝非 HTTPS、userinfo、query/fragment、localhost，以及解析或实际连接到 loopback/private/link-local/reserved/unspecified/multicast 的地址；3xx 不跟随。解析通过后连接固定到已验证的数字 IP，HTTPS 仍以原域名完成 SNI、证书与 Host 校验，避免二次 DNS 重绑定。只有部署管理员通过 `MODEL_API_HOST_ALLOWLIST=host[:port],...` 精确配置的主机可以例外开放 HTTP 或本机/内网模型；该例外不得由普通用户控制。`MODEL_API_MAX_RESPONSE_BYTES` 默认 1 MiB；连接测试由 `MODEL_API_TEST_TIMEOUT_SECONDS`（默认 10 秒）与 `MODEL_API_TEST_THROTTLE_RATE`（默认每用户 `5/min`）限制。任务创建时冻结 API 地址、模型名与加密 Key 快照，序列化器永不输出该快照；Worker 和重试使用任务快照而非当前活动投影。
 
 ### 考勤资源
 

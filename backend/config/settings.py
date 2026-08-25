@@ -110,6 +110,19 @@ else:
 RPA_API_BASE_URL = os.getenv("RPA_API_BASE_URL", "http://127.0.0.1:8000/api/recruitment/worker")
 RPA_POLL_SECONDS = float(os.getenv("RPA_POLL_SECONDS", "3"))
 AI_POLL_SECONDS = float(os.getenv("AI_POLL_SECONDS", "3"))
+MODEL_API_HOST_ALLOWLIST = tuple(
+    entry.strip()
+    for entry in os.getenv("MODEL_API_HOST_ALLOWLIST", "").split(",")
+    if entry.strip()
+)
+try:
+    MODEL_API_MAX_RESPONSE_BYTES = max(1, int(os.getenv("MODEL_API_MAX_RESPONSE_BYTES", str(1024 * 1024))))
+except ValueError:
+    MODEL_API_MAX_RESPONSE_BYTES = 1024 * 1024
+try:
+    MODEL_API_TEST_TIMEOUT_SECONDS = max(1, int(os.getenv("MODEL_API_TEST_TIMEOUT_SECONDS", "10")))
+except ValueError:
+    MODEL_API_TEST_TIMEOUT_SECONDS = 10
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -118,6 +131,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 500,
+    "DEFAULT_THROTTLE_RATES": {
+        "model_connection_test": os.getenv("MODEL_API_TEST_THROTTLE_RATE", "5/min"),
+    },
 }
 
 CSRF_TRUSTED_ORIGINS = [

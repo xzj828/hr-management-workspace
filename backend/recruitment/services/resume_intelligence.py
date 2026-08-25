@@ -5,7 +5,6 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.db.models import Max
 
-from accounts.models import UserModelCredential
 from accounts.services.model_gateway import ModelGatewayError, OpenAICompatibleGateway
 from recruitment.models import (
     AiProcessingTask,
@@ -17,6 +16,7 @@ from recruitment.models import (
     StructuredResumeVersion,
 )
 from recruitment.services.file_extraction import ExtractionError, extract_file
+from recruitment.services.ai_tasks import task_model_credential
 
 
 SENSITIVE_FIELDS = {"age", "birth_date", "ethnicity", "gender", "marital_status", "pregnancy", "sex"}
@@ -263,11 +263,10 @@ def process_resume_structure_task(task: AiProcessingTask):
     if not task.resume_id:
         raise ExtractionError("resume_missing", "结构化任务没有关联简历")
     extraction = _extract_resume(task.resume)
-    credential = UserModelCredential.objects.get(user=task.requested_by)
     structured = create_structured_resume(
         resume=task.resume,
         extraction=extraction,
-        gateway=OpenAICompatibleGateway(credential),
+        gateway=OpenAICompatibleGateway(task_model_credential(task)),
     )
     return {"structured_resume_id": structured.pk}
 
@@ -499,11 +498,10 @@ def process_resume_score_task(task: AiProcessingTask):
     structured = task.resume.structured_versions.order_by("-version").first()
     if not structured:
         raise ValueError("简历尚未完成结构化")
-    credential = UserModelCredential.objects.get(user=task.requested_by)
     assessment = create_assessment(
         structured=structured,
         standard=task.standard,
-        gateway=OpenAICompatibleGateway(credential),
+        gateway=OpenAICompatibleGateway(task_model_credential(task)),
         request_id=task.pk,
         actor=task.requested_by,
     )

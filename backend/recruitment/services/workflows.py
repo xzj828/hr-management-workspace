@@ -15,7 +15,7 @@ ALLOWED_NODE_TYPES = {
     "human_review", "send_interview", "end",
 }
 SOURCE_TYPES = {"recommend", "search", "deep_search", "sync_messages", "search_and_pull_resumes"}
-SEND_TYPES = {"greet", "send_interview"}
+SEND_TYPES = {"greet", "request_resume", "send_interview"}
 WAIT_EVENTS = {"wait_reply": "candidate_message.received", "wait_resume": "resume.archived"}
 
 

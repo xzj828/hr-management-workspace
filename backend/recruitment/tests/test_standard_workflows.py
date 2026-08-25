@@ -32,7 +32,7 @@ class StandardWorkflowTests(TestCase):
             set(version.nodes.values_list("node_type", flat=True)),
             {
                 "start", "sync_messages", "classify_intent", "request_resume",
-                "create_attention", "stop", "wait_resume", "archive_resume", "end",
+                "create_attention", "stop", "wait_resume", "archive_resume", "human_approval", "end",
             },
         )
         self.assertGreater(version.edges.count(), 0)

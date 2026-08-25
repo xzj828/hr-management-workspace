@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -159,14 +160,59 @@ def _safe_target(task):
     return payload, target, name
 
 
+def _candidate_rows_for_verification(*, runner, account, source, job_title, criteria):
+    if source == "search":
+        return runner.search(account, str(criteria.get("keyword", "")))
+    if source == "deep_search":
+        return runner.deep_search(
+            account,
+            job=str(job_title or ""),
+            core=criteria.get("core") if isinstance(criteria.get("core"), list) else [],
+            bonus=criteria.get("bonus") if isinstance(criteria.get("bonus"), list) else [],
+            match=True,
+        )
+    if source == "recommend":
+        return runner.recommend(account, str(job_title or ""))
+    raise BossCliError("候选人身份复核来源无效")
+
+
+def _verified_candidate_row(*, rows, target, account_id):
+    from recruitment.services.discovery import _fingerprint
+
+    name = str(target.get("name") or target.get("display_name") or "").strip()
+    expected = str(target.get("fingerprint") or "").strip()
+    if not name or not expected or not account_id:
+        return None
+    same_name = [row for row in rows if str(row.get("display_name", "")).strip() == name]
+    matches = [row for row in same_name if _fingerprint(account_id, row) == expected]
+    if len(same_name) != 1 or len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _verify_conversation_target(*, runner, account, target):
+    name = str(target.get("name", "")).strip()
+    external_id = str(target.get("external_id", "")).strip()
+    if not name or not external_id:
+        return None
+    rows = parse_conversation_list(runner.conversations(account))
+    same_name = [row for row in rows if str(row.get("name", "")).strip() == name]
+    if len(same_name) != 1:
+        return None
+    refreshed = same_name[0]
+    return refreshed if str(refreshed.get("external_id", "")).strip() == external_id else None
+
+
 def execute_greet(task, account, runner):
     payload, target, name = _safe_target(task)
     fingerprint = str(target.get("fingerprint", "")).strip()
+    external_id = str(target.get("external_id", "")).strip()
     job_title = str(target.get("job_title", "")).strip()
-    if not name or not fingerprint:
+    stable_action = getattr(runner, "greet_by_external_id", None)
+    if not name or not fingerprint or not external_id or not callable(stable_action):
         return {
-            "status": "waiting_human", "result": {}, "error_code": "target_identity_missing",
-            "error_message": "候选人缺少可复核身份，请由 HR 人工确认",
+            "status": "waiting_human", "result": {}, "error_code": "stable_identity_action_unavailable",
+            "error_message": "当前 BOSS 适配器不能按平台稳定 ID 打招呼，请由 HR 人工处理",
         }
     refreshed = runner.recommend(account, job_title)
     from recruitment.services.discovery import _fingerprint
@@ -178,35 +224,90 @@ def execute_greet(task, account, runner):
         if row.get("display_name") == name
         and (row.get("fingerprint") == fingerprint or (account_id and _fingerprint(account_id, row) == fingerprint))
     ]
-    if len(matches) != 1 or len(same_name) != 1:
+    if (
+        len(matches) != 1
+        or len(same_name) != 1
+        or str(matches[0].get("external_id", "")).strip() != external_id
+    ):
         return {
             "status": "waiting_human", "result": {}, "error_code": "target_identity_ambiguous",
             "error_message": "刷新后无法唯一确认候选人，已禁止发送",
         }
-    runner.greet(account, name, job=job_title)
-    return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
+    stable_action(account, external_id, job=job_title)
+    return {
+        "status": "succeeded",
+        "result": {
+            "verified": True,
+            "target_name": name,
+            "expected_external_id": external_id,
+            "observed_external_id": str(matches[0].get("external_id", "")).strip(),
+        },
+    }
 
 
 def execute_request_resume(task, account, runner):
     payload, target, name = _safe_target(task)
-    if not name:
-        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份不足"}
-    runner.request_resume(
+    external_id = str(target.get("external_id", "")).strip()
+    if not name or not external_id:
+        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人缺少平台稳定 ID"}
+    refreshed = _verify_conversation_target(runner=runner, account=account, target=target)
+    if refreshed is None:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "target_identity_ambiguous",
+            "error_message": "刷新沟通列表后无法唯一确认候选人，已禁止索要简历",
+        }
+    stable_action = getattr(runner, "request_resume_by_external_id", None)
+    if not callable(stable_action):
+        return {
+            "status": "waiting_human",
+            "result": {"verified": True, "external_id": external_id},
+            "error_code": "stable_identity_action_unavailable",
+            "error_message": "当前 BOSS 适配器只能按姓名索要简历，请由 HR 人工处理",
+        }
+    stable_action(
         account,
-        name,
+        external_id,
         message=str(payload.get("message", "")),
         first_contact=bool(payload.get("first_contact", False)),
     )
-    return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
+    return {
+        "status": "succeeded",
+        "result": {
+            "verified": True,
+            "target_name": name,
+            "conversation_index": refreshed.get("index"),
+            "expected_external_id": external_id,
+            "observed_external_id": str(refreshed.get("external_id", "")).strip(),
+        },
+    }
 
 
 def execute_send_interview(task, account, runner):
     payload, target, name = _safe_target(task)
+    external_id = str(target.get("external_id", "")).strip()
     message = str(payload.get("message", "")).strip()
-    if not name or not message:
-        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份或邀约内容不足"}
-    runner.send_text(account, name, message)
-    return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
+    if not name or not external_id or not message:
+        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人平台稳定 ID 或邀约内容不足"}
+    refreshed = _verify_conversation_target(runner=runner, account=account, target=target)
+    stable_action = getattr(runner, "send_text_by_external_id", None)
+    if refreshed is None or not callable(stable_action):
+        return {
+            "status": "waiting_human", "result": {},
+            "error_code": "stable_identity_action_unavailable",
+            "error_message": "当前 BOSS 适配器不能按平台稳定 ID 发送邀约，请由 HR 人工处理",
+        }
+    stable_action(account, external_id, message)
+    return {
+        "status": "succeeded",
+        "result": {
+            "verified": True,
+            "target_name": name,
+            "expected_external_id": external_id,
+            "observed_external_id": str(refreshed.get("external_id", "")).strip(),
+        },
+    }
 
 
 def execute_sync_conversations(task, account, runner):
@@ -228,9 +329,35 @@ def execute_sync_conversations(task, account, runner):
 
 def execute_view_online_resume(task, account, runner):
     payload, target, name = _safe_target(task)
-    if not name:
-        return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份不足"}
-    preview = runner.preview(account, name)
+    external_id = str(target.get("external_id", "")).strip()
+    stable_action = getattr(runner, "preview_by_external_id", None)
+    if not name or not external_id or not callable(stable_action):
+        return {
+            "status": "waiting_human", "result": {},
+            "error_code": "stable_identity_action_unavailable",
+            "error_message": "当前 BOSS 适配器不能按平台稳定 ID 查看在线简历，请由 HR 人工处理",
+        }
+    verification = target.get("verification") if isinstance(target.get("verification"), dict) else {}
+    rows = _candidate_rows_for_verification(
+        runner=runner,
+        account=account,
+        source=str(verification.get("source", "")),
+        job_title=target.get("job_title", ""),
+        criteria=verification.get("criteria") if isinstance(verification.get("criteria"), dict) else {},
+    ) if verification else []
+    verified = _verified_candidate_row(
+        rows=rows,
+        target=target,
+        account_id=target.get("boss_account_id"),
+    )
+    if verified is None or str(verified.get("external_id", "")).strip() != external_id:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "target_identity_ambiguous",
+            "error_message": "刷新候选人来源后无法唯一确认目标，已禁止查看在线简历",
+        }
+    preview = stable_action(account, external_id)
     source_path = _preview_image_path(preview.stdout)
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     incoming.mkdir(parents=True, exist_ok=True)
@@ -238,7 +365,14 @@ def execute_view_online_resume(task, account, runner):
     shutil.copy2(source_path, output_path)
     return {
         "status": "succeeded",
-        "result": {"verified": True, "image_path": str(output_path), "filename": f"{name}-在线简历.png"},
+        "result": {
+            "verified": True,
+            "image_path": str(output_path),
+            "filename": f"{name}-在线简历.png",
+            "identity_fingerprint": target.get("fingerprint"),
+            "expected_external_id": external_id,
+            "observed_external_id": str(verified.get("external_id", "")).strip(),
+        },
     }
 
 
@@ -256,16 +390,22 @@ def execute_search_pull_resumes(task, account, runner):
     payload = task.get("request_payload") or {}
     source = str(payload.get("source", "recommend"))
     criteria = payload.get("criteria") if isinstance(payload.get("criteria"), dict) else {}
-    if source == "search":
-        rows = runner.search(account, str(criteria.get("keyword", "")))
-    elif source == "deep_search":
-        rows = runner.deep_search(
-            account, job=str(payload.get("job_title", "")),
-            core=criteria.get("core") if isinstance(criteria.get("core"), list) else [],
-            bonus=criteria.get("bonus") if isinstance(criteria.get("bonus"), list) else [], match=True,
-        )
-    else:
-        rows = runner.recommend(account, str(payload.get("job_title", "")))
+    account_id = payload.get("boss_account_id")
+    budget = int(payload.get("resume_view_budget", 0) or 0)
+    if not account_id or budget < 1:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "approval_scope_missing",
+            "error_message": "主动寻访缺少已确认的账号或简历查看额度",
+        }
+    rows = _candidate_rows_for_verification(
+        runner=runner,
+        account=account,
+        source=source,
+        job_title=payload.get("job_title", ""),
+        criteria=criteria,
+    )
     max_scan = max(1, min(int(payload.get("max_scan_count", 1)), 100))
     target = max(1, min(int(payload.get("target_resume_count", 1)), max_scan))
     scanned = rows[:max_scan]
@@ -273,25 +413,146 @@ def execute_search_pull_resumes(task, account, runner):
     incoming.mkdir(parents=True, exist_ok=True)
     pulled = []
     errors = []
-    seen_names = set()
+    attempts = []
+    seen_identities = set()
+    view_attempt_count = 0
+    manual_intervention_required = False
+    stable_preview = getattr(runner, "preview_by_external_id", None)
+    from recruitment.services.discovery import _fingerprint
+
     for row in scanned:
         name = str(row.get("display_name", "")).strip()
-        if not name or name in seen_names:
+        expected_external_id = str(row.get("external_id", "")).strip()
+        fingerprint = _fingerprint(account_id, row) if name else ""
+        if not name or fingerprint in seen_identities:
             continue
-        seen_names.add(name)
+        seen_identities.add(fingerprint)
+        refreshed_rows = _candidate_rows_for_verification(
+            runner=runner,
+            account=account,
+            source=source,
+            job_title=payload.get("job_title", ""),
+            criteria=criteria,
+        )
+        verified = _verified_candidate_row(
+            rows=refreshed_rows,
+            target={"name": name, "fingerprint": fingerprint},
+            account_id=account_id,
+        )
+        if verified is None:
+            error = "刷新后身份不唯一，未打开在线简历"
+            errors.append({"name": name, "error": error})
+            attempts.append({
+                "sequence": len(attempts) + 1,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "name": name,
+                "fingerprint": fingerprint,
+                "verified": False,
+                "preview_attempted": False,
+                "outcome": "identity_ambiguous",
+                "error_code": "identity_ambiguous",
+                "expected_external_id": expected_external_id,
+                "observed_external_id": "",
+                "error": error,
+            })
+            continue
+        external_id = str(verified.get("external_id", "")).strip()
+        verified_name = str(verified.get("display_name", "")).strip()
+        verified_fingerprint = _fingerprint(account_id, verified)
+        if not external_id:
+            error = "候选人缺少平台稳定 ID，在线简历查看已转人工"
+            errors.append({"name": name, "error": error})
+            attempts.append({
+                "sequence": len(attempts) + 1,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "name": verified_name,
+                "fingerprint": verified_fingerprint,
+                "verified": False,
+                "preview_attempted": False,
+                "outcome": "target_identity_unverifiable",
+                "error_code": "target_identity_unverifiable",
+                "expected_external_id": expected_external_id,
+                "observed_external_id": external_id,
+                "error": error,
+            })
+            manual_intervention_required = True
+            continue
+        if not callable(stable_preview):
+            error = "当前 BOSS 适配器只能按姓名查看在线简历，已转人工"
+            errors.append({"name": name, "error": error})
+            attempts.append({
+                "sequence": len(attempts) + 1,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "name": verified_name,
+                "fingerprint": verified_fingerprint,
+                "verified": True,
+                "preview_attempted": False,
+                "outcome": "stable_action_unavailable",
+                "error_code": "stable_action_unavailable",
+                "expected_external_id": expected_external_id,
+                "observed_external_id": external_id,
+                "error": error,
+            })
+            manual_intervention_required = True
+            continue
+        if view_attempt_count >= budget:
+            break
+        view_attempt_count += 1
+        attempt = {
+            "sequence": len(attempts) + 1,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "name": verified_name,
+            "fingerprint": verified_fingerprint,
+            "verified": True,
+            "preview_attempted": True,
+            "outcome": "preview_failed",
+            "error_code": "preview_failed",
+            "expected_external_id": expected_external_id,
+            "observed_external_id": external_id,
+            "error": "",
+        }
         try:
-            preview = runner.preview(account, name)
+            preview = stable_preview(account, external_id)
             source_path = _preview_image_path(preview.stdout)
             output_path = incoming / f"online-resume-{uuid.uuid4().hex}.png"
             shutil.copy2(source_path, output_path)
-            pulled.append({"candidate": row, "path": str(output_path), "filename": f"{name}-在线简历.png"})
+            pulled.append({
+                "candidate": verified,
+                "identity_snapshot": {
+                    "name": verified_name,
+                    "external_id": str(verified.get("external_id", "")),
+                    "fingerprint": verified_fingerprint,
+                    "verified": True,
+                    "expected_external_id": expected_external_id,
+                    "observed_external_id": external_id,
+                },
+                "path": str(output_path),
+                "filename": f"{verified_name}-在线简历.png",
+            })
+            attempt["outcome"] = "preview_succeeded"
+            attempt["error_code"] = ""
             if len(pulled) >= target:
+                attempts.append(attempt)
                 break
-        except (BossCliError, OSError) as exc:
-            errors.append({"name": name, "error": str(exc)})
+        except Exception as exc:
+            attempt["error"] = str(exc)[:1000]
+            errors.append({"name": name, "error": attempt["error"]})
+        attempts.append(attempt)
     return {
-        "status": "succeeded",
-        "result": {"candidates": scanned, "resumes": pulled, "scanned_count": len(scanned), "errors": errors},
+        "status": "waiting_human" if manual_intervention_required and len(pulled) < target else "succeeded",
+        "result": {
+            "candidates": scanned,
+            "resumes": pulled,
+            "scanned_count": len(scanned),
+            "view_attempt_count": view_attempt_count,
+            "resume_view_budget": budget,
+            "attempts": attempts,
+            "errors": errors,
+        },
+        **({
+            "error_code": "stable_identity_action_unavailable",
+            "error_message": "在线简历查看需要按平台稳定 ID 原子执行，当前适配器不支持",
+        } if manual_intervention_required and len(pulled) < target else {}),
     }
 
 

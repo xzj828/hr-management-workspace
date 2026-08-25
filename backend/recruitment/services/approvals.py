@@ -5,11 +5,13 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from attendance.permissions import is_hr_user
-from recruitment.models import AutomationApproval
+from recruitment.models import AutomationApproval, RecruitmentAuditLog
 
 
 def _ensure_authorized(approval, actor):
     account = approval.boss_account
+    if actor.is_superuser:
+        return
     if not is_hr_user(actor) or not account.authorized_users.filter(pk=actor.pk).exists():
         raise PermissionDenied("无权确认该 BOSS 账号的自动化操作")
 
@@ -37,4 +39,29 @@ def approve(*, approval, actor):
             locked.save(update_fields=["payload", "status", "approved_by", "approved_at"])
     if expired:
         raise ValidationError("该确认项已过期")
+    return locked
+
+
+@transaction.atomic
+def reject(*, approval, actor, note=""):
+    locked = (
+        AutomationApproval.objects.select_for_update()
+        .select_related("boss_account")
+        .get(pk=approval.pk)
+    )
+    _ensure_authorized(locked, actor)
+    if locked.status != AutomationApproval.Status.DRAFT:
+        raise ValidationError("该确认项已处理")
+    locked.payload = json.loads(json.dumps(locked.payload, ensure_ascii=False))
+    locked.status = AutomationApproval.Status.REJECTED
+    locked.approved_by = actor
+    locked.approved_at = timezone.now()
+    locked.save(update_fields=["payload", "status", "approved_by", "approved_at"])
+    RecruitmentAuditLog.objects.create(
+        actor=actor,
+        boss_account=locked.boss_account,
+        action="automation_approval_rejected",
+        target_id=str(locked.pk),
+        detail={"approval_action": locked.action, "note": str(note or "")[:500]},
+    )
     return locked

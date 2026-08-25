@@ -8,15 +8,17 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from attendance.permissions import is_hr_user
 from recruitment.models import (
     AutomationApproval,
+    CandidateDiscovery,
     CandidateExternalIdentity,
     ConversationAction,
     ConversationSyncState,
     ExecutionBatch,
     InterviewInvitation,
     RecruitmentAuditLog,
+    RpaTask,
     StepExecution,
 )
-from recruitment.rpa.tasks import create_task
+from recruitment.rpa.tasks import append_event, create_task
 from recruitment.services.stages import advance_for_event
 
 
@@ -31,7 +33,12 @@ def _identity_snapshot(application, account):
     identity = CandidateExternalIdentity.objects.filter(
         candidate=application.candidate, boss_account=account
     ).order_by("-last_seen_at").first()
-    return {
+    discovery = CandidateDiscovery.objects.filter(
+        imported_candidate=application.candidate,
+        boss_account=account,
+        job=application.job,
+    ).order_by("-updated_at").first()
+    snapshot = {
         "boss_account_id": account.pk,
         "candidate_id": application.candidate_id,
         "application_id": application.pk,
@@ -41,11 +48,29 @@ def _identity_snapshot(application, account):
         "job_id": application.job_id,
         "job_title": application.job.title,
     }
+    if discovery is not None:
+        snapshot["verification"] = {
+            "source": discovery.source,
+            "criteria": discovery.criteria if isinstance(discovery.criteria, dict) else {},
+        }
+    return snapshot
 
 
 @transaction.atomic
-def prepare_communication(*, account, applications, action, message, actor, request_id, invitation=None):
-    if not is_hr_user(actor) or not account.authorized_users.filter(pk=actor.pk).exists():
+def prepare_communication(
+    *,
+    account,
+    applications,
+    action,
+    message,
+    actor,
+    request_id,
+    invitation=None,
+    item_contexts=None,
+):
+    if not actor.is_superuser and (
+        not is_hr_user(actor) or not account.authorized_users.filter(pk=actor.pk).exists()
+    ):
         raise PermissionDenied("无权操作该 BOSS 账号")
     if action not in ACTION_TO_APPROVAL:
         raise ValidationError("不支持的沟通动作")
@@ -71,6 +96,7 @@ def prepare_communication(*, account, applications, action, message, actor, requ
     )
     if not created:
         return approval
+    contexts = item_contexts if isinstance(item_contexts, dict) else {}
     payload_items = []
     for application in items:
         snapshot = _identity_snapshot(application, account)
@@ -95,7 +121,18 @@ def prepare_communication(*, account, applications, action, message, actor, requ
                 contact_name=data.get("contact_name", ""),
                 note=data.get("note", ""),
             )
-        payload_items.append({"conversation_action_id": str(conversation.pk), **snapshot})
+        context = contexts.get(application.pk, contexts.get(str(application.pk), {}))
+        safe_context = {}
+        if isinstance(context, dict):
+            safe_context = {
+                "first_contact": bool(context.get("first_contact", False)),
+                **(
+                    {"source_message_id": int(context["source_message_id"])}
+                    if str(context.get("source_message_id", "")).isdigit()
+                    else {}
+                ),
+            }
+        payload_items.append({"conversation_action_id": str(conversation.pk), **snapshot, **safe_context})
     approval.payload["items"] = payload_items
     approval.save(update_fields=["payload"])
     return approval
@@ -116,6 +153,14 @@ def enqueue_next_step(batch):
     if step is None:
         return None
     action = step.conversation_action
+    approved_item = next(
+        (
+            item
+            for item in batch.approval.payload.get("items", [])
+            if isinstance(item, dict) and str(item.get("conversation_action_id", "")) == str(action.pk)
+        ),
+        {},
+    )
     task = create_task(
         account=batch.boss_account,
         action=action.action,
@@ -128,8 +173,14 @@ def enqueue_next_step(batch):
             "conversation_action_id": str(action.pk),
             "message": action.message_snapshot,
             "target": action.target_snapshot,
+            **(
+                {"first_contact": bool(approved_item.get("first_contact", False))}
+                if action.action == ConversationAction.Action.REQUEST_RESUME
+                else {}
+            ),
         },
         idempotency_key=f"communication-task:{action.pk}",
+        creation_path="communication_batch",
     )
     return task
 
@@ -183,6 +234,66 @@ def materialize_communication_batch(*, approval, actor):
 
 
 @transaction.atomic
+def cancel_workflow_communication(*, workflow_node_run, actor, now=None):
+    """Cancel every communication item that has not entered the external adapter."""
+    completed_at = now or timezone.now()
+    batch = (
+        ExecutionBatch.objects.select_for_update()
+        .filter(workflow_node_run=workflow_node_run)
+        .first()
+    )
+    if batch is None:
+        return False
+    tasks = RpaTask.objects.select_for_update().filter(execution_batch=batch)
+    active_tasks = tasks.filter(status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING])
+    active_step_ids = {
+        value
+        for value in active_tasks.values_list("request_payload__step_id", flat=True)
+        if value is not None
+    }
+    for task in tasks.filter(status=RpaTask.Status.PENDING):
+        task.status = RpaTask.Status.CANCELLED
+        task.error_code = "workflow_cancelled"
+        task.error_message = "所属流程已取消，任务未进入外部适配器"
+        task.completed_at = completed_at
+        task.lease_expires_at = None
+        task.save(update_fields=[
+            "status", "error_code", "error_message", "completed_at", "lease_expires_at", "updated_at",
+        ])
+        append_event(task=task, event="cancelled", message="所属流程已取消，沟通任务未执行")
+
+    cancellable_steps = batch.steps.exclude(pk__in=active_step_ids).filter(status__in=[
+        StepExecution.Status.PENDING,
+        StepExecution.Status.WAITING_HUMAN,
+    ])
+    step_ids = list(cancellable_steps.values_list("pk", flat=True))
+    cancellable_steps.update(
+        status=StepExecution.Status.CANCELLED,
+        error_code="workflow_cancelled",
+        error_message="所属流程已取消",
+        completed_at=completed_at,
+        updated_at=completed_at,
+    )
+    ConversationAction.objects.filter(step_id__in=step_ids).update(
+        status=ConversationAction.Status.CANCELLED,
+        error_code="workflow_cancelled",
+        error_message="所属流程已取消",
+        completed_at=completed_at,
+        updated_at=completed_at,
+    )
+    batch.status = ExecutionBatch.Status.CANCELLED
+    batch.save(update_fields=["status", "updated_at"])
+    RecruitmentAuditLog.objects.create(
+        actor=actor,
+        boss_account=batch.boss_account,
+        action="communication_batch_cancelled_with_workflow",
+        target_id=str(batch.pk),
+        detail={"active_external_tasks": active_tasks.count()},
+    )
+    return active_tasks.exists()
+
+
+@transaction.atomic
 def complete_communication_task(*, task, status, result, error_code, error_message):
     action = ConversationAction.objects.select_for_update().select_related(
         "application", "batch", "step", "created_by"
@@ -190,13 +301,36 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
     step = StepExecution.objects.select_for_update().get(pk=action.step_id)
     batch = ExecutionBatch.objects.select_for_update().get(pk=action.batch_id)
     now = timezone.now()
-    if status == "succeeded" and result.get("verified") is True:
+    target = task.request_payload.get("target") if isinstance(task.request_payload.get("target"), dict) else {}
+    approved_items = task.approval.payload.get("items", []) if task.approval and isinstance(task.approval.payload, dict) else []
+    approved_target = next(
+        (
+            item for item in approved_items
+            if isinstance(item, dict)
+            and str(item.get("conversation_action_id", "")) == str(action.pk)
+        ),
+        {},
+    )
+    expected_external_id = str(target.get("external_id", "")).strip()
+    identity_verified = (
+        result.get("verified") is True
+        and bool(expected_external_id)
+        and str(action.target_snapshot.get("external_id", "")).strip() == expected_external_id
+        and str(approved_target.get("external_id", "")).strip() == expected_external_id
+        and str(result.get("expected_external_id", "")).strip() == expected_external_id
+        and str(result.get("observed_external_id", "")).strip() == expected_external_id
+    )
+    if status == "succeeded" and identity_verified:
         step_status = StepExecution.Status.SUCCEEDED
         action_status = ConversationAction.Status.SUCCEEDED
-    elif status == "waiting_human" or (status == "succeeded" and result.get("verified") is not True):
+    elif status == "waiting_human" or (status == "succeeded" and not identity_verified):
         step_status = StepExecution.Status.WAITING_HUMAN
         action_status = ConversationAction.Status.WAITING_HUMAN
         status = "waiting_human"
+        if not error_code:
+            error_code = "target_identity_unverifiable"
+        if not error_message:
+            error_message = "Worker 未返回与批准快照一致的平台稳定 ID，已转人工处理"
     else:
         step_status = StepExecution.Status.FAILED
         action_status = ConversationAction.Status.FAILED
@@ -226,13 +360,16 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
             ConversationAction.Action.SEND_INTERVIEW: "interview_sent",
         }[action.action]
         advance_for_event(application=action.application, event=event, actor=action.created_by, task=task)
+    batch_was_cancelled = batch.status == ExecutionBatch.Status.CANCELLED
     batch.succeeded_items = batch.steps.filter(status=StepExecution.Status.SUCCEEDED).count()
     batch.failed_items = batch.steps.filter(
         status__in=[StepExecution.Status.FAILED, StepExecution.Status.SKIPPED]
     ).count()
     remaining = batch.steps.filter(status=StepExecution.Status.PENDING).exists()
     waiting = batch.steps.filter(status=StepExecution.Status.WAITING_HUMAN).exists()
-    if waiting:
+    if batch_was_cancelled:
+        batch.status = ExecutionBatch.Status.CANCELLED
+    elif waiting:
         batch.status = ExecutionBatch.Status.WAITING_HUMAN
     elif remaining:
         batch.status = ExecutionBatch.Status.RUNNING
@@ -243,7 +380,7 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
     else:
         batch.status = ExecutionBatch.Status.SUCCEEDED
     batch.save(update_fields=["succeeded_items", "failed_items", "status", "updated_at"])
-    if not waiting and remaining:
+    if not batch_was_cancelled and not waiting and remaining:
         enqueue_next_step(batch)
     return batch
 

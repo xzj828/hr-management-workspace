@@ -388,6 +388,7 @@ class AutomationApproval(models.Model):
         VIEW_ONLINE_RESUME = "view_online_resume", "查看在线简历"
         SEND_INTERVIEW = "send_interview", "发送面试邀约"
         DEEP_MATCH = "deep_match", "深度匹配"
+        SEARCH_AND_PULL_RESUMES = "search_pull_resumes", "搜索并拉取在线简历"
 
     class Status(models.TextChoices):
         DRAFT = "draft", "待确认"
@@ -507,7 +508,20 @@ class StepExecution(models.Model):
 
 
 class AutomationEvidence(models.Model):
-    step = models.ForeignKey(StepExecution, on_delete=models.CASCADE, related_name="evidence")
+    step = models.ForeignKey(
+        StepExecution,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="evidence",
+    )
+    task = models.ForeignKey(
+        RpaTask,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="automation_evidence",
+    )
     kind = models.CharField(max_length=32)
     summary = models.CharField(max_length=300)
     metadata = models.JSONField(default=dict, blank=True)
@@ -516,6 +530,20 @@ class AutomationEvidence(models.Model):
 
     class Meta:
         ordering = ["created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(step__isnull=False, task__isnull=True)
+                    | Q(step__isnull=True, task__isnull=False)
+                ),
+                name="evidence_has_exactly_one_owner",
+            ),
+            models.UniqueConstraint(
+                fields=["task", "kind"],
+                condition=Q(task__isnull=False),
+                name="unique_task_evidence_kind",
+            ),
+        ]
 
 
 class AutomationUsage(models.Model):
@@ -1137,6 +1165,14 @@ class ResumeAssessment(models.Model):
 
 
 class AiProcessingTask(models.Model):
+    MODEL_SNAPSHOT_FIELDS = (
+        "model_api_url_snapshot",
+        "model_name_snapshot",
+        "encrypted_model_api_key_snapshot",
+        "model_snapshot_fingerprint",
+        "model_snapshot_bound_at",
+    )
+
     class Kind(models.TextChoices):
         JOB_STANDARD = "job_standard", "岗位标准"
         RESUME_STRUCTURE = "resume_structure", "简历结构化"
@@ -1185,6 +1221,11 @@ class AiProcessingTask(models.Model):
         related_name="ai_tasks",
     )
     idempotency_key = models.CharField(max_length=160, unique=True)
+    model_api_url_snapshot = models.URLField(max_length=500, blank=True, default="")
+    model_name_snapshot = models.CharField(max_length=120, blank=True, default="")
+    encrypted_model_api_key_snapshot = models.TextField(blank=True, default="")
+    model_snapshot_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    model_snapshot_bound_at = models.DateTimeField(null=True, blank=True)
     progress = models.PositiveSmallIntegerField(default=0, validators=[MaxValueValidator(100)])
     attempt_count = models.PositiveSmallIntegerField(default=0)
     max_attempts = models.PositiveSmallIntegerField(default=3)
@@ -1200,3 +1241,52 @@ class AiProcessingTask(models.Model):
 
     class Meta:
         ordering = ["available_at", "created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        model_api_url_snapshot="",
+                        model_name_snapshot="",
+                        encrypted_model_api_key_snapshot="",
+                        model_snapshot_fingerprint="",
+                        model_snapshot_bound_at__isnull=True,
+                    )
+                    | (
+                        ~Q(model_api_url_snapshot="")
+                        & ~Q(model_name_snapshot="")
+                        & ~Q(encrypted_model_api_key_snapshot="")
+                        & ~Q(model_snapshot_fingerprint="")
+                        & Q(model_snapshot_bound_at__isnull=False)
+                    )
+                ),
+                name="ai_task_model_snapshot_state",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        protected = (*self.MODEL_SNAPSHOT_FIELDS, "requested_by_id")
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            update_fields = set(update_fields)
+            protected = tuple(
+                field
+                for field in protected
+                if ("requested_by" if field == "requested_by_id" else field) in update_fields
+            )
+        if self.pk and protected:
+            lookup_fields = tuple(dict.fromkeys((*protected, "model_snapshot_bound_at")))
+            original = type(self).objects.filter(pk=self.pk).values(*lookup_fields).first()
+            if original:
+                if (
+                    "requested_by_id" in protected
+                    and self.requested_by_id != original["requested_by_id"]
+                ):
+                    raise ValidationError("AI 任务所有者不可修改")
+                snapshot_fields = tuple(
+                    field for field in protected if field in self.MODEL_SNAPSHOT_FIELDS
+                )
+                if original["model_snapshot_bound_at"] is not None and any(
+                    getattr(self, field) != original[field] for field in snapshot_fields
+                ):
+                    raise ValidationError("AI 任务绑定的模型连接不可修改")
+        return super().save(*args, **kwargs)

@@ -6,7 +6,6 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from accounts.models import UserModelCredential
 from accounts.services.model_gateway import ModelGatewayError, OpenAICompatibleGateway
 from recruitment.models import (
     AiProcessingTask,
@@ -17,6 +16,7 @@ from recruitment.models import (
     RecruitmentAuditLog,
 )
 from recruitment.services.file_extraction import ExtractionError, extract_file
+from recruitment.services.ai_tasks import task_model_credential
 
 
 SENSITIVE_CRITERIA_KEYS = {"age", "ethnicity", "gender", "marital_status", "pregnancy", "sex"}
@@ -298,11 +298,10 @@ def process_job_standard_task(task: AiProcessingTask):
         raise ExtractionError("job_documents_missing", "该职位没有可解析的岗位文档")
     for version in versions:
         _extract_document_version(version)
-    credential = UserModelCredential.objects.get(user=task.requested_by)
     standard = create_standard_draft(
         job=task.job,
         document_versions=versions,
-        gateway=OpenAICompatibleGateway(credential),
+        gateway=OpenAICompatibleGateway(task_model_credential(task)),
         actor=task.requested_by,
     )
     return {"job_standard_id": standard.pk, "_task_status": AiProcessingTask.Status.WAITING_REVIEW}

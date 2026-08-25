@@ -69,6 +69,20 @@ class ApprovalServiceTests(TestCase):
         with self.assertRaises(PermissionDenied):
             approve(approval=approval, actor=self.other_hr)
 
+    def test_superuser_can_approve_without_explicit_account_assignment(self):
+        admin = User.objects.create_superuser(username="approval-admin", email="admin@example.com")
+        approval = AutomationApproval.objects.create(
+            action=AutomationApproval.Action.GREET,
+            boss_account=self.account,
+            created_by=self.hr,
+            payload={},
+        )
+
+        approved = approve(approval=approval, actor=admin)
+
+        self.assertEqual(approved.status, AutomationApproval.Status.APPROVED)
+        self.assertEqual(approved.approved_by, admin)
+
     def test_daily_limit_is_atomic(self):
         self.account.daily_message_limit = 2
         self.account.save(update_fields=["daily_message_limit"])

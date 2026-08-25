@@ -12,6 +12,14 @@ class ConversationSyncParserTests(SimpleTestCase):
     def test_ignores_diagnostic_lines(self):
         self.assertEqual(parse_conversation_list("正在连接浏览器...\n暂无沟通记录"), [])
 
+    def test_parses_optional_stable_identity_fields(self):
+        rows = parse_conversation_list(
+            "1. 林然｜产品经理｜external_id:boss-101｜fingerprint:fp_101｜未读 1"
+        )
+
+        self.assertEqual(rows[0]["external_id"], "boss-101")
+        self.assertEqual(rows[0]["fingerprint"], "fp_101")
+
     def test_parses_every_rendered_chat_message_in_order(self):
         output = """成功进入候选人聊天：林然
 简历获取状态: 已获取
