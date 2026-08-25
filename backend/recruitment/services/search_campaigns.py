@@ -7,7 +7,7 @@ from recruitment.rpa.tasks import create_task
 
 
 @transaction.atomic
-def start_search_campaign(*, campaign, actor, workflow_node_run=None):
+def start_search_campaign(*, campaign, actor, workflow_node_run=None, idempotency_key=""):
     locked = SearchCampaign.objects.select_for_update().select_related("boss_account", "job").get(pk=campaign.pk)
     if locked.status not in {SearchCampaign.Status.DRAFT, SearchCampaign.Status.FAILED, SearchCampaign.Status.PAUSED}:
         raise ValidationError("当前主动寻访任务不能启动")
@@ -27,7 +27,7 @@ def start_search_campaign(*, campaign, actor, workflow_node_run=None):
             "target_resume_count": locked.target_resume_count,
             "max_scan_count": locked.max_scan_count,
         },
-        idempotency_key=f"search-campaign:{locked.pk}:{locked.updated_at.isoformat()}",
+        idempotency_key=idempotency_key or f"search-campaign:{locked.pk}:{locked.updated_at.isoformat()}",
     )
     locked.status = SearchCampaign.Status.QUEUED
     locked.stop_reason = SearchCampaign.StopReason.NONE

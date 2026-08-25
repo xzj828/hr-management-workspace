@@ -324,12 +324,12 @@ class RpaTask(models.Model):
         blank=True,
         related_name="rpa_tasks",
     )
-    workflow_node_run = models.OneToOneField(
+    workflow_node_run = models.ForeignKey(
         "WorkflowNodeRun",
         on_delete=models.PROTECT,
         null=True,
         blank=True,
-        related_name="rpa_task",
+        related_name="rpa_tasks",
     )
     idempotency_key = models.CharField(max_length=160, unique=True, null=True, blank=True)
     request_payload = models.JSONField(default=dict, blank=True)

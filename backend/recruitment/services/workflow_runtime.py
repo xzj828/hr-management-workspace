@@ -68,6 +68,7 @@ def create_run(*, version, actor, mode, idempotency_key, input_snapshot=None, jo
         node_run = WorkflowNodeRun.objects.create(
             run=run, node_key=node["key"], node_type=node["type"], status=status,
             config_snapshot=node["config"], input_snapshot=run.input_snapshot,
+            output={"skip_reason": "disabled"} if disabled else {},
             idempotency_key=f"{idempotency_key}:{node['key']}", completed_at=now if disabled else None,
         )
         _event(run, f"node.{status}", f"节点 {node['key']} {node_run.get_status_display()}", node=node_run)
@@ -124,17 +125,26 @@ def advance_run(run, *, executor=None):
                         node.status = WorkflowNodeRun.Status.READY
                     elif parents and all(parent.status in NODE_TERMINAL_STATES for parent in parents):
                         node.status = WorkflowNodeRun.Status.SKIPPED
+                        node.output = {"skip_reason": "condition_not_matched"}
                         node.completed_at = timezone.now()
                     else:
                         continue
-                elif any(parent.status in {WorkflowNodeRun.Status.FAILED, WorkflowNodeRun.Status.CANCELLED} for parent in parents):
+                elif any(parent.status in {WorkflowNodeRun.Status.FAILED, WorkflowNodeRun.Status.CANCELLED} for parent in parents) or any(
+                    parent.status == WorkflowNodeRun.Status.SKIPPED and parent.output.get("skip_reason") != "disabled"
+                    for parent in parents
+                ):
                     node.status = WorkflowNodeRun.Status.SKIPPED
+                    node.output = {"skip_reason": "upstream_terminal"}
                     node.completed_at = timezone.now()
-                elif parents and all(parent.status in SUCCESS_STATES for parent in parents):
+                elif parents and all(
+                    parent.status == WorkflowNodeRun.Status.SUCCEEDED
+                    or (parent.status == WorkflowNodeRun.Status.SKIPPED and parent.output.get("skip_reason") == "disabled")
+                    for parent in parents
+                ):
                     node.status = WorkflowNodeRun.Status.READY
                 else:
                     continue
-                node.save(update_fields=["status", "completed_at", "updated_at"])
+                node.save(update_fields=["status", "output", "completed_at", "updated_at"])
                 _event(locked, f"node.{node.status}", f"节点 {key} {node.get_status_display()}", node=node)
                 changed = True
             if node.status != WorkflowNodeRun.Status.READY:
@@ -248,5 +258,20 @@ def retry_node(node, *, actor):
     locked.run.status = WorkflowRun.Status.RUNNING
     locked.run.completed_at = None
     locked.run.save(update_fields=["status", "completed_at", "updated_at"])
+    outgoing = {}
+    for edge in locked.run.graph_snapshot.get("edges", []):
+        outgoing.setdefault(edge["source"], []).append(edge["target"])
+    descendants = set()
+    pending = list(outgoing.get(locked.node_key, []))
+    while pending:
+        key = pending.pop()
+        if key in descendants:
+            continue
+        descendants.add(key)
+        pending.extend(outgoing.get(key, []))
+    locked.run.node_runs.filter(
+        node_key__in=descendants,
+        status__in=[WorkflowNodeRun.Status.SKIPPED, WorkflowNodeRun.Status.CANCELLED],
+    ).update(status=WorkflowNodeRun.Status.BLOCKED, completed_at=None, updated_at=timezone.now())
     _event(locked.run, "node.retry", "节点已重新就绪", node=locked, data={"attempt": locked.attempt}, actor=actor)
     return locked

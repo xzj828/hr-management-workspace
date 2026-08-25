@@ -65,7 +65,8 @@ def execute_workflow_node(node):
         return WorkflowNodeRun.Status.SUCCEEDED, {"simulated": True}
 
     if node.node_type in SOURCE_ACTIONS:
-        task = RpaTask.objects.filter(workflow_node_run=node).first()
+        task_key = f"workflow-task:{node.pk}:{node.attempt}"
+        task = RpaTask.objects.filter(workflow_node_run=node, idempotency_key=task_key).first()
         if task is None:
             job_id = run.job_id or run.input_snapshot.get("job")
             criteria = node.config_snapshot.get("criteria") if isinstance(node.config_snapshot.get("criteria"), dict) else {}
@@ -82,7 +83,7 @@ def execute_workflow_node(node):
             task = create_task(
                 account=run.boss_account, action=SOURCE_ACTIONS[node.node_type], actor=run.actor,
                 request_payload=payload, workflow_node_run=node,
-                idempotency_key=f"workflow-task:{node.pk}:{node.attempt}",
+                idempotency_key=task_key,
             )
         return _task_outcome(task)
 
@@ -147,7 +148,8 @@ def execute_workflow_node(node):
         return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "archived": archived}
 
     if node.node_type == "search_and_pull_resumes":
-        task = RpaTask.objects.filter(workflow_node_run=node).first()
+        task_key = f"workflow-search:{node.pk}:{node.attempt}"
+        task = RpaTask.objects.filter(workflow_node_run=node, idempotency_key=task_key).first()
         if task is None:
             config = node.config_snapshot
             criteria = {
@@ -167,7 +169,10 @@ def execute_workflow_node(node):
                 criteria=criteria,
                 created_by=run.actor,
             )
-            task = start_search_campaign(campaign=campaign, actor=run.actor, workflow_node_run=node)
+            task = start_search_campaign(
+                campaign=campaign, actor=run.actor, workflow_node_run=node,
+                idempotency_key=task_key,
+            )
         return _task_outcome(task)
 
     if node.node_type in MESSAGE_ACTIONS:

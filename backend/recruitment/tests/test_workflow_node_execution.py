@@ -5,7 +5,7 @@ from attendance.models import AccountProfile
 from recruitment.models import AutomationApproval, BossAccount, Candidate, HumanAttention, JobApplication, RecruitmentJob, RpaTask, WorkflowNodeRun, WorkflowRun, WorkflowTemplate
 from recruitment.services.conversation_ingestion import ingest_conversation
 from recruitment.services.workflow_nodes import execute_workflow_node, resume_workflow_for_task
-from recruitment.services.workflow_runtime import advance_run, create_run, decide_node
+from recruitment.services.workflow_runtime import advance_run, create_run, decide_node, retry_node
 from recruitment.services.workflows import create_version
 
 
@@ -58,6 +58,26 @@ class WorkflowNodeExecutionTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, WorkflowRun.Status.WAITING_HUMAN)
         self.assertEqual(RpaTask.objects.count(), 1)
+
+    def test_retrying_failed_source_node_creates_a_fresh_rpa_attempt(self):
+        run = create_run(
+            version=self.version, actor=self.user, mode=WorkflowRun.Mode.FORMAL,
+            idempotency_key="node:retry-source", job=self.job,
+        )
+        advance_run(run, executor=execute_workflow_node)
+        first = RpaTask.objects.get()
+        first.status = RpaTask.Status.FAILED
+        first.error_message = "temporary failure"
+        first.save(update_fields=["status", "error_message", "updated_at"])
+        resume_workflow_for_task(first)
+        source = run.node_runs.get(node_key="source")
+        retry_node(source, actor=self.user)
+        advance_run(run, executor=execute_workflow_node)
+
+        self.assertEqual(RpaTask.objects.filter(workflow_node_run=source).count(), 2)
+        latest = RpaTask.objects.filter(workflow_node_run=source).order_by("-created_at").first()
+        self.assertEqual(latest.status, RpaTask.Status.PENDING)
+        self.assertNotEqual(latest.pk, first.pk)
 
     def test_communication_node_creates_draft_after_gate_not_direct_send(self):
         from recruitment.models import Candidate
