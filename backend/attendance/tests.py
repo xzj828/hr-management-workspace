@@ -1,12 +1,18 @@
 import tempfile
 from datetime import date
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.test import TestCase, override_settings
 from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
+
+from recruitment.models import Candidate, RecruitmentJob
 
 from .exporter import build_summary_workbook
 from .models import AttendancePolicy, AttendanceResult, CrossDaySuspicion, Employee, ImportBatch, RawPunchDay
@@ -184,3 +190,137 @@ class AttendanceRuleTests(TestCase):
 
         invalid = self.client.get("/api/dashboard/?from=2026-06&to=2026-05")
         self.assertEqual(invalid.status_code, 400)
+
+
+class DemoWorkspaceCommandTests(TestCase):
+    def setUp(self):
+        self.temp_media = tempfile.TemporaryDirectory()
+        self.media_override = override_settings(MEDIA_ROOT=self.temp_media.name)
+        self.media_override.enable()
+        call_command(
+            "setup_system",
+            admin_username="admin",
+            admin_password="Demo-command-2026!",
+            stdout=StringIO(),
+        )
+
+    def tearDown(self):
+        self.media_override.disable()
+        self.temp_media.cleanup()
+
+    def test_command_is_idempotent_and_clearable(self):
+        call_command("load_demo_workspace", stdout=StringIO())
+        first_counts = {
+            "employees": Employee.objects.filter(employee_no__startswith="DEMO-").count(),
+            "batches": ImportBatch.objects.filter(
+                original_filename__startswith="演示考勤-"
+            ).count(),
+            "results": AttendanceResult.objects.filter(
+                batch__original_filename__startswith="演示考勤-"
+            ).count(),
+            "suspicions": CrossDaySuspicion.objects.filter(
+                batch__original_filename__startswith="演示考勤-"
+            ).count(),
+            "jobs": RecruitmentJob.objects.filter(is_demo=True).count(),
+            "candidates": Candidate.objects.filter(is_demo=True).count(),
+        }
+        self.assertEqual(first_counts["employees"], 8)
+        self.assertGreaterEqual(first_counts["batches"], 1)
+        self.assertEqual(first_counts["results"], first_counts["batches"] * 8)
+        self.assertEqual(first_counts["suspicions"], first_counts["batches"])
+        self.assertEqual(first_counts["jobs"], 3)
+        self.assertEqual(first_counts["candidates"], 10)
+
+        call_command("load_demo_workspace", stdout=StringIO())
+        self.assertEqual(
+            ImportBatch.objects.filter(
+                original_filename__startswith="演示考勤-"
+            ).count(),
+            first_counts["batches"],
+        )
+        self.assertEqual(Employee.objects.filter(employee_no__startswith="DEMO-").count(), 8)
+        self.assertEqual(RecruitmentJob.objects.filter(is_demo=True).count(), 3)
+        self.assertEqual(Candidate.objects.filter(is_demo=True).count(), 10)
+
+        call_command("load_demo_workspace", clear=True, stdout=StringIO())
+        self.assertFalse(Employee.objects.filter(employee_no__startswith="DEMO-").exists())
+        self.assertFalse(
+            ImportBatch.objects.filter(
+                original_filename__startswith="演示考勤-"
+            ).exists()
+        )
+        self.assertFalse(RecruitmentJob.objects.filter(is_demo=True).exists())
+        self.assertFalse(Candidate.objects.filter(is_demo=True).exists())
+
+    def test_command_refuses_to_mix_with_real_attendance_data(self):
+        policy = AttendancePolicy.objects.get(code="standard")
+        Employee.objects.create(
+            employee_no="REAL-001",
+            name="真实员工",
+            department="测试部",
+            join_date=date(2026, 1, 1),
+            attendance_policy=policy,
+        )
+
+        with self.assertRaisesMessage(CommandError, "拒绝混合加载"):
+            call_command("load_demo_workspace", stdout=StringIO())
+
+        self.assertFalse(Employee.objects.filter(employee_no__startswith="DEMO-").exists())
+        self.assertFalse(ImportBatch.objects.exists())
+
+    def test_failed_reload_preserves_previous_attendance_batches(self):
+        call_command("load_demo_workspace", stdout=StringIO())
+        previous_ids = set(
+            ImportBatch.objects.filter(
+                original_filename__startswith="演示考勤-"
+            ).values_list("id", flat=True)
+        )
+        previous_files = {
+            path.relative_to(self.temp_media.name).as_posix()
+            for path in Path(self.temp_media.name).rglob("*.xlsx")
+        }
+
+        with patch(
+            "attendance.management.commands.load_demo_workspace.load_demo_data",
+            side_effect=RuntimeError("simulated recruitment failure"),
+        ):
+            with self.assertRaisesMessage(RuntimeError, "simulated recruitment failure"):
+                call_command("load_demo_workspace", stdout=StringIO())
+
+        self.assertEqual(
+            set(
+                ImportBatch.objects.filter(
+                    original_filename__startswith="演示考勤-"
+                ).values_list("id", flat=True)
+            ),
+            previous_ids,
+        )
+        self.assertEqual(
+            {
+                path.relative_to(self.temp_media.name).as_posix()
+                for path in Path(self.temp_media.name).rglob("*.xlsx")
+            },
+            previous_files,
+        )
+
+    def test_month_start_still_creates_two_periods_and_one_pending_review(self):
+        with patch(
+            "attendance.management.commands.load_demo_workspace.timezone.localdate",
+            return_value=date(2026, 8, 3),
+        ):
+            call_command("load_demo_workspace", stdout=StringIO())
+
+        self.assertEqual(
+            set(
+                ImportBatch.objects.filter(
+                    original_filename__startswith="演示考勤-"
+                ).values_list("year", "month")
+            ),
+            {(2026, 6), (2026, 7)},
+        )
+        self.assertEqual(
+            CrossDaySuspicion.objects.filter(
+                status=CrossDaySuspicion.Status.PENDING
+            ).count(),
+            1,
+        )

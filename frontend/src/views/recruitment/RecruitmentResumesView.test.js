@@ -23,6 +23,7 @@ describe('RecruitmentResumesView', () => {
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/resumes/') return Promise.resolve({ results: resumes })
+      if (path === 'recruitment/resumes/?archived=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/resumes/1/archive/') return Promise.resolve({ ...resumes[0], archived_at: '2026-08-24T10:00:00Z' })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       return Promise.reject(new Error(`unexpected path: ${path}`))
@@ -38,7 +39,8 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.text()).toContain('宋怡')
     expect(wrapper.text()).toContain('1.5 KB')
     expect(wrapper.text()).toContain('V2')
-    expect(wrapper.text()).toContain('待 AI 评估')
+    expect(wrapper.text()).toContain('已入库')
+    expect(wrapper.text()).not.toContain('待 AI 评估')
     expect(wrapper.get('[data-test="download-1"]').attributes('href')).toBe('/api/recruitment/resumes/1/file/?download=1')
     expect(wrapper.get('[data-test="preview-1"]').findComponent(AppIcon).props('name')).toBe('eye')
     expect(wrapper.get('[data-test="download-1"]').findComponent(AppIcon).props('name')).toBe('download')
@@ -47,6 +49,28 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.get('iframe').attributes('src')).toBe('/api/recruitment/resumes/1/file/')
     expect(wrapper.get('iframe').attributes('title')).toBe('周晓宁的简历')
     expect(wrapper.get('.recruitment-download-link').findComponent(AppIcon).props('name')).toBe('download')
+  })
+
+  it('reserves an honest, inactive location for the next-stage screening workflow', async () => {
+    const wrapper = mount(RecruitmentResumesView)
+    await flushPromises()
+
+    const preview = wrapper.get('[data-test="resume-screening-preview"]')
+    expect(preview.text()).toContain('智能初筛')
+    expect(preview.text()).toContain('下一阶段')
+    expect(preview.text()).toContain('上传 Word')
+    expect(preview.text()).toContain('提取初筛标准')
+    expect(preview.text()).toContain('生成简历评分')
+
+    const upload = wrapper.get('[data-test="future-word-upload"]')
+    expect(upload.attributes()).toHaveProperty('disabled')
+    const callCount = apiMock.mock.calls.length
+    await upload.trigger('click')
+    expect(apiMock).toHaveBeenCalledTimes(callCount)
+
+    await wrapper.get('[data-test="toggle-archived-resumes"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="resume-screening-preview"]').exists()).toBe(false)
   })
 
   it('does not offer preview or download for a missing PDF', async () => {

@@ -15,6 +15,7 @@ const lifecycleTarget = ref(null)
 const lifecycleSaving = ref(false)
 const showArchived = ref(false)
 const selectedVersions = computed(() => selected.value ? resumes.value.filter((item) => item.candidate === selected.value.candidate || item.candidate_name === selected.value.candidate_name) : [])
+const fileStatusLabel = (resume) => resume.file_available ? '已入库' : '文件不可用'
 
 async function loadResumes() {
   loading.value = true
@@ -63,17 +64,52 @@ async function toggleArchiveView() {
       <div>
         <span class="eyebrow">Resume Library</span>
         <h2>简历中心</h2>
-        <p>集中管理从招聘渠道取得的 PDF 简历，评分能力将在后续接入。</p>
+        <p>集中管理从招聘渠道取得的 PDF 简历，支持预览、下载、归档与版本管理。</p>
       </div>
       <div class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-resumes" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前简历' : '归档记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="loadResumes" /></div>
     </header>
 
     <p v-if="error" class="recruitment-error-strip">{{ error }}</p>
 
+    <section
+      v-if="!showArchived"
+      class="panel resume-screening-preview"
+      data-test="resume-screening-preview"
+      aria-labelledby="resume-screening-preview-title"
+    >
+      <div class="resume-screening-preview__intro">
+        <span class="resume-screening-preview__icon"><AppIcon name="sparkles" :size="21" /></span>
+        <div>
+          <div class="resume-screening-preview__heading">
+            <span class="panel-kicker">NEXT PHASE</span>
+            <span class="recruitment-chip resume-screening-preview__status">下一阶段</span>
+          </div>
+          <h3 id="resume-screening-preview-title">智能初筛</h3>
+          <p>按职位上传 Word 用户画像与招聘需求，系统将据此提取初筛标准并为简历评分。当前仅保留入口，暂不可用。</p>
+        </div>
+      </div>
+
+      <ol class="resume-screening-preview__steps" aria-label="下一阶段智能初筛流程">
+        <li><span>01</span><div><strong>上传 Word</strong><small>用户画像与招聘需求</small></div></li>
+        <li><span>02</span><div><strong>提取初筛标准</strong><small>形成可确认的评判依据</small></div></li>
+        <li><span>03</span><div><strong>生成简历评分</strong><small>展示得分、证据与结论</small></div></li>
+      </ol>
+
+      <div class="resume-screening-preview__actions">
+        <button
+          class="secondary-button button-with-icon resume-screening-preview__action"
+          data-test="future-word-upload"
+          type="button"
+          disabled
+        ><AppIcon name="upload" :size="16" /><span>上传 Word（暂未开放）</span></button>
+        <small>不影响当前简历预览、下载与归档</small>
+      </div>
+    </section>
+
     <section class="recruitment-data-shell">
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr><th>候选人</th><th>应聘职位</th><th>文件</th><th>来源</th><th>更新时间</th><th>处理状态</th><th></th></tr></thead>
+          <thead><tr><th>候选人</th><th>应聘职位</th><th>文件</th><th>来源</th><th>更新时间</th><th>文件状态</th><th></th></tr></thead>
           <tbody>
             <tr v-for="resume in resumes" :key="resume.id">
               <td><strong>{{ resume.candidate_name }}</strong></td>
@@ -82,7 +118,7 @@ async function toggleArchiveView() {
               <td>{{ resume.source_label }}</td>
               <td>{{ formatRecruitmentDate(resume.updated_at) }}</td>
               <td>
-                <span v-if="resume.file_available" class="recruitment-chip">{{ resume.status_label }}</span>
+                <span v-if="resume.file_available" class="recruitment-chip">{{ fileStatusLabel(resume) }}</span>
                 <span v-else class="recruitment-chip recruitment-chip--error">文件不可用</span>
               </td>
               <td class="recruitment-resume-actions">
@@ -103,7 +139,7 @@ async function toggleArchiveView() {
         <div><dt>应聘职位</dt><dd>{{ selected.job_title || '—' }}</dd></div>
         <div><dt>文件大小</dt><dd>{{ formatFileSize(selected.file_size) }}</dd></div>
         <div><dt>数据来源</dt><dd>{{ selected.source_label }}</dd></div>
-        <div><dt>处理状态</dt><dd>{{ selected.status_label }}</dd></div>
+        <div><dt>文件状态</dt><dd>{{ fileStatusLabel(selected) }}</dd></div>
         <div><dt>版本</dt><dd>V{{ selected.version || 1 }}</dd></div>
         <div><dt>文件指纹</dt><dd class="resume-hash">{{ selected.sha256 ? selected.sha256.slice(0, 12) : '历史文件' }}</dd></div>
       </dl>
