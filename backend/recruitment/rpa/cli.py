@@ -188,9 +188,22 @@ class BossCliRunner:
             args.extend(["--job", job_name])
         return self._run(args, env=self._account_env(account), timeout_seconds=120)
 
-    def request_resume(self, account, name):
+    def request_resume(self, account, name, *, message="", first_contact=False):
         self.open_chat(account, name)
-        return self._run(["action", "resume"], env=self._account_env(account), timeout_seconds=120)
+        if first_contact:
+            normalized = str(message or "").strip()
+            if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
+                raise BossCliError("首次联系求简历必须提供 1 到 1000 个字符的单行话术")
+            return self._run(
+                ["send", "--text", normalized, "--request-resume"],
+                env=self._account_env(account),
+                timeout_seconds=120,
+            )
+        return self._run(
+            ["action", "request-attachment-resume"],
+            env=self._account_env(account),
+            timeout_seconds=120,
+        )
 
     def send_text(self, account, name, message):
         normalized = str(message or "").strip()

@@ -53,7 +53,7 @@ REGISTRY = {
         name="request_resume",
         adapter="cli",
         read_only=False,
-        requires_approval=True,
+        requires_approval=False,
         consumes="message",
         enabled=True,
     ),

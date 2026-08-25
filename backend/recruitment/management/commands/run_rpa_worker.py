@@ -189,7 +189,12 @@ def execute_request_resume(task, account, runner):
     payload, target, name = _safe_target(task)
     if not name:
         return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份不足"}
-    runner.request_resume(account, name)
+    runner.request_resume(
+        account,
+        name,
+        message=str(payload.get("message", "")),
+        first_contact=bool(payload.get("first_contact", False)),
+    )
     return {"status": "succeeded", "result": {"verified": True, "target_name": name}}
 
 

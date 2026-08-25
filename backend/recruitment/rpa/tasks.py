@@ -74,6 +74,15 @@ def create_task(
             raise ValidationError("自动化确认记录无效")
         if locked_approval.expires_at and locked_approval.expires_at <= timezone.now():
             raise ValidationError("自动化确认记录已过期")
+    elif approval is not None:
+        locked_approval = AutomationApproval.objects.select_for_update().filter(pk=approval.pk).first()
+        if (
+            locked_approval is None
+            or locked_approval.boss_account_id != locked.pk
+            or locked_approval.action != action
+            or locked_approval.status != AutomationApproval.Status.APPROVED
+        ):
+            raise ValidationError("自动化确认记录无效")
 
     if locked.rpa_tasks.filter(status__in=[RpaTask.Status.PENDING, RpaTask.Status.LEASED, RpaTask.Status.RUNNING]).exists():
         raise ValidationError("该账号已有任务正在执行")

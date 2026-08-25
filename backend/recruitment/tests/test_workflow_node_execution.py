@@ -19,7 +19,12 @@ class WorkflowNodeExecutionTests(TestCase):
         self.version = create_version(
             template=template, boss_account=self.account, actor=self.user,
             nodes=[
-                {"key": "source", "type": "search", "position": {}, "config": {}},
+                {
+                    "key": "source",
+                    "type": "search",
+                    "position": {},
+                    "config": {"keyword": "Vue", "core": ["3 年经验"], "bonus": ["大厂经历"]},
+                },
                 {"key": "approval", "type": "human_approval", "position": {}, "config": {}},
                 {"key": "greet", "type": "greet", "position": {}, "config": {"message": "您好，想和您沟通岗位。"}},
                 {"key": "end", "type": "end", "position": {}, "config": {}},
@@ -38,6 +43,11 @@ class WorkflowNodeExecutionTests(TestCase):
         run = advance_run(run, executor=execute_workflow_node)
         task = RpaTask.objects.get()
         self.assertEqual(task.workflow_node_run.node_key, "source")
+        self.assertEqual(task.request_payload["keyword"], "Vue")
+        self.assertEqual(task.request_payload["core"], ["3 年经验"])
+        self.assertEqual(task.request_payload["bonus"], ["大厂经历"])
+        self.assertEqual(task.request_payload["job"], self.job.pk)
+        self.assertEqual(task.request_payload["job_title"], self.job.title)
         self.assertEqual(run.node_runs.get(node_key="source").status, WorkflowNodeRun.Status.RUNNING)
 
         task.status = RpaTask.Status.SUCCEEDED
@@ -68,4 +78,3 @@ class WorkflowNodeExecutionTests(TestCase):
         self.assertEqual(approval.status, AutomationApproval.Status.DRAFT)
         self.assertEqual(run.node_runs.get(node_key="greet").status, WorkflowNodeRun.Status.WAITING_HUMAN)
         self.assertFalse(RpaTask.objects.filter(action=RpaTask.Action.GREET).exists())
-

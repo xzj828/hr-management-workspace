@@ -15,8 +15,8 @@ class FakeRunner:
     def greet(self, account, name, job=""):
         self.calls.append(("greet", name, job))
 
-    def request_resume(self, account, name):
-        self.calls.append(("request_resume", name))
+    def request_resume(self, account, name, *, message="", first_contact=False):
+        self.calls.append(("request_resume", name, message, first_contact))
 
     def send_text(self, account, name, message):
         self.calls.append(("send_text", name, message))
@@ -57,12 +57,14 @@ class CommunicationWorkerTests(SimpleTestCase):
     def test_request_resume_and_interview_use_confirmed_snapshots(self):
         runner = FakeRunner()
         resume = execute_request_resume({"request_payload": {
-            "target": {"name": "林然", "external_id": "boss-1"}, "message": "请发送简历"
+            "target": {"name": "林然", "external_id": "boss-1"},
+            "message": "请发送简历",
+            "first_contact": True,
         }}, self.account, runner)
         interview = execute_send_interview({"request_payload": {
             "target": {"name": "林然", "external_id": "boss-1"}, "message": "周五上午十点面试"
         }}, self.account, runner)
         self.assertEqual(resume["status"], "succeeded")
         self.assertEqual(interview["status"], "succeeded")
-        self.assertIn(("request_resume", "林然"), runner.calls)
+        self.assertIn(("request_resume", "林然", "请发送简历", True), runner.calls)
         self.assertIn(("send_text", "林然", "周五上午十点面试"), runner.calls)

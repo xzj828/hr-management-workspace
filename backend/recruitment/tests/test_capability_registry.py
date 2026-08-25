@@ -19,6 +19,13 @@ class CapabilityRegistryTests(SimpleTestCase):
         self.assertTrue(spec.requires_approval)
         self.assertFalse(spec.read_only)
 
+    def test_native_resume_request_can_be_policy_authorized_without_manual_approval(self):
+        spec = REGISTRY["request_resume"]
+
+        self.assertTrue(spec.enabled)
+        self.assertFalse(spec.requires_approval)
+        self.assertEqual(spec.adapter, "cli")
+
     def test_heartbeat_payload_is_json_safe(self):
         payload = capability_payload()
 

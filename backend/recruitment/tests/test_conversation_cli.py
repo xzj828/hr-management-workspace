@@ -25,7 +25,23 @@ class ConversationCliTests(SimpleTestCase):
         self.runner.request_resume(self.account, "林然")
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(commands[0], ["boss.cmd", "chat", "林然", "--strict"])
-        self.assertEqual(commands[1], ["boss.cmd", "action", "resume"])
+        self.assertEqual(commands[1], ["boss.cmd", "action", "request-attachment-resume"])
+
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_first_contact_sends_approved_text_then_requests_resume(self, run):
+        run.return_value = SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")
+        self.runner.request_resume(
+            self.account,
+            "林然",
+            message="您好，方便发送一份简历吗？",
+            first_contact=True,
+        )
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0], ["boss.cmd", "chat", "林然", "--strict"])
+        self.assertEqual(
+            commands[1],
+            ["boss.cmd", "send", "--text", "您好，方便发送一份简历吗？", "--request-resume"],
+        )
 
     @patch("recruitment.rpa.cli.subprocess.run")
     def test_send_text_rejects_line_breaks_before_subprocess(self, run):

@@ -37,7 +37,16 @@ def execute_workflow_node(node):
         task = RpaTask.objects.filter(workflow_node_run=node).first()
         if task is None:
             job_id = run.job_id or run.input_snapshot.get("job")
-            payload = {"job": job_id, "criteria": node.config_snapshot.get("criteria", {})}
+            criteria = node.config_snapshot.get("criteria") if isinstance(node.config_snapshot.get("criteria"), dict) else {}
+            job_title = run.job.title if run.job_id else str(run.input_snapshot.get("job_title", ""))
+            payload = {
+                "job": job_id,
+                "job_title": job_title,
+                "keyword": str(node.config_snapshot.get("keyword", criteria.get("keyword", ""))),
+                "core": node.config_snapshot.get("core", criteria.get("core", [])),
+                "bonus": node.config_snapshot.get("bonus", criteria.get("bonus", [])),
+                "criteria": criteria,
+            }
             task = create_task(
                 account=run.boss_account, action=SOURCE_ACTIONS[node.node_type], actor=run.actor,
                 request_payload=payload, workflow_node_run=node,
