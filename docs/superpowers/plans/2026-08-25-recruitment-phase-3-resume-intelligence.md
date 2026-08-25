@@ -327,17 +327,17 @@ git commit -m "feat: extract local job and resume files"
 - Modify: `scripts/start-local.ps1`
 - Modify: `scripts/test-startup.ps1`
 
-- [ ] **Step 1: Write failing queue and hook tests**
+- [x] **Step 1: Write failing queue and hook tests**
 
 Assert `enqueue_job_standard(job, user)` hashes all current active document versions into one idempotency key; `enqueue_resume_structure(resume, user)` uses resume SHA; uploads enqueue only after transaction commit; missing credentials create `waiting_config`; expired leases return to pending; retryable provider failures increase `available_at`; non-retryable failures stop; repeated enqueue returns the existing task.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `..\.venv\Scripts\python.exe manage.py test recruitment.tests.test_ai_tasks -v 2`.
 
 Expected: FAIL because queue services and command do not exist.
 
-- [ ] **Step 3: Implement queue lifecycle**
+- [x] **Step 3: Implement queue lifecycle**
 
 Expose:
 
@@ -352,15 +352,15 @@ def retry_task(*, task, requested_by) -> AiProcessingTask: ...
 
 Lease with `transaction.atomic()` and `select_for_update(skip_locked=True)` when supported; use a locked first row fallback for SQLite. Recover expired leases before selecting. Retry delays are 30, 120, and 300 seconds. Never retry authentication, invalid credential, unsupported model, invalid local file, or invalid schema errors automatically.
 
-- [ ] **Step 4: Connect ingestion services**
+- [x] **Step 4: Connect ingestion services**
 
 After a Word version becomes current, call `transaction.on_commit(lambda: enqueue_job_standard(job=document.job, requested_by=actor))`. After PDF or PNG resume archive succeeds, call `transaction.on_commit(lambda: enqueue_resume_structure(resume=resume, requested_by=actor))`. Preserve current workflow events and audit logging.
 
-- [ ] **Step 5: Add the AI worker command and launcher**
+- [x] **Step 5: Add the AI worker command and launcher**
 
 `run_ai_worker --once` processes at most one task. Continuous mode polls every `AI_POLL_SECONDS`, defaults to 3 seconds, and catches per-task exceptions without stopping the process. Update `start-local.ps1` to start one hidden AI worker beside the existing RPA worker; update startup smoke tests to require exactly one of each.
 
-- [ ] **Step 6: Run queue, ingestion, and startup tests**
+- [x] **Step 6: Run queue, ingestion, and startup tests**
 
 Run:
 
@@ -371,7 +371,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\test-startup.ps1
 
 Expected: all tests PASS and startup reports one RPA worker plus one AI worker.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add backend/recruitment/services backend/recruitment/management/commands/run_ai_worker.py backend/recruitment/tests/test_ai_tasks.py scripts/start-local.ps1 scripts/test-startup.ps1

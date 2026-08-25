@@ -58,6 +58,9 @@ def create_document_version(*, document, upload, actor):
         raise ValueError("该 Word 文档内容已经存在") from exc
     locked.current_version = version
     locked.save(update_fields=["current_version", "updated_at"])
+    from recruitment.services.ai_tasks import enqueue_job_standard
+
+    transaction.on_commit(lambda: enqueue_job_standard(job=locked.job, requested_by=actor))
     return locked
 
 
@@ -66,4 +69,7 @@ def set_current_version(*, version):
     locked = JobRequirementDocument.objects.select_for_update().get(pk=version.document_id)
     locked.current_version = version
     locked.save(update_fields=["current_version", "updated_at"])
+    from recruitment.services.ai_tasks import enqueue_job_standard
+
+    transaction.on_commit(lambda: enqueue_job_standard(job=locked.job, requested_by=version.uploaded_by))
     return locked

@@ -8,6 +8,7 @@ $frontendIndex = Join-Path $backend "frontend_dist\index.html"
 $port = if ($env:HR_PORT) { [int]$env:HR_PORT } else { 8000 }
 $webProcess = $null
 $workerProcess = $null
+$aiWorkerProcess = $null
 
 try { $Host.UI.RawUI.WindowTitle = "XM HR - Running (keep this window open)" } catch {}
 
@@ -67,8 +68,15 @@ try {
     Start-Sleep -Milliseconds 800
     if ($workerProcess.HasExited) { throw "RPA Worker stopped during startup with code $($workerProcess.ExitCode)." }
 
+    $aiWorkerProcess = Start-Process -FilePath $venvPython -WindowStyle Hidden -PassThru -WorkingDirectory $backend -ArgumentList @(
+        "manage.py", "run_ai_worker"
+    )
+    Start-Sleep -Milliseconds 500
+    if ($aiWorkerProcess.HasExited) { throw "AI Worker stopped during startup with code $($aiWorkerProcess.ExitCode)." }
+
     Write-Host "Web service: healthy" -ForegroundColor Green
     Write-Host "RPA Worker: running" -ForegroundColor Green
+    Write-Host "AI Worker: running" -ForegroundColor Green
     Write-Host "Local access: http://127.0.0.1:$port" -ForegroundColor Green
     foreach ($address in $localAddresses) {
         Write-Host "LAN access: http://${address}:$port" -ForegroundColor Green
@@ -79,6 +87,9 @@ try {
     Wait-Process -Id $webProcess.Id
     throw "Web service stopped unexpectedly with code $($webProcess.ExitCode)."
 } finally {
+    if ($aiWorkerProcess -and -not $aiWorkerProcess.HasExited) {
+        Stop-Process -Id $aiWorkerProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     if ($workerProcess -and -not $workerProcess.HasExited) {
         Stop-Process -Id $workerProcess.Id -Force -ErrorAction SilentlyContinue
     }

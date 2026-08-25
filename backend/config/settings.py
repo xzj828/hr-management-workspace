@@ -109,6 +109,7 @@ else:
     RPA_WORKER_TOKEN = _local_worker_file.read_text(encoding="utf-8").strip()
 RPA_API_BASE_URL = os.getenv("RPA_API_BASE_URL", "http://127.0.0.1:8000/api/recruitment/worker")
 RPA_POLL_SECONDS = float(os.getenv("RPA_POLL_SECONDS", "3"))
+AI_POLL_SECONDS = float(os.getenv("AI_POLL_SECONDS", "3"))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

@@ -56,6 +56,11 @@ def archive_pdf(*, application, filename, content, source=Resume.Source.BOSS, ex
             payload={"resume_id": resume.pk},
         )
     )
+    from recruitment.services.ai_tasks import enqueue_resume_structure
+
+    requested_by = actor or application.job.owner or application.job.boss_account.authorized_users.order_by("id").first()
+    if requested_by:
+        transaction.on_commit(lambda: enqueue_resume_structure(resume=resume, requested_by=requested_by))
     return resume, True
 
 
@@ -102,5 +107,10 @@ def archive_online_resume_image(*, application, filename, content, external_id="
             event_key=f"resume:{resume.pk}", payload={"resume_id": resume.pk},
         )
     )
+    from recruitment.services.ai_tasks import enqueue_resume_structure
+
+    requested_by = actor or application.job.owner or application.job.boss_account.authorized_users.order_by("id").first()
+    if requested_by:
+        transaction.on_commit(lambda: enqueue_resume_structure(resume=resume, requested_by=requested_by))
     return resume, True
 

@@ -21,6 +21,7 @@ try {
     $env:HR_NO_CLEAR = "1"
     $env:RPA_API_BASE_URL = "http://127.0.0.1:$testPort/api/recruitment/worker"
     $env:RPA_POLL_SECONDS = "0.5"
+    $env:AI_POLL_SECONDS = "0.5"
     $env:HR_PYTHON = $venvPython
 
     & $venvPython (Join-Path $backend "manage.py") migrate --noinput | Out-Null
@@ -67,9 +68,11 @@ try {
     $children = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $launcher.Id })
     $createdProcessIds = @($children | Select-Object -ExpandProperty ProcessId)
     $workerProcesses = @($children | Where-Object { $_.CommandLine -like "*run_rpa_worker*" })
+    $aiWorkerProcesses = @($children | Where-Object { $_.CommandLine -like "*run_ai_worker*" })
     if ($workerProcesses.Count -ne 1) { throw "Expected exactly one RPA Worker process, found $($workerProcesses.Count)." }
+    if ($aiWorkerProcesses.Count -ne 1) { throw "Expected exactly one AI Worker process, found $($aiWorkerProcesses.Count)." }
 
-    Write-Host "Startup smoke test passed: web service, frontend assets and one RPA Worker are healthy." -ForegroundColor Green
+    Write-Host "Startup smoke test passed: web service, frontend assets, one RPA Worker and one AI Worker are healthy." -ForegroundColor Green
 } finally {
     foreach ($processId in $createdProcessIds) {
         Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
@@ -82,6 +85,7 @@ try {
     Remove-Item Env:HR_NO_CLEAR -ErrorAction SilentlyContinue
     Remove-Item Env:RPA_API_BASE_URL -ErrorAction SilentlyContinue
     Remove-Item Env:RPA_POLL_SECONDS -ErrorAction SilentlyContinue
+    Remove-Item Env:AI_POLL_SECONDS -ErrorAction SilentlyContinue
     Remove-Item Env:HR_PYTHON -ErrorAction SilentlyContinue
     $resolvedTemp = [System.IO.Path]::GetFullPath($tempRoot)
     $resolvedBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
