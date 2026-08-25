@@ -1,3 +1,5 @@
+import tempfile
+
 from django.contrib.auth.models import User
 from django.test import TestCase
 
@@ -122,13 +124,14 @@ class WorkflowEventWakeupTests(TestCase):
     def test_archived_resume_automatically_wakes_wait_resume(self):
         run = self._waiting_run("wait_resume", "resume.archived")
 
-        with self.settings(MEDIA_ROOT=self._testMethodName), self.captureOnCommitCallbacks(execute=True):
-            archive_pdf(
-                application=self.application,
-                filename="candidate.pdf",
-                content=b"%PDF-1.4\nworkflow event test",
-                actor=self.user,
-            )
+        with tempfile.TemporaryDirectory() as media_root:
+            with self.settings(MEDIA_ROOT=media_root), self.captureOnCommitCallbacks(execute=True):
+                archive_pdf(
+                    application=self.application,
+                    filename="candidate.pdf",
+                    content=b"%PDF-1.4\nworkflow event test",
+                    actor=self.user,
+                )
 
         run.refresh_from_db()
         self.assertEqual(run.status, WorkflowRun.Status.SUCCEEDED)
