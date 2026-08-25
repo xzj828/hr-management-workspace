@@ -13,6 +13,8 @@ from .models import (
     ConversationAction,
     ExecutionBatch,
     JobApplication,
+    JobRequirementDocument,
+    JobRequirementDocumentVersion,
     RecruitmentJob,
     Resume,
     RpaTask,
@@ -96,6 +98,32 @@ class RecruitmentJobSerializer(serializers.ModelSerializer):
             "is_demo", "created_at", "updated_at",
             "archived_at",
         ]
+
+
+class JobRequirementDocumentVersionSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.CharField(source="uploaded_by.username", read_only=True)
+
+    class Meta:
+        model = JobRequirementDocumentVersion
+        fields = [
+            "id", "version", "original_name", "file_size", "sha256",
+            "uploaded_by_name", "archived_at", "created_at",
+        ]
+        read_only_fields = fields
+
+
+class JobRequirementDocumentSerializer(serializers.ModelSerializer):
+    category_label = serializers.CharField(source="get_category_display", read_only=True)
+    current_version = JobRequirementDocumentVersionSerializer(read_only=True)
+    versions = JobRequirementDocumentVersionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = JobRequirementDocument
+        fields = [
+            "id", "job", "category", "category_label", "title", "current_version",
+            "versions", "archived_at", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
 
 
 class CandidateSerializer(serializers.ModelSerializer):

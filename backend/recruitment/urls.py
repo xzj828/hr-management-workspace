@@ -7,6 +7,8 @@ from . import worker_api
 router = DefaultRouter()
 router.register("boss-accounts", views.BossAccountViewSet, basename="boss-account")
 router.register("jobs", views.RecruitmentJobViewSet, basename="recruitment-job")
+router.register("job-documents", views.JobRequirementDocumentViewSet, basename="job-document")
+router.register("job-document-versions", views.JobRequirementDocumentVersionViewSet, basename="job-document-version")
 router.register("candidates", views.CandidateViewSet, basename="candidate")
 router.register("candidate-discoveries", views.CandidateDiscoveryViewSet, basename="candidate-discovery")
 router.register("automation-approvals", views.AutomationApprovalViewSet, basename="automation-approval")

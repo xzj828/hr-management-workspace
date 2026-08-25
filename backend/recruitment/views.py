@@ -21,6 +21,8 @@ from .models import (
     ConversationAction,
     ExecutionBatch,
     JobApplication,
+    JobRequirementDocument,
+    JobRequirementDocumentVersion,
     RecruitmentAuditLog,
     RecruitmentJob,
     Resume,
@@ -45,6 +47,8 @@ from .serializers import (
     DeepMatchPrepareSerializer,
     ExecutionBatchSerializer,
     JobApplicationSerializer,
+    JobRequirementDocumentSerializer,
+    JobRequirementDocumentVersionSerializer,
     PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
     ResumeSerializer,
@@ -62,6 +66,7 @@ from .services.workflows import enable_version
 from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
 from .services.lifecycle import LifecycleConflict, archive_object, restore_object
+from .services.job_documents import create_document, create_document_version, set_current_version
 from .services.workflow_nodes import execute_workflow_node
 from .services.workflow_runtime import advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
 
@@ -169,6 +174,96 @@ class RecruitmentJobViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
         return Response(
             {"task_id": str(task.pk), "status": task.status},
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class JobRequirementDocumentViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = JobRequirementDocument.objects.select_related(
+        "job", "current_version", "created_by"
+    ).prefetch_related("versions__uploaded_by")
+    serializer_class = JobRequirementDocumentSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().filter(
+            job_id__in=accessible_jobs(self.request.user),
+            archived_at__isnull=True,
+        )
+        job_id = self.request.query_params.get("job")
+        if job_id:
+            if not queryset.filter(job_id=job_id).exists() and not RecruitmentJob.objects.filter(
+                pk=job_id,
+                requirement_documents__isnull=False,
+            ).exists():
+                if not accessible_jobs(self.request.user).filter(pk=job_id).exists():
+                    raise NotFound("职位不存在或无权访问")
+            queryset = queryset.filter(job_id=job_id)
+        return queryset
+
+    def create(self, request, *args, **kwargs):
+        job = accessible_jobs(request.user).filter(pk=request.data.get("job")).first()
+        if job is None:
+            raise NotFound("职位不存在或无权访问")
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ValidationError({"file": "请选择 Word 文档"})
+        category = str(request.data.get("category", ""))
+        if category not in JobRequirementDocument.Category.values:
+            raise ValidationError({"category": "文档用途无效"})
+        title = str(request.data.get("title", "")).strip()
+        if not title:
+            raise ValidationError({"title": "文档名称不能为空"})
+        try:
+            document = create_document(
+                job=job,
+                category=category,
+                title=title,
+                upload=upload,
+                actor=request.user,
+            )
+        except ValueError as exc:
+            raise ValidationError({"file": str(exc)}) from exc
+        return Response(self.get_serializer(document).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="versions")
+    def add_version(self, request, pk=None):
+        document = self.get_object()
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ValidationError({"file": "请选择 Word 文档"})
+        try:
+            document = create_document_version(document=document, upload=upload, actor=request.user)
+        except ValueError as exc:
+            raise ValidationError({"file": str(exc)}) from exc
+        return Response(self.get_serializer(document).data, status=status.HTTP_201_CREATED)
+
+
+class JobRequirementDocumentVersionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = JobRequirementDocumentVersion.objects.select_related("document__job", "uploaded_by")
+    serializer_class = JobRequirementDocumentVersionSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        return super().get_queryset().filter(document__job_id__in=accessible_jobs(self.request.user))
+
+    @action(detail=True, methods=["post"], url_path="make-current")
+    def make_current(self, request, pk=None):
+        version = self.get_object()
+        document = set_current_version(version=version)
+        return Response(JobRequirementDocumentSerializer(document).data)
+
+    @action(detail=True, methods=["get"], url_path="file")
+    def file(self, request, pk=None):
+        version = self.get_object()
+        try:
+            handle = version.file.open("rb")
+        except (FileNotFoundError, OSError):
+            raise NotFound("Word 文档文件不存在")
+        return FileResponse(
+            handle,
+            as_attachment=True,
+            filename=version.original_name,
+            content_type="application/octet-stream",
         )
 
 
