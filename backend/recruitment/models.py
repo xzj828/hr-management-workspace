@@ -1,6 +1,7 @@
 import uuid
 
 from django.contrib.auth.models import User
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 
@@ -607,6 +608,218 @@ class ConversationSyncState(models.Model):
     has_candidate_reply = models.BooleanField(default=False)
     last_synced_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class JobRequirementDocument(models.Model):
+    class Category(models.TextChoices):
+        REQUIREMENT = "requirement", "岗位需求"
+        PERSONA = "persona", "候选人画像"
+        OTHER = "other", "其他补充"
+
+    job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, related_name="requirement_documents")
+    category = models.CharField(max_length=24, choices=Category.choices)
+    title = models.CharField(max_length=160)
+    current_version = models.ForeignKey(
+        "JobRequirementDocumentVersion",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="current_for_documents",
+    )
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="job_requirement_documents")
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["category", "title", "id"]
+
+
+class JobRequirementDocumentVersion(models.Model):
+    document = models.ForeignKey(JobRequirementDocument, on_delete=models.CASCADE, related_name="versions")
+    version = models.PositiveIntegerField()
+    original_name = models.CharField(max_length=255)
+    file = models.FileField(upload_to="recruitment/job-documents/%Y/%m")
+    file_size = models.PositiveBigIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, db_index=True)
+    uploaded_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="job_requirement_document_versions")
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["document", "version"], name="unique_job_document_version"),
+            models.UniqueConstraint(fields=["document", "sha256"], name="unique_job_document_hash"),
+        ]
+
+
+class MessageSyncPolicy(models.Model):
+    boss_account = models.OneToOneField(BossAccount, on_delete=models.CASCADE, related_name="message_sync_policy")
+    enabled = models.BooleanField(default=True)
+    interval_minutes = models.PositiveIntegerField(
+        default=2,
+        validators=[MinValueValidator(1), MaxValueValidator(1440)],
+    )
+    last_scheduled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ConversationMessage(models.Model):
+    class Direction(models.TextChoices):
+        CANDIDATE = "candidate", "候选人"
+        HR = "hr", "HR"
+        SYSTEM = "system", "系统"
+
+    conversation_state = models.ForeignKey(
+        ConversationSyncState,
+        on_delete=models.CASCADE,
+        related_name="messages",
+    )
+    external_id = models.CharField(max_length=200, blank=True)
+    fingerprint = models.CharField(max_length=64)
+    direction = models.CharField(max_length=16, choices=Direction.choices)
+    content = models.TextField(blank=True)
+    sent_at = models.DateTimeField()
+    raw_payload = models.JSONField(default=dict, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sent_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation_state", "external_id"],
+                condition=~Q(external_id=""),
+                name="unique_conversation_external_message",
+            ),
+            models.UniqueConstraint(
+                fields=["conversation_state", "fingerprint"],
+                name="unique_conversation_message_fingerprint",
+            ),
+        ]
+
+
+class MessageAttachment(models.Model):
+    message = models.ForeignKey(ConversationMessage, on_delete=models.CASCADE, related_name="attachments")
+    external_id = models.CharField(max_length=200, blank=True)
+    original_name = models.CharField(max_length=255)
+    file = models.FileField(upload_to="recruitment/message-attachments/%Y/%m", blank=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    file_size = models.PositiveBigIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, blank=True, db_index=True)
+    source_payload = models.JSONField(default=dict, blank=True)
+    archived_resume = models.ForeignKey(
+        Resume,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="message_attachments",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["message", "external_id"],
+                condition=~Q(external_id=""),
+                name="unique_message_external_attachment",
+            ),
+            models.UniqueConstraint(
+                fields=["message", "sha256"],
+                condition=~Q(sha256=""),
+                name="unique_message_attachment_hash",
+            ),
+        ]
+
+
+class HumanAttention(models.Model):
+    class Type(models.TextChoices):
+        OBSERVING_CANDIDATE = "observing_candidate", "候选人观望"
+        GREETING_REQUIRED = "greeting_required", "待人工打招呼"
+        ACCOUNT_LOGIN = "account_login", "账号需要登录"
+        RISK_CONTROL = "risk_control", "验证码或风控"
+        IDENTITY_AMBIGUOUS = "identity_ambiguous", "候选人身份歧义"
+        RESUME_REQUEST_FAILED = "resume_request_failed", "求简历失败"
+        ARCHIVE_FAILED = "archive_failed", "简历归档失败"
+        OTHER = "other", "其他"
+
+    class Status(models.TextChoices):
+        OPEN = "open", "待处理"
+        RESOLVED = "resolved", "已处理"
+        ARCHIVED = "archived", "已归档"
+
+    attention_type = models.CharField(max_length=40, choices=Type.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN, db_index=True)
+    title = models.CharField(max_length=200)
+    detail = models.JSONField(default=dict, blank=True)
+    idempotency_key = models.CharField(max_length=220, unique=True)
+    priority = models.PositiveSmallIntegerField(default=0)
+    boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
+    job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
+    application = models.ForeignKey(JobApplication, on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
+    workflow_run = models.ForeignKey("WorkflowRun", on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
+    workflow_node_run = models.ForeignKey("WorkflowNodeRun", on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
+    resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="resolved_human_attentions")
+    resolution_note = models.TextField(blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-priority", "created_at", "id"]
+
+
+class SearchCampaign(models.Model):
+    class Source(models.TextChoices):
+        RECOMMEND = "recommend", "推荐"
+        SEARCH = "search", "常规搜索"
+        DEEP_SEARCH = "deep_search", "深度搜索"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        QUEUED = "queued", "已排队"
+        RUNNING = "running", "运行中"
+        PAUSED = "paused", "已暂停"
+        SUCCEEDED = "succeeded", "已完成"
+        FAILED = "failed", "失败"
+        CANCELLED = "cancelled", "已取消"
+
+    class StopReason(models.TextChoices):
+        NONE = "", "未停止"
+        TARGET_REACHED = "target_reached", "达到拉取数量"
+        SCAN_LIMIT = "scan_limit", "达到扫描上限"
+        QUOTA = "quota", "查看额度不足"
+        PAYWALL = "paywall", "遇到付费墙"
+        RISK_CONTROL = "risk_control", "验证码或风控"
+        ACCOUNT_OFFLINE = "account_offline", "账号离线"
+        USER_STOPPED = "user_stopped", "人工停止"
+        ERROR = "error", "执行异常"
+
+    name = models.CharField(max_length=160)
+    boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, related_name="search_campaigns")
+    job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, related_name="search_campaigns")
+    workflow_run = models.ForeignKey("WorkflowRun", on_delete=models.PROTECT, null=True, blank=True, related_name="search_campaigns")
+    source = models.CharField(max_length=24, choices=Source.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    target_resume_count = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    max_scan_count = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    scanned_count = models.PositiveIntegerField(default=0)
+    pulled_resume_count = models.PositiveIntegerField(default=0)
+    criteria = models.JSONField(default=dict, blank=True)
+    stop_reason = models.CharField(max_length=32, choices=StopReason.choices, default=StopReason.NONE, blank=True)
+    error_message = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="search_campaigns")
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
 
 class ApplicationStageHistory(models.Model):
