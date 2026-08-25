@@ -9,6 +9,7 @@ router.register("boss-accounts", views.BossAccountViewSet, basename="boss-accoun
 router.register("jobs", views.RecruitmentJobViewSet, basename="recruitment-job")
 router.register("job-documents", views.JobRequirementDocumentViewSet, basename="job-document")
 router.register("job-document-versions", views.JobRequirementDocumentVersionViewSet, basename="job-document-version")
+router.register("job-standards", views.JobStandardVersionViewSet, basename="job-standard")
 router.register("message-sync-policies", views.MessageSyncPolicyViewSet, basename="message-sync-policy")
 router.register("human-attentions", views.HumanAttentionViewSet, basename="human-attention")
 router.register("candidates", views.CandidateViewSet, basename="candidate")

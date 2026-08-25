@@ -16,6 +16,7 @@ from .models import (
     JobApplication,
     JobRequirementDocument,
     JobRequirementDocumentVersion,
+    JobStandardVersion,
     MessageSyncPolicy,
     RecruitmentJob,
     Resume,
@@ -125,6 +126,22 @@ class JobRequirementDocumentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "job", "category", "category_label", "title", "current_version",
             "versions", "archived_at", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class JobStandardVersionSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    source_document_versions = JobRequirementDocumentVersionSerializer(many=True, read_only=True)
+    created_by_name = serializers.CharField(source="created_by.username", read_only=True)
+    published_by_name = serializers.CharField(source="published_by.username", read_only=True, allow_null=True)
+
+    class Meta:
+        model = JobStandardVersion
+        fields = [
+            "id", "job", "version", "status", "status_label", "source_document_versions",
+            "criteria", "unresolved_questions", "model_name", "prompt_version",
+            "created_by_name", "published_by_name", "published_at", "created_at", "updated_at",
         ]
         read_only_fields = fields
 

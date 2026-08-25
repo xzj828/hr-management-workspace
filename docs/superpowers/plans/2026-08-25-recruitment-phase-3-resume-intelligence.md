@@ -388,17 +388,17 @@ git commit -m "feat: process intelligence tasks in background"
 - Modify: `backend/recruitment/urls.py`
 - Modify: `backend/recruitment/services/ai_tasks.py`
 
-- [ ] **Step 1: Write failing service and API tests**
+- [x] **Step 1: Write failing service and API tests**
 
 Cover model-generated draft evidence, listing by authorized job, editing draft only, weight sum exactly `100.00`, publish superseding the former version, published rows rejecting edits/deletes, no sensitive criteria keys, evidence block IDs resolving to extracted text, and viewer write denial.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `..\.venv\Scripts\python.exe manage.py test recruitment.tests.test_job_standards_api -v 2`.
 
 Expected: FAIL because services and endpoints do not exist.
 
-- [ ] **Step 3: Implement validation and generation**
+- [x] **Step 3: Implement validation and generation**
 
 Expose:
 
@@ -426,7 +426,7 @@ Criteria shape:
 
 Reject unknown evidence IDs and sensitive keys. Publishing runs inside a transaction, marks the previous published row `superseded`, and then publishes the selected draft.
 
-- [ ] **Step 4: Add scoped APIs**
+- [x] **Step 4: Add scoped APIs**
 
 Register `job-standards` with list/retrieve/update. Add actions:
 
@@ -436,13 +436,13 @@ Register `job-standards` with list/retrieve/update. Add actions:
 
 Filter through the same authorized-job queryset used by existing recruitment endpoints. Return 409 when editing a published version or generating without active documents.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run the job-standard API tests and all existing job-document tests.
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add backend/recruitment

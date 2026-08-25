@@ -198,7 +198,8 @@ def execute_task(task: AiProcessingTask) -> AiProcessingTask:
         _clear_lease(task)
         task.save()
         return task
-    task.status = AiProcessingTask.Status.SUCCEEDED
+    requested_status = result.pop("_task_status", AiProcessingTask.Status.SUCCEEDED)
+    task.status = requested_status
     task.progress = 100
     task.result_ref = result
     task.error_code = ""

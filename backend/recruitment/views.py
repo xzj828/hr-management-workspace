@@ -14,6 +14,7 @@ from rest_framework.response import Response
 
 from .demo_data import clear_demo_data, demo_status, load_demo_data
 from .models import (
+    AiProcessingTask,
     AutomationApproval,
     BossAccount,
     Candidate,
@@ -24,6 +25,7 @@ from .models import (
     JobApplication,
     JobRequirementDocument,
     JobRequirementDocumentVersion,
+    JobStandardVersion,
     MessageSyncPolicy,
     RecruitmentAuditLog,
     RecruitmentJob,
@@ -52,6 +54,7 @@ from .serializers import (
     JobApplicationSerializer,
     JobRequirementDocumentSerializer,
     JobRequirementDocumentVersionSerializer,
+    JobStandardVersionSerializer,
     HumanAttentionSerializer,
     MessageSyncPolicySerializer,
     PositionSyncRequestSerializer,
@@ -73,6 +76,8 @@ from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
 from .services.lifecycle import LifecycleConflict, archive_object, restore_object
 from .services.job_documents import create_document, create_document_version, set_current_version
+from .services.ai_tasks import enqueue_job_standard, retry_task as retry_ai_task
+from .services.job_standards import publish_standard, update_standard_draft
 from .services.human_attention import archive_attention, resolve_attention
 from .services.standard_workflows import create_standard_workflow
 from .services.workflow_nodes import execute_workflow_node
@@ -285,6 +290,78 @@ class JobRequirementDocumentVersionViewSet(viewsets.ReadOnlyModelViewSet):
             filename=version.original_name,
             content_type="application/octet-stream",
         )
+
+
+class JobStandardVersionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = JobStandardVersion.objects.select_related(
+        "job__boss_account", "created_by", "published_by"
+    ).prefetch_related("source_document_versions__uploaded_by")
+    serializer_class = JobStandardVersionSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().filter(job_id__in=accessible_jobs(self.request.user))
+        job_id = self.request.query_params.get("job")
+        if job_id:
+            if not accessible_jobs(self.request.user).filter(pk=job_id).exists():
+                raise NotFound("职位不存在或无权访问")
+            queryset = queryset.filter(job_id=job_id)
+        return queryset
+
+    def update(self, request, *args, **kwargs):
+        standard = self.get_object()
+        if standard.status != JobStandardVersion.Status.DRAFT:
+            return Response({"detail": "已启用或历史评分标准不可直接修改"}, status=status.HTTP_409_CONFLICT)
+        try:
+            updated = update_standard_draft(
+                standard=standard,
+                criteria=request.data.get("criteria"),
+                unresolved_questions=request.data.get("unresolved_questions", standard.unresolved_questions),
+                actor=request.user,
+            )
+        except ValueError as exc:
+            raise ValidationError({"criteria": str(exc)}) from exc
+        return Response(self.get_serializer(updated).data)
+
+    partial_update = update
+
+    @action(detail=False, methods=["post"])
+    def generate(self, request):
+        job = accessible_jobs(request.user).filter(pk=request.data.get("job"), archived_at__isnull=True).first()
+        if not job:
+            raise NotFound("职位不存在或无权访问")
+        try:
+            task, created = enqueue_job_standard(job=job, requested_by=request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(
+            {"task_id": str(task.pk), "status": task.status},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"])
+    def publish(self, request, pk=None):
+        try:
+            standard = publish_standard(standard=self.get_object(), actor=request.user)
+        except ValueError as exc:
+            raise ValidationError({"criteria": str(exc)}) from exc
+        return Response(self.get_serializer(standard).data)
+
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        standard = self.get_object()
+        task = AiProcessingTask.objects.filter(
+            job=standard.job,
+            kind=AiProcessingTask.Kind.JOB_STANDARD,
+            status__in=[AiProcessingTask.Status.FAILED, AiProcessingTask.Status.WAITING_CONFIG],
+        ).order_by("-created_at").first()
+        if not task:
+            return Response({"detail": "没有可重试的岗位标准任务"}, status=status.HTTP_409_CONFLICT)
+        try:
+            task = retry_ai_task(task=task, requested_by=request.user)
+        except (PermissionError, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response({"task_id": str(task.pk), "status": task.status})
 
 
 class MessageSyncPolicyViewSet(viewsets.ModelViewSet):
