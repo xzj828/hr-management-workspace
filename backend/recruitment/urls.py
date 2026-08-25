@@ -21,6 +21,7 @@ router.register("workflow-versions", views.WorkflowVersionViewSet, basename="wor
 router.register("workflow-runs", views.WorkflowRunViewSet, basename="workflow-run")
 router.register("applications", views.JobApplicationViewSet, basename="job-application")
 router.register("resumes", views.ResumeViewSet, basename="resume")
+router.register("search-campaigns", views.SearchCampaignViewSet, basename="search-campaign")
 router.register("rpa-tasks", views.RpaTaskViewSet, basename="rpa-task")
 
 urlpatterns = [

@@ -30,6 +30,7 @@ from .models import (
     Resume,
     RpaTask,
     RpaWorker,
+    SearchCampaign,
     WorkflowTemplate,
     WorkflowVersion,
     WorkflowRun,
@@ -57,6 +58,7 @@ from .serializers import (
     RecruitmentJobSerializer,
     ResumeSerializer,
     RpaTaskSerializer,
+    SearchCampaignSerializer,
     WorkflowTemplateSerializer,
     WorkflowVersionSerializer,
     WorkflowRunSerializer,
@@ -75,6 +77,7 @@ from .services.human_attention import archive_attention, resolve_attention
 from .services.standard_workflows import create_standard_workflow
 from .services.workflow_nodes import execute_workflow_node
 from .services.workflow_runtime import advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
+from .services.search_campaigns import start_search_campaign, stop_search_campaign
 
 
 class ArchivableViewSetMixin:
@@ -794,6 +797,29 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
 
 
+class SearchCampaignViewSet(viewsets.ModelViewSet):
+    queryset = SearchCampaign.objects.select_related("boss_account", "job", "created_by")
+    serializer_class = SearchCampaignSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        return super().get_queryset().filter(job__in=accessible_jobs(self.request.user)).distinct()
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def start(self, request, pk=None):
+        campaign = self.get_object()
+        task = start_search_campaign(campaign=campaign, actor=request.user)
+        campaign.refresh_from_db()
+        return Response({"campaign": self.get_serializer(campaign).data, "task_id": str(task.pk)})
+
+    @action(detail=True, methods=["post"])
+    def stop(self, request, pk=None):
+        return Response(self.get_serializer(stop_search_campaign(campaign=self.get_object())).data)
+
+
 class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Resume.objects.select_related("candidate", "application__job").all()
     serializer_class = ResumeSerializer
@@ -811,7 +837,7 @@ class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
         resume = self.get_object()
         if not resume.file or not resume.file.storage.exists(resume.file.name):
             return Response({"detail": "简历文件不可用"}, status=status.HTTP_404_NOT_FOUND)
-        response = FileResponse(resume.file.open("rb"), content_type="application/pdf")
+        response = FileResponse(resume.file.open("rb"), content_type=resume.content_type or "application/octet-stream")
         response["Content-Disposition"] = content_disposition_header(
             as_attachment=request.query_params.get("download") == "1",
             filename=resume.original_name,

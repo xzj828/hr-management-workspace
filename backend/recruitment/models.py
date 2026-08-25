@@ -129,6 +129,7 @@ class JobApplication(models.Model):
 class Resume(models.Model):
     class Source(models.TextChoices):
         BOSS = "boss", "BOSS 直聘"
+        BOSS_ONLINE = "boss_online", "BOSS 在线简历"
         UPLOAD = "upload", "人工上传"
         DEMO = "demo", "演示数据"
 
@@ -292,6 +293,7 @@ class RpaTask(models.Model):
         SEND_INTERVIEW = "send_interview", "发送面试邀约"
         DEEP_MATCH = "deep_match", "深度匹配"
         SYNC_CONVERSATIONS = "sync_conversations", "同步沟通状态"
+        SEARCH_AND_PULL_RESUMES = "search_pull_resumes", "搜索并拉取在线简历"
 
     class Status(models.TextChoices):
         PENDING = "pending", "待执行"

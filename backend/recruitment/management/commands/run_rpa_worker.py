@@ -1,4 +1,6 @@
 import json
+import re
+import shutil
 import socket
 import threading
 import time
@@ -239,6 +241,59 @@ def execute_view_online_resume(task, account, runner):
     }
 
 
+def _preview_image_path(output):
+    match = re.search(r"(?:简历预览截图|resume(?: preview)? screenshot)\s*[:：]\s*(.+?\.png)\s*$", str(output or ""), re.I | re.M)
+    if not match:
+        raise BossCliError("BOSS CLI 未返回在线简历截图路径")
+    path = Path(match.group(1).strip().strip('"')).resolve(strict=True)
+    if path.suffix.lower() != ".png":
+        raise BossCliError("BOSS CLI 返回的在线简历格式无效")
+    return path
+
+
+def execute_search_pull_resumes(task, account, runner):
+    payload = task.get("request_payload") or {}
+    source = str(payload.get("source", "recommend"))
+    criteria = payload.get("criteria") if isinstance(payload.get("criteria"), dict) else {}
+    if source == "search":
+        rows = runner.search(account, str(criteria.get("keyword", "")))
+    elif source == "deep_search":
+        rows = runner.deep_search(
+            account, job=str(payload.get("job_title", "")),
+            core=criteria.get("core") if isinstance(criteria.get("core"), list) else [],
+            bonus=criteria.get("bonus") if isinstance(criteria.get("bonus"), list) else [], match=True,
+        )
+    else:
+        rows = runner.recommend(account, str(payload.get("job_title", "")))
+    max_scan = max(1, min(int(payload.get("max_scan_count", 1)), 100))
+    target = max(1, min(int(payload.get("target_resume_count", 1)), max_scan))
+    scanned = rows[:max_scan]
+    incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    pulled = []
+    errors = []
+    seen_names = set()
+    for row in scanned:
+        name = str(row.get("display_name", "")).strip()
+        if not name or name in seen_names:
+            continue
+        seen_names.add(name)
+        try:
+            preview = runner.preview(account, name)
+            source_path = _preview_image_path(preview.stdout)
+            output_path = incoming / f"online-resume-{uuid.uuid4().hex}.png"
+            shutil.copy2(source_path, output_path)
+            pulled.append({"candidate": row, "path": str(output_path), "filename": f"{name}-在线简历.png"})
+            if len(pulled) >= target:
+                break
+        except (BossCliError, OSError) as exc:
+            errors.append({"name": name, "error": str(exc)})
+    return {
+        "status": "succeeded",
+        "result": {"candidates": scanned, "resumes": pulled, "scanned_count": len(scanned), "errors": errors},
+    }
+
+
 EXECUTORS = {
     "check_status": execute_check_status,
     "sync_positions": execute_sync_positions,
@@ -250,6 +305,7 @@ EXECUTORS = {
     "send_interview": execute_send_interview,
     "sync_conversations": execute_sync_conversations,
     "view_online_resume": execute_view_online_resume,
+    "search_pull_resumes": execute_search_pull_resumes,
 }
 
 

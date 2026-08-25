@@ -12,13 +12,14 @@ from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import BossAccount, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker
+from .models import BossAccount, CandidateDiscovery, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker, SearchCampaign
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
-from .services.discovery import sync_discoveries
+from .services.discovery import _fingerprint, import_discoveries, sync_discoveries
 from .services.communications import complete_communication_task
 from .services.communications import sync_conversation_states
-from .services.resumes import archive_pdf
+from .services.resumes import archive_online_resume_image, archive_pdf
+from .services.human_attention import ensure_attention
 from .services.conversation_ingestion import ingest_conversation, process_pending_messages
 from .services.task_recovery import recover_stale_tasks
 from .services.account_status import apply_account_observation
@@ -223,6 +224,78 @@ def complete_task_view(request, task_id):
             result = {"sync": asdict(synced)}
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:
+        campaign = SearchCampaign.objects.select_for_update().filter(
+            pk=task.request_payload.get("campaign_id"), boss_account=task.boss_account,
+        ).first()
+        if campaign is None:
+            return Response({"detail": "主动寻访任务不存在"}, status=status.HTTP_400_BAD_REQUEST)
+        if completed_status == RpaTask.Status.SUCCEEDED:
+            rows = result.get("candidates") if isinstance(result.get("candidates"), list) else []
+            pulled_rows = result.get("resumes") if isinstance(result.get("resumes"), list) else []
+            incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
+            try:
+                sync_discoveries(
+                    account=task.boss_account, job=campaign.job, source=campaign.source,
+                    criteria=campaign.criteria, rows=rows,
+                )
+                archived = 0
+                for item in pulled_rows:
+                    candidate_row = item.get("candidate") if isinstance(item, dict) else None
+                    if not isinstance(candidate_row, dict):
+                        continue
+                    discovery = CandidateDiscovery.objects.filter(
+                        boss_account=task.boss_account, job=campaign.job,
+                        fingerprint=_fingerprint(task.boss_account_id, candidate_row),
+                    ).first()
+                    if discovery is None:
+                        continue
+                    import_discoveries(discoveries=[discovery], actor=task.created_by)
+                    application = JobApplication.objects.get(candidate=discovery.imported_candidate, job=campaign.job)
+                    raw_path = Path(str(item.get("path", "")))
+                    resolved = raw_path.resolve(strict=True)
+                    if incoming not in resolved.parents or resolved.suffix.lower() != ".png":
+                        raise ValueError("在线简历路径无效")
+                    resume, created = archive_online_resume_image(
+                        application=application,
+                        filename=item.get("filename", f"{discovery.display_name}-在线简历.png"),
+                        content=resolved.read_bytes(), external_id=discovery.external_id, actor=task.created_by,
+                    )
+                    resolved.unlink(missing_ok=True)
+                    archived += int(created)
+                    ensure_attention(
+                        attention_type="greeting_required",
+                        title=f"{discovery.display_name} 的在线简历已拉取，请 HR 确认后打招呼",
+                        idempotency_key=f"search-campaign-greet:{campaign.pk}:{application.pk}",
+                        account=task.boss_account, job=campaign.job, application=application,
+                        workflow_run=campaign.workflow_run,
+                        detail={"campaign_id": campaign.pk, "resume_id": resume.pk}, priority=10,
+                    )
+                campaign.scanned_count = min(int(result.get("scanned_count", len(rows)) or 0), campaign.max_scan_count)
+                campaign.pulled_resume_count = archived
+                campaign.status = SearchCampaign.Status.SUCCEEDED
+                campaign.stop_reason = (
+                    SearchCampaign.StopReason.TARGET_REACHED
+                    if archived >= campaign.target_resume_count else SearchCampaign.StopReason.SCAN_LIMIT
+                )
+                campaign.completed_at = timezone.now()
+                campaign.save(update_fields=[
+                    "scanned_count", "pulled_resume_count", "status", "stop_reason", "completed_at", "updated_at",
+                ])
+                result = {"campaign_id": campaign.pk, "scanned_count": campaign.scanned_count, "pulled_resume_count": archived, "stop_reason": campaign.stop_reason}
+            except (OSError, ValueError, JobApplication.DoesNotExist) as exc:
+                campaign.status = SearchCampaign.Status.FAILED
+                campaign.stop_reason = SearchCampaign.StopReason.ERROR
+                campaign.error_message = str(exc)[:2000]
+                campaign.completed_at = timezone.now()
+                campaign.save(update_fields=["status", "stop_reason", "error_message", "completed_at", "updated_at"])
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            campaign.status = SearchCampaign.Status.FAILED
+            campaign.stop_reason = SearchCampaign.StopReason.ERROR
+            campaign.error_message = str(request.data.get("error_message", "执行失败"))[:2000]
+            campaign.completed_at = timezone.now()
+            campaign.save(update_fields=["status", "stop_reason", "error_message", "completed_at", "updated_at"])
     if task.action == RpaTask.Action.SYNC_CONVERSATIONS and completed_status == RpaTask.Status.SUCCEEDED:
         rows = result.get("conversations")
         try:

@@ -21,6 +21,7 @@ from .models import (
     Resume,
     RpaTask,
     RpaTaskEvent,
+    SearchCampaign,
     StepExecution,
     WorkflowTemplate,
     WorkflowVersion,
@@ -551,6 +552,37 @@ class DeepMatchPrepareSerializer(serializers.Serializer):
 
 class CandidateDiscoveryImportSerializer(serializers.Serializer):
     ids = serializers.ListField(child=serializers.UUIDField(), min_length=1, max_length=100)
+
+
+class SearchCampaignSerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="boss_account.name", read_only=True)
+    job_title = serializers.CharField(source="job.title", read_only=True)
+
+    class Meta:
+        model = SearchCampaign
+        fields = [
+            "id", "name", "boss_account", "account_name", "job", "job_title", "workflow_run",
+            "source", "status", "target_resume_count", "max_scan_count", "scanned_count",
+            "pulled_resume_count", "criteria", "stop_reason", "error_message", "created_by",
+            "started_at", "completed_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "status", "scanned_count", "pulled_resume_count", "stop_reason", "error_message",
+            "created_by", "started_at", "completed_at", "created_at", "updated_at",
+        ]
+
+    def validate(self, attrs):
+        account = attrs.get("boss_account", getattr(self.instance, "boss_account", None))
+        job = attrs.get("job", getattr(self.instance, "job", None))
+        if account and job and job.boss_account_id != account.pk:
+            raise serializers.ValidationError({"job": "职位不属于所选 BOSS 账号"})
+        if attrs.get("max_scan_count", getattr(self.instance, "max_scan_count", 0)) < attrs.get(
+            "target_resume_count", getattr(self.instance, "target_resume_count", 0)
+        ):
+            raise serializers.ValidationError({"max_scan_count": "最大扫描人数不能小于目标简历数"})
+        if account:
+            _validate_authorized_account(account, self.context["request"].user)
+        return attrs
 
 
 class AutomationApprovalSerializer(serializers.ModelSerializer):

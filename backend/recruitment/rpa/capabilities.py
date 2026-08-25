@@ -88,6 +88,14 @@ REGISTRY = {
         requires_approval=False,
         enabled=True,
     ),
+    "search_pull_resumes": CapabilitySpec(
+        name="search_pull_resumes",
+        adapter="cli",
+        read_only=True,
+        requires_approval=False,
+        consumes="search",
+        enabled=True,
+    ),
 }
 
 

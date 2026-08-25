@@ -3,11 +3,13 @@ from recruitment.models import (
     ExecutionBatch,
     JobApplication,
     RpaTask,
+    SearchCampaign,
     WorkflowNodeRun,
     WorkflowRun,
 )
 from recruitment.rpa.tasks import create_task
 from recruitment.services.communications import prepare_communication
+from recruitment.services.search_campaigns import start_search_campaign
 
 
 SOURCE_ACTIONS = {
@@ -52,6 +54,30 @@ def execute_workflow_node(node):
                 request_payload=payload, workflow_node_run=node,
                 idempotency_key=f"workflow-task:{node.pk}:{node.attempt}",
             )
+        return _task_outcome(task)
+
+    if node.node_type == "search_and_pull_resumes":
+        task = RpaTask.objects.filter(workflow_node_run=node).first()
+        if task is None:
+            config = node.config_snapshot
+            criteria = {
+                "keyword": str(config.get("keyword", "")),
+                "core": config.get("core") if isinstance(config.get("core"), list) else [],
+                "bonus": config.get("bonus") if isinstance(config.get("bonus"), list) else [],
+                "workflow_node_id": node.pk,
+            }
+            campaign = SearchCampaign.objects.create(
+                name=f"{run.job.title if run.job_id else '职位'}主动寻访",
+                boss_account=run.boss_account,
+                job=run.job,
+                workflow_run=run,
+                source=str(config.get("source", "search")),
+                target_resume_count=int(config.get("target_resume_count", 1)),
+                max_scan_count=int(config.get("max_scan_count", 20)),
+                criteria=criteria,
+                created_by=run.actor,
+            )
+            task = start_search_campaign(campaign=campaign, actor=run.actor, workflow_node_run=node)
         return _task_outcome(task)
 
     if node.node_type in MESSAGE_ACTIONS:
