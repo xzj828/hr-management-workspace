@@ -15,7 +15,7 @@
 ### Backend files to create
 
 - `backend/accounts/services/model_gateway.py`: decrypt the current user's key, call OpenAI-compatible chat completions, validate JSON, and classify provider failures.
-- `backend/accounts/tests/test_model_gateway.py`: gateway request, masking, timeout, auth, rate-limit, and malformed-output tests.
+- `backend/accounts/tests.py`: gateway request, masking, timeout, auth, rate-limit, and malformed-output tests.
 - `backend/recruitment/services/file_extraction.py`: DOCX, legacy DOC conversion, PDF text, scanned-PDF fallback, and PNG OCR adapters.
 - `backend/recruitment/services/ai_tasks.py`: enqueue, lease, execute, retry, and resume idempotent AI tasks.
 - `backend/recruitment/services/job_standards.py`: create/edit/publish immutable job-standard versions and validate weights.
@@ -52,8 +52,6 @@
 **Files:**
 - Create: `backend/accounts/services/__init__.py`
 - Create: `backend/accounts/services/model_gateway.py`
-- Create: `backend/accounts/tests/__init__.py`
-- Create: `backend/accounts/tests/test_model_gateway.py`
 - Modify: `backend/accounts/views.py`
 - Modify: `backend/accounts/urls.py`
 - Modify: `backend/accounts/tests.py`
@@ -73,7 +71,7 @@ Add cases for HTTP 401 -> `model_auth_failed`, HTTP 429 -> `model_rate_limited`,
 
 - [ ] **Step 2: Run tests and verify failure**
 
-Run: `..\.venv\Scripts\python.exe manage.py test accounts.tests accounts.tests.test_model_gateway -v 2` from `backend`.
+Run: `..\.venv\Scripts\python.exe manage.py test accounts.tests -v 2` from `backend`.
 
 Expected: FAIL because `accounts.services.model_gateway` and the connection endpoint do not exist.
 
