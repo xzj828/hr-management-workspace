@@ -16,6 +16,7 @@ SOURCE_ACTIONS = {
     "recommend": RpaTask.Action.RECOMMEND_CANDIDATES,
     "search": RpaTask.Action.SEARCH_CANDIDATES,
     "deep_search": RpaTask.Action.DEEP_MATCH,
+    "sync_messages": RpaTask.Action.SYNC_CONVERSATIONS,
 }
 MESSAGE_ACTIONS = {"greet": "greet", "request_resume": "request_resume", "send_interview": "send_interview"}
 

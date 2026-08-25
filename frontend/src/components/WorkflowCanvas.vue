@@ -79,7 +79,11 @@ function applySnapshot(value) {
   accountId.value = next.accountId || props.accounts[0]?.id || ''
   templateId.value = next.templateId || null
   nodes.value = cloneNodes(next.nodes)
-  edges.value = (next.edges || []).map((edge) => ({ source: edge.source, target: edge.target }))
+  edges.value = (next.edges || []).map((edge) => ({
+    source: edge.source,
+    target: edge.target,
+    ...(edge.condition ? { condition: { ...edge.condition } } : {}),
+  }))
   selected.value = null
   connectingFrom.value = ''
 }

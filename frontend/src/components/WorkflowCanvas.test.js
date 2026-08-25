@@ -136,4 +136,21 @@ describe('WorkflowCanvas', () => {
     expect(node.label).toBe('首次问候')
     expect(node.config.message).toContain('沟通')
   })
+
+  it('preserves conditional branches when editing a saved standard workflow', async () => {
+    const snapshot = {
+      templateId: 18, name: '被动咨询', accountId: 7,
+      nodes: [
+        { key: 'intent', type: 'classify_intent', label: '判断意图', position: { x: 40, y: 80 } },
+        { key: 'attention', type: 'create_attention', label: '人工介入', position: { x: 320, y: 80 } },
+      ],
+      edges: [{ source: 'intent', target: 'attention', condition: { intent: 'observing' } }],
+    }
+    wrapper = mount(WorkflowCanvas, { props: { accounts: [{ id: 7, name: '主账号' }], snapshot } })
+    await wrapper.get('[data-test="save-workflow"]').trigger('click')
+
+    expect(wrapper.emitted('save')[0][0].edges).toContainEqual({
+      source: 'intent', target: 'attention', condition: { intent: 'observing' },
+    })
+  })
 })

@@ -20,6 +20,7 @@ const summary = reactive({ worker: null, cli_available: false, task_counts: {}, 
 const accounts = ref([])
 const tasks = ref([])
 const batches = ref([]), workflows = ref([]), workflowVersions = ref([])
+const attentions = ref([]), campaigns = ref([]), syncPolicies = ref([]), openJobs = ref([])
 const workspaceTab = ref('accounts'), workflowSaving = ref(false)
 const workflowEditorSnapshot = ref(null), workflowEditorKey = ref(0)
 const loading = ref(true)
@@ -33,6 +34,9 @@ const lifecycleTarget = ref(null), lifecycleSaving = ref(false)
 const showArchived = ref(false)
 const activeRun = ref(null), runBusy = ref(false), formalVersion = ref(null)
 const formalJobs = ref([]), formalJobId = ref('')
+const schemeModal = ref('')
+const schemeSaving = ref(false)
+const schemeForm = reactive({ accountId: '', jobId: '', interval: 2, source: 'search', keyword: '', target: 3, maxScan: 20 })
 let refreshTimer = null
 let runPollTimer = null
 
@@ -67,6 +71,16 @@ async function loadWorkspace({ silent = false } = {}) {
     workflows.value = listItems(workflowPayload)
     const visibleTemplateIds = new Set(workflows.value.map((item) => item.id))
     workflowVersions.value = listItems(versionPayload).filter((item) => visibleTemplateIds.has(item.template))
+    const operations = await Promise.allSettled([
+      api('recruitment/human-attentions/?status=open'),
+      api('recruitment/search-campaigns/'),
+      api('recruitment/message-sync-policies/'),
+      api('recruitment/jobs/'),
+    ])
+    if (operations[0].status === 'fulfilled') attentions.value = listItems(operations[0].value)
+    if (operations[1].status === 'fulfilled') campaigns.value = listItems(operations[1].value)
+    if (operations[2].status === 'fulfilled') syncPolicies.value = listItems(operations[2].value)
+    if (operations[3].status === 'fulfilled') openJobs.value = listItems(operations[3].value).filter((job) => job.status === 'open')
   } catch (err) {
     if (!silent) error.value = err.message
   } finally {
@@ -78,6 +92,58 @@ function actionsFor(account) {
   if (account.archived_at) return ['restore_account']
   return [...availableActions({ ...account, has_active_task: activeTaskAccountIds.value.has(account.id) }), 'archive_account']
 }
+
+function openScheme(kind) {
+  schemeModal.value = kind
+  schemeForm.accountId = accounts.value.find((item) => item.login_status === 'ready')?.id || accounts.value[0]?.id || ''
+  const jobs = openJobs.value.filter((job) => String(job.boss_account) === String(schemeForm.accountId))
+  schemeForm.jobId = jobs[0]?.id || ''
+  const policy = syncPolicies.value.find((item) => String(item.boss_account) === String(schemeForm.accountId))
+  schemeForm.interval = policy?.interval_minutes || 2
+}
+
+async function saveAndRunScheme() {
+  schemeSaving.value = true; error.value = ''
+  try {
+    const kind = schemeModal.value
+    if (!schemeForm.accountId || !schemeForm.jobId) throw new Error('请选择已登录账号和在招职位')
+    if (kind === 'passive_resume') {
+      const existing = syncPolicies.value.find((item) => String(item.boss_account) === String(schemeForm.accountId))
+      const policyBody = JSON.stringify({ boss_account: Number(schemeForm.accountId), enabled: true, interval_minutes: Number(schemeForm.interval) })
+      await api(existing ? `recruitment/message-sync-policies/${existing.id}/` : 'recruitment/message-sync-policies/', {
+        method: existing ? 'PATCH' : 'POST', body: policyBody,
+      })
+    }
+    const created = await api('recruitment/workflows/standard/', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind, boss_account: Number(schemeForm.accountId),
+        config: kind === 'passive_resume'
+          ? { reply_message: '您好，这边是招聘岗位，方便发送一份简历进一步沟通吗？' }
+          : { source: schemeForm.source, keyword: schemeForm.keyword, target_resume_count: Number(schemeForm.target), max_scan_count: Number(schemeForm.maxScan) },
+      }),
+    })
+    const enabled = await api(`recruitment/workflow-versions/${created.version.id}/enable/`, { method: 'POST' })
+    activeRun.value = await api(`recruitment/workflow-versions/${enabled.id}/run/`, {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'formal', request_id: requestId(), job: Number(schemeForm.jobId), input: {}, confirm: true }),
+    })
+    schemeModal.value = ''
+    workspaceTab.value = 'workflows'
+    await loadWorkspace({ silent: true })
+    scheduleRunPolling()
+  } catch (err) { error.value = err.message }
+  finally { schemeSaving.value = false }
+}
+
+async function resolveAttention(item) {
+  try {
+    await api(`recruitment/human-attentions/${item.id}/resolve/`, { method: 'POST', body: JSON.stringify({ note: 'HR 已在工作台处理' }) })
+    attentions.value = attentions.value.filter((entry) => entry.id !== item.id)
+  } catch (err) { error.value = err.message }
+}
+
+const schemeJobs = computed(() => openJobs.value.filter((job) => String(job.boss_account) === String(schemeForm.accountId)))
 
 function menuActionLabel(account, actionName) {
   if (actionName === 'archive_account') return '移除账号'
@@ -361,6 +427,33 @@ onUnmounted(() => {
     <nav class="automation-workspace-tabs" aria-label="自动化工作区"><button :class="{ active: workspaceTab === 'accounts' }" @click="workspaceTab = 'accounts'">账号与任务</button><button :class="{ active: workspaceTab === 'batches' }" @click="workspaceTab = 'batches'">确认执行 <span>{{ batches.length }}</span></button><button :class="{ active: workspaceTab === 'workflows' }" @click="workspaceTab = 'workflows'">流程编排 <span>{{ workflowVersions.length }}</span></button></nav>
 
     <template v-if="workspaceTab === 'accounts'">
+    <section class="automation-command-center" aria-label="标准自动化方案">
+      <div class="automation-scheme-stage">
+        <header><div><span class="panel-kicker">STANDARD OPERATIONS</span><h3>从结果出发</h3></div><p>选择标准方案即可运行，高级画布留给需要改节点的场景。</p></header>
+        <div class="automation-scheme-grid">
+          <button class="automation-scheme-card is-passive" type="button" @click="openScheme('passive_resume')">
+            <i><AppIcon name="workflow" :size="22" /></i>
+            <span><small>被动咨询</small><strong>同步消息并获取简历</strong><em>观望转人工，其余自动使用原生按钮索要简历</em></span>
+            <AppIcon name="arrow-right" :size="18" />
+          </button>
+          <button class="automation-scheme-card is-active" type="button" @click="openScheme('active_resume_search')">
+            <i><AppIcon name="search" :size="22" /></i>
+            <span><small>主动寻访</small><strong>搜索并拉取在线简历</strong><em>按目标数与扫描上限执行，结果交给 HR 确认</em></span>
+            <AppIcon name="arrow-right" :size="18" />
+          </button>
+        </div>
+      </div>
+      <aside class="automation-attention-rail">
+        <header><div><span class="panel-kicker">HUMAN ATTENTION</span><h3>需要你处理</h3></div><span>{{ attentions.length }}</span></header>
+        <div v-if="attentions.length" class="automation-attention-list">
+          <article v-for="item in attentions.slice(0, 4)" :key="item.id">
+            <i></i><div><strong>{{ item.title }}</strong><small>{{ item.job_title || item.account_name }} · {{ formatDate(item.created_at) }}</small></div>
+            <button type="button" @click="resolveAttention(item)">完成</button>
+          </article>
+        </div>
+        <div v-else class="automation-attention-empty"><AppIcon name="check-circle" :size="20" /><span>当前没有人工介入事项</span></div>
+      </aside>
+    </section>
     <section class="panel table-panel automation-panel automation-panel--accounts">
       <header class="panel__header panel__header--padded">
         <div><span class="panel-kicker">ISOLATED ACCOUNTS</span><h3>BOSS 账号</h3></div>
@@ -473,6 +566,23 @@ onUnmounted(() => {
         <p v-if="!formalJobs.length" class="form-error">当前账号没有可用的在招职位，请先同步职位。</p>
       </div>
       <template #footer><button class="secondary-button" type="button" @click="formalVersion = null">取消</button><button class="primary-button" data-test="confirm-formal-run" type="button" :disabled="!formalJobId || runBusy" @click="createWorkflowRun(formalVersion, 'formal', formalJobId)">{{ runBusy ? '创建中…' : '确认并开始' }}</button></template>
+    </ModalPanel>
+    <ModalPanel v-if="schemeModal" :title="schemeModal === 'passive_resume' ? '运行被动咨询方案' : '运行主动寻访方案'" @close="schemeModal = ''">
+      <form id="standard-scheme-form" class="form-grid automation-scheme-form" @submit.prevent="saveAndRunScheme">
+        <div class="automation-scheme-note field-label--full"><AppIcon :name="schemeModal === 'passive_resume' ? 'workflow' : 'search'" :size="20" /><p><strong>{{ schemeModal === 'passive_resume' ? '完整消息同步 → 意图规则 → 原生求简历' : '搜索候选人 → 拉取在线简历 → HR 打招呼待办' }}</strong><span>系统会保存一份可追溯的流程版本，并立即按该版本运行。</span></p></div>
+        <label class="field-label">执行账号<select v-model="schemeForm.accountId" required @change="schemeForm.jobId = schemeJobs[0]?.id || ''"><option value="">请选择</option><option v-for="account in accounts" :key="account.id" :value="account.id" :disabled="account.login_status !== 'ready'">{{ account.name }}{{ account.login_status === 'ready' ? '' : '（未登录）' }}</option></select></label>
+        <label class="field-label">执行职位<select v-model="schemeForm.jobId" required><option value="">请选择</option><option v-for="job in schemeJobs" :key="job.id" :value="job.id">{{ job.title }}</option></select></label>
+        <template v-if="schemeModal === 'passive_resume'">
+          <label class="field-label field-label--full">消息同步间隔<select v-model.number="schemeForm.interval"><option :value="1">每 1 分钟</option><option :value="2">每 2 分钟</option><option :value="5">每 5 分钟</option><option :value="15">每 15 分钟</option><option :value="60">每小时</option><option :value="1440">每天</option></select><small>登录会话保存在账号独立浏览器环境中，无需每次重新登录。</small></label>
+        </template>
+        <template v-else>
+          <label class="field-label">搜索来源<select v-model="schemeForm.source"><option value="search">常规搜索</option><option value="recommend">推荐牛人</option><option value="deep_search">深度搜索</option></select></label>
+          <label class="field-label">搜索关键词<input v-model.trim="schemeForm.keyword" maxlength="20" placeholder="例如：Python" /></label>
+          <label class="field-label">目标简历数<input v-model.number="schemeForm.target" type="number" min="1" max="100" /></label>
+          <label class="field-label">最大扫描人数<input v-model.number="schemeForm.maxScan" type="number" :min="schemeForm.target" max="100" /></label>
+        </template>
+      </form>
+      <template #footer><button class="secondary-button" type="button" @click="schemeModal = ''">取消</button><button class="primary-button" type="submit" form="standard-scheme-form" :disabled="schemeSaving || !schemeForm.jobId">{{ schemeSaving ? '正在创建并运行…' : '确认运行' }}</button></template>
     </ModalPanel>
     <ArchiveConfirmModal v-if="lifecycleTarget" :title="lifecycleTarget.title" :name="lifecycleTarget.name" :description="lifecycleTarget.description" :action-label="lifecycleTarget.actionLabel" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="confirmLifecycle" />
   </div>

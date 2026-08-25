@@ -211,4 +211,16 @@ describe('RecruitmentAutomationView', () => {
     const runCalls = apiMock.mock.calls.filter(([path]) => path === 'recruitment/workflow-versions/21/run/')
     expect(JSON.parse(runCalls.at(-1)[1].body)).toMatchObject({ mode: 'formal', job: 51, confirm: true })
   })
+
+  it('presents the two standard outcomes before the advanced canvas', async () => {
+    wrapper = mount(RecruitmentAutomationView, { global: { stubs: { teleport: true } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('同步消息并获取简历')
+    expect(wrapper.text()).toContain('搜索并拉取在线简历')
+    expect(wrapper.text()).toContain('当前没有人工介入事项')
+    await wrapper.get('.automation-scheme-card.is-passive').trigger('click')
+    expect(wrapper.text()).toContain('运行被动咨询方案')
+    expect(wrapper.text()).toContain('消息同步间隔')
+  })
 })
