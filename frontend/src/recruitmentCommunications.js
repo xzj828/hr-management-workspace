@@ -1,7 +1,6 @@
 export const communicationActions = [
   { key: 'greet', label: '打招呼' },
   { key: 'request_resume', label: '索要简历' },
-  { key: 'send_interview', label: '面试邀约' },
 ]
 
 export function defaultMessage(action, jobTitle = '') {

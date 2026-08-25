@@ -365,21 +365,20 @@ def complete_task_view(request, task_id):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     if task.action == RpaTask.Action.VIEW_ONLINE_RESUME and completed_status == RpaTask.Status.SUCCEEDED:
-        raw_path = Path(str(result.get("pdf_path", "")))
+        raw_path = Path(str(result.get("image_path", "")))
         incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
         try:
             resolved = raw_path.resolve(strict=True)
-            if incoming not in resolved.parents or resolved.suffix.lower() != ".pdf":
+            if incoming not in resolved.parents or resolved.suffix.lower() != ".png":
                 raise ValueError
             application = JobApplication.objects.get(
                 pk=task.request_payload.get("application_id"),
                 job__boss_account=task.boss_account,
             )
-            resume, created = archive_pdf(
+            resume, created = archive_online_resume_image(
                 application=application,
-                filename=result.get("filename", "在线简历.pdf"),
+                filename=result.get("filename", "在线简历.png"),
                 content=resolved.read_bytes(),
-                source=Resume.Source.BOSS,
                 actor=task.created_by,
             )
             resolved.unlink(missing_ok=True)

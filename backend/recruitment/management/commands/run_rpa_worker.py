@@ -230,14 +230,15 @@ def execute_view_online_resume(task, account, runner):
     payload, target, name = _safe_target(task)
     if not name:
         return {"status": "waiting_human", "result": {}, "error_code": "target_identity_missing", "error_message": "候选人身份不足"}
-    runner.preview(account, name)
+    preview = runner.preview(account, name)
+    source_path = _preview_image_path(preview.stdout)
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     incoming.mkdir(parents=True, exist_ok=True)
-    output_path = incoming / f"online-resume-{uuid.uuid4().hex}.pdf"
-    BrowserInventory(account.cdp_port).save_pdf(name, output_path)
+    output_path = incoming / f"online-resume-{uuid.uuid4().hex}.png"
+    shutil.copy2(source_path, output_path)
     return {
         "status": "succeeded",
-        "result": {"verified": True, "pdf_path": str(output_path), "filename": f"{name}-在线简历.pdf"},
+        "result": {"verified": True, "image_path": str(output_path), "filename": f"{name}-在线简历.png"},
     }
 
 

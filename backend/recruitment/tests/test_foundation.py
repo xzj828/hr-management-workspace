@@ -62,16 +62,18 @@ class RecruitmentFoundationModelTests(TestCase):
         self.assertEqual(self.account.browser_type, BossAccount.BrowserType.CHROME)
         self.assertEqual(self.account.login_status, BossAccount.LoginStatus.UNKNOWN)
 
-    def test_account_cannot_have_two_active_tasks(self):
+    def test_account_cannot_have_two_executing_tasks(self):
         RpaTask.objects.create(
             boss_account=self.account,
             action=RpaTask.Action.CHECK_STATUS,
+            status=RpaTask.Status.RUNNING,
             created_by=self.hr,
         )
         with self.assertRaises(IntegrityError), transaction.atomic():
             RpaTask.objects.create(
                 boss_account=self.account,
                 action=RpaTask.Action.SYNC_POSITIONS,
+                status=RpaTask.Status.LEASED,
                 created_by=self.hr,
             )
 

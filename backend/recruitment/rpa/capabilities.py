@@ -59,8 +59,8 @@ REGISTRY = {
     ),
     "view_online_resume": CapabilitySpec(
         name="view_online_resume",
-        adapter="playwright",
-        read_only=False,
+        adapter="cli",
+        read_only=True,
         requires_approval=True,
         consumes="resume_view",
         enabled=True,
@@ -71,7 +71,7 @@ REGISTRY = {
         read_only=False,
         requires_approval=True,
         consumes="message",
-        enabled=True,
+        enabled=False,
     ),
     "deep_match": CapabilitySpec(
         name="deep_match",

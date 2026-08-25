@@ -585,7 +585,7 @@ onUnmounted(() => {
     </ModalPanel>
     <ModalPanel v-if="formalVersion" title="确认正式运行" @close="formalVersion = null">
       <div class="workflow-formal-confirm">
-        <div class="communication-intro"><i><AppIcon name="shield" :size="20" /></i><div><strong>{{ workflows.find((item) => item.id === formalVersion.template)?.name || '招聘流程' }} · 版本 {{ formalVersion.version }}</strong><p>读取节点会交给本机 Worker；打招呼、索要简历和面试邀约仍会停在 HR 确认环节。</p></div></div>
+        <div class="communication-intro"><i><AppIcon name="shield" :size="20" /></i><div><strong>{{ workflows.find((item) => item.id === formalVersion.template)?.name || '招聘流程' }} · 版本 {{ formalVersion.version }}</strong><p>读取节点交给本机 Worker；画布中的人工节点会暂停等待 HR，当前阶段不执行面试邀约。</p></div></div>
         <label class="field-label field-label--full">执行职位<select v-model="formalJobId" data-test="formal-run-job"><option value="">请选择职位</option><option v-for="job in formalJobs" :key="job.id" :value="String(job.id)">{{ job.title }}</option></select></label>
         <p v-if="!formalJobs.length" class="form-error">当前账号没有可用的在招职位，请先同步职位。</p>
       </div>

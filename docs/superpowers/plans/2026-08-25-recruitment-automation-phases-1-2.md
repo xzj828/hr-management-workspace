@@ -1,5 +1,7 @@
 # Recruitment Automation Phases 1 and 2 Implementation Plan
 
+> **Implementation status (2026-08-25):** completed on `master`. Final acceptance requires the full Django recruitment suite, full Vitest suite, production frontend build, migration checks, and local live smoke checks. Real BOSS write acceptance remains limited to a user-designated test candidate.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver two runnable BOSS recruitment automation schemes, complete conversation ingestion, native resume requests, active resume discovery, job-bound Word documents, human-attention tasks, and recoverable business runs while deferring resume scoring.

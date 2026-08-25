@@ -29,7 +29,6 @@ const library = [
   { type: 'request_resume', label: '索要简历' },
   { type: 'wait_resume', label: '等待简历', config: { wake_event: 'resume.archived' } },
   { type: 'human_review', label: '人工复核' },
-  { type: 'send_interview', label: '面试邀约' },
   { type: 'end', label: '结束' },
 ]
 
@@ -401,7 +400,7 @@ onUnmounted(() => {
           <header><div><span class="panel-kicker">NODE SETTINGS</span><h3>节点配置</h3></div><button class="icon-button" type="button" aria-label="关闭节点配置" @click="selected = null"><AppIcon name="close" :size="16" /></button></header>
           <label>显示名称<input v-model.trim="selectedNode.label" maxlength="120" data-test="node-label" /></label>
           <label class="workflow-node-config__switch"><input type="checkbox" :checked="selectedNode.config.enabled !== false" @change="selectedNode.config.enabled = $event.target.checked" /><span>启用此节点</span></label>
-          <label v-if="['greet','request_resume','send_interview'].includes(selectedNode.type)">消息模板<textarea v-model="selectedNode.config.message" maxlength="1000" rows="5" placeholder="HR 确认时仍可修改"></textarea></label>
+          <label v-if="['greet','request_resume'].includes(selectedNode.type)">消息模板<textarea v-model="selectedNode.config.message" maxlength="1000" rows="5" placeholder="HR 确认时仍可修改"></textarea></label>
           <label v-if="['search','recommend','deep_search'].includes(selectedNode.type)">搜索关键词<input v-model.trim="selectedNode.config.keyword" maxlength="120" placeholder="例如：Vue 3" /></label>
           <template v-if="selectedNode.type === 'search_and_pull_resumes'">
             <label>搜索来源<select v-model="selectedNode.config.source"><option value="search">常规搜索</option><option value="recommend">推荐牛人</option><option value="deep_search">深度搜索</option></select></label>
