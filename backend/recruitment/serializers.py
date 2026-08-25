@@ -384,7 +384,12 @@ class WorkflowVersionSerializer(serializers.ModelSerializer):
             for node in instance.nodes.all()
         ]
         data["edges"] = [
-            {"source": edge.source.node_key, "target": edge.target.node_key, "order": edge.order}
+            {
+                "source": edge.source.node_key,
+                "target": edge.target.node_key,
+                "order": edge.order,
+                "condition": edge.condition,
+            }
             for edge in instance.edges.select_related("source", "target")
         ]
         return data

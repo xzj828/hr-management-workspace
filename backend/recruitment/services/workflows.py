@@ -8,12 +8,15 @@ from recruitment.models import RecruitmentAuditLog, WorkflowEdge, WorkflowNode, 
 
 
 ALLOWED_NODE_TYPES = {
+    "start", "sync_messages", "classify_intent", "create_attention", "stop",
+    "archive_resume", "search_and_pull_resumes",
     "recommend", "search", "deep_search", "human_screen", "import_candidate",
     "human_approval", "greet", "wait_reply", "request_resume", "wait_resume",
     "human_review", "send_interview", "end",
 }
-SOURCE_TYPES = {"recommend", "search", "deep_search"}
-SEND_TYPES = {"greet", "request_resume", "send_interview"}
+SOURCE_TYPES = {"recommend", "search", "deep_search", "sync_messages", "search_and_pull_resumes"}
+SEND_TYPES = {"greet", "send_interview"}
+WAIT_EVENTS = {"wait_reply": "candidate_message.received", "wait_resume": "resume.archived"}
 
 
 def validate_graph(*, nodes, edges, boss_account):
@@ -29,6 +32,12 @@ def validate_graph(*, nodes, edges, boss_account):
             raise ValidationError("流程节点标识不能为空或重复")
         if node_type not in ALLOWED_NODE_TYPES:
             raise ValidationError(f"不允许的流程节点：{node_type or '空'}")
+        config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if node_type in WAIT_EVENTS and config.get("wake_event") != WAIT_EVENTS[node_type]:
+            raise ValidationError(f"节点 {key} 必须配置正确的唤醒事件")
+        if node_type == "search_and_pull_resumes":
+            if int(config.get("target_resume_count", 0) or 0) < 1 or int(config.get("max_scan_count", 0) or 0) < 1:
+                raise ValidationError(f"节点 {key} 必须配置拉取数量和最大扫描人数")
         by_key[key] = node
     if not any(node["type"] in SOURCE_TYPES for node in nodes):
         raise ValidationError("流程必须包含候选人来源节点")
@@ -48,6 +57,13 @@ def validate_graph(*, nodes, edges, boss_account):
         adjacency[source].append(target)
         reverse[target].append(source)
         indegree[target] += 1
+    if len(nodes) > 1:
+        disconnected = [key for key in by_key if not adjacency[key] and not reverse[key]]
+        if disconnected:
+            raise ValidationError(f"流程存在未连接节点：{', '.join(disconnected)}")
+        roots = [key for key, degree in indegree.items() if degree == 0]
+        if len(roots) != 1:
+            raise ValidationError("流程必须只有一个起始入口")
     queue = deque(key for key, degree in indegree.items() if degree == 0)
     visited = []
     while queue:
@@ -96,6 +112,7 @@ def create_version(*, template, boss_account, nodes, edges, actor):
         WorkflowEdge.objects.create(
             version=version, source=node_models[item["source"]], target=node_models[item["target"]],
             order=max(0, int(item.get("order", index))),
+            condition=item.get("condition") if isinstance(item.get("condition"), dict) else {},
         )
     return version
 
@@ -109,7 +126,10 @@ def enable_version(*, version, actor):
         {"key": node.node_key, "type": node.node_type, "label": node.label, "position": node.position, "config": node.config}
         for node in locked.nodes.all()
     ]
-    edges = [{"source": edge.source.node_key, "target": edge.target.node_key} for edge in locked.edges.select_related("source", "target")]
+    edges = [
+        {"source": edge.source.node_key, "target": edge.target.node_key, "condition": edge.condition}
+        for edge in locked.edges.select_related("source", "target")
+    ]
     validate_graph(nodes=nodes, edges=edges, boss_account=locked.boss_account)
     WorkflowVersion.objects.filter(template=locked.template, status=WorkflowVersion.Status.ENABLED).update(
         status=WorkflowVersion.Status.DISABLED

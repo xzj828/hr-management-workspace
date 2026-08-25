@@ -79,3 +79,36 @@ class WorkflowRuntimeTests(TestCase):
         run.refresh_from_db(); self.assertEqual(run.status, WorkflowRun.Status.CANCELLED)
         self.assertFalse(run.node_runs.filter(status__in=[WorkflowNodeRun.Status.READY, WorkflowNodeRun.Status.BLOCKED]).exists())
 
+    def test_conditional_edges_execute_only_the_matching_branch(self):
+        template = WorkflowTemplate.objects.create(name="conditional graph", created_by=self.user)
+        version = create_version(
+            template=template,
+            boss_account=self.account,
+            actor=self.user,
+            nodes=[
+                {"key": "source", "type": "search", "position": {}, "config": {}},
+                {"key": "accepted", "type": "end", "position": {}, "config": {}},
+                {"key": "rejected", "type": "end", "position": {}, "config": {}},
+            ],
+            edges=[
+                {"source": "source", "target": "accepted", "condition": {"intent": "accepted"}},
+                {"source": "source", "target": "rejected", "condition": {"intent": "rejected"}},
+            ],
+        )
+        run = create_run(
+            version=version,
+            actor=self.user,
+            mode=WorkflowRun.Mode.FORMAL,
+            idempotency_key="conditional:1",
+        )
+
+        def executor(node):
+            if node.node_key == "source":
+                return WorkflowNodeRun.Status.SUCCEEDED, {"intent": "accepted"}
+            return WorkflowNodeRun.Status.SUCCEEDED, {}
+
+        run = advance_run(run, executor=executor)
+
+        self.assertEqual(run.status, WorkflowRun.Status.SUCCEEDED)
+        self.assertEqual(run.node_runs.get(node_key="accepted").status, WorkflowNodeRun.Status.SUCCEEDED)
+        self.assertEqual(run.node_runs.get(node_key="rejected").status, WorkflowNodeRun.Status.SKIPPED)

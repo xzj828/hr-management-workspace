@@ -887,6 +887,7 @@ class WorkflowEdge(models.Model):
     source = models.ForeignKey(WorkflowNode, on_delete=models.CASCADE, related_name="outgoing_edges")
     target = models.ForeignKey(WorkflowNode, on_delete=models.CASCADE, related_name="incoming_edges")
     order = models.PositiveIntegerField(default=0)
+    condition = models.JSONField(default=dict, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["version", "source", "target"], name="unique_workflow_edge")]

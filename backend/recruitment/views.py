@@ -72,6 +72,7 @@ from .services.dashboard import build_recruitment_dashboard
 from .services.lifecycle import LifecycleConflict, archive_object, restore_object
 from .services.job_documents import create_document, create_document_version, set_current_version
 from .services.human_attention import archive_attention, resolve_attention
+from .services.standard_workflows import create_standard_workflow
 from .services.workflow_nodes import execute_workflow_node
 from .services.workflow_runtime import advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
 
@@ -655,6 +656,31 @@ class WorkflowTemplateViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @action(detail=False, methods=["post"], url_path="standard")
+    def standard(self, request):
+        account = BossAccount.objects.filter(pk=request.data.get("boss_account"), active=True).first()
+        if account is None:
+            raise ValidationError({"boss_account": "BOSS 账号不存在或已停用"})
+        if not request.user.is_superuser and not account.authorized_users.filter(pk=request.user.pk).exists():
+            raise ValidationError({"boss_account": "无权操作该 BOSS 账号"})
+        config = request.data.get("config") if isinstance(request.data.get("config"), dict) else {}
+        try:
+            template, version = create_standard_workflow(
+                kind=str(request.data.get("kind", "")),
+                account=account,
+                actor=request.user,
+                config=config,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"config": str(exc)}) from exc
+        return Response(
+            {
+                "template": self.get_serializer(template).data,
+                "version": WorkflowVersionSerializer(version, context=self.get_serializer_context()).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class WorkflowVersionViewSet(viewsets.ModelViewSet):

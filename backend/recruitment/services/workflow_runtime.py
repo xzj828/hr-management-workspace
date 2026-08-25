@@ -32,7 +32,12 @@ def _snapshot(version):
         for node in version.nodes.order_by("id")
     ]
     edges = [
-        {"source": edge.source.node_key, "target": edge.target.node_key, "order": edge.order}
+        {
+            "source": edge.source.node_key,
+            "target": edge.target.node_key,
+            "order": edge.order,
+            "condition": edge.condition,
+        }
         for edge in version.edges.select_related("source", "target").order_by("order", "id")
     ]
     return {"nodes": nodes, "edges": edges, "version_id": version.pk, "version": version.version}
@@ -73,8 +78,12 @@ def create_run(*, version, actor, mode, idempotency_key, input_snapshot=None, jo
 def _incoming(run):
     result = {node.node_key: [] for node in run.node_runs.all()}
     for edge in run.graph_snapshot.get("edges", []):
-        result.setdefault(edge["target"], []).append(edge["source"])
+        result.setdefault(edge["target"], []).append(edge)
     return result
+
+
+def _condition_matches(condition, output):
+    return all(output.get(key) == value for key, value in (condition or {}).items())
 
 
 @transaction.atomic
@@ -100,8 +109,23 @@ def advance_run(run, *, executor=None):
                     changed = True
                 continue
             if node.status == WorkflowNodeRun.Status.BLOCKED:
-                parents = [by_key[parent] for parent in incoming.get(key, [])]
-                if any(parent.status in {WorkflowNodeRun.Status.FAILED, WorkflowNodeRun.Status.CANCELLED} for parent in parents):
+                incoming_edges = incoming.get(key, [])
+                parents = [by_key[edge["source"]] for edge in incoming_edges]
+                has_conditions = any(edge.get("condition") for edge in incoming_edges)
+                if has_conditions:
+                    active_parents = [
+                        by_key[edge["source"]]
+                        for edge in incoming_edges
+                        if _condition_matches(edge.get("condition"), by_key[edge["source"]].output)
+                    ]
+                    if any(parent.status in SUCCESS_STATES for parent in active_parents):
+                        node.status = WorkflowNodeRun.Status.READY
+                    elif parents and all(parent.status in NODE_TERMINAL_STATES for parent in parents):
+                        node.status = WorkflowNodeRun.Status.SKIPPED
+                        node.completed_at = timezone.now()
+                    else:
+                        continue
+                elif any(parent.status in {WorkflowNodeRun.Status.FAILED, WorkflowNodeRun.Status.CANCELLED} for parent in parents):
                     node.status = WorkflowNodeRun.Status.SKIPPED
                     node.completed_at = timezone.now()
                 elif parents and all(parent.status in SUCCESS_STATES for parent in parents):
