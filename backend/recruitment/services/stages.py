@@ -75,3 +75,16 @@ def change_stage_manually(*, application, to_stage, actor, reason):
         actor=actor,
     )
 
+
+def reject_for_hard_requirements(*, application, actor, failure_keys):
+    keys = [str(key) for key in failure_keys if str(key)]
+    if not keys:
+        return False
+    return _change(
+        application=application,
+        to_stage=JobApplication.Stage.REJECTED,
+        source=ApplicationStageHistory.Source.AUTOMATION,
+        reason=f"简历明确不满足已确认硬性指标：{', '.join(keys)}",
+        actor=actor,
+    )
+

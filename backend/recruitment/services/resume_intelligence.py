@@ -242,6 +242,39 @@ def validate_assessment_payload(*, payload: dict, standard: JobStandardVersion, 
         )
     if seen != set(criteria):
         raise ValueError("评分结果缺少部分评分维度")
+    hard_criteria = {
+        str(item.get("key")): item for item in standard.criteria.get("hard_requirements", [])
+    }
+    hard_results = payload.get("hard_requirement_results") or []
+    if not isinstance(hard_results, list):
+        raise ModelGatewayError("model_invalid_response", "硬性指标判断格式无效")
+    hard_seen = set()
+    normalized_hard = []
+    for item in hard_results:
+        if not isinstance(item, dict):
+            raise ModelGatewayError("model_invalid_response", "硬性指标判断必须是对象")
+        key = str(item.get("criterion_key") or "")
+        if key not in hard_criteria or key in hard_seen:
+            raise ValueError("硬性指标判断包含未知或重复项目")
+        status_value = str(item.get("status") or "")
+        if status_value not in {"met", "not_met", "information_missing"}:
+            raise ValueError("硬性指标判断状态无效")
+        evidence_ids = [str(value) for value in item.get("resume_evidence_block_ids", []) or []]
+        unknown = sorted(set(evidence_ids) - allowed_blocks)
+        if unknown:
+            raise ValueError(f"硬性指标引用了不存在的简历证据：{unknown[0]}")
+        if status_value in {"met", "not_met"} and not evidence_ids:
+            raise ValueError("硬性指标的明确结论必须提供简历原文证据")
+        hard_seen.add(key)
+        normalized_hard.append({
+            "criterion_key": key,
+            "text": str(hard_criteria[key].get("text") or ""),
+            "status": status_value,
+            "reason": str(item.get("reason") or "").strip(),
+            "resume_evidence_block_ids": evidence_ids,
+        })
+    if hard_seen != set(hard_criteria):
+        raise ValueError("硬性指标判断缺少部分项目")
     evidence = payload.get("evidence") or []
     if not isinstance(evidence, list):
         raise ModelGatewayError("model_invalid_response", "评分证据格式无效")
@@ -257,6 +290,9 @@ def validate_assessment_payload(*, payload: dict, standard: JobStandardVersion, 
     recommendation = str(payload.get("recommendation") or "")
     if recommendation not in ResumeAssessment.Recommendation.values:
         raise ValueError("筛选建议无效")
+    hard_failures = [item for item in normalized_hard if item["status"] == "not_met"]
+    if hard_failures:
+        recommendation = ResumeAssessment.Recommendation.HOLD
     gaps = payload.get("gaps") or []
     questions = payload.get("verification_questions") or []
     if not isinstance(gaps, list) or not isinstance(questions, list):
@@ -264,6 +300,7 @@ def validate_assessment_payload(*, payload: dict, standard: JobStandardVersion, 
     return {
         "total_score": float(total) if total % 1 else int(total),
         "dimension_scores": normalized_scores,
+        "hard_failures": hard_failures,
         "evidence": evidence,
         "gaps": [str(item).strip() for item in gaps if str(item).strip()],
         "verification_questions": [str(item).strip() for item in questions if str(item).strip()],
@@ -283,6 +320,8 @@ def build_assessment_prompt(*, standard, structured):
             "structured_resume": structured.data,
             "resume_blocks": structured.extraction.blocks,
             "allowed_recommendations": list(ResumeAssessment.Recommendation.values),
+            "hard_requirements": standard.criteria.get("hard_requirements", []),
+            "hard_requirement_rule": "只有简历原文明确证明不满足时返回 not_met；没写或无法判断必须返回 information_missing",
             "required_dimension_fields": [
                 "criterion_key", "score", "max_score", "status", "reason", "resume_evidence_block_ids"
             ],
@@ -293,7 +332,7 @@ def build_assessment_prompt(*, standard, structured):
 
 
 @transaction.atomic
-def create_assessment(*, structured, standard, gateway, request_id) -> ResumeAssessment:
+def create_assessment(*, structured, standard, gateway, request_id, actor=None) -> ResumeAssessment:
     existing = ResumeAssessment.objects.filter(request_id=request_id).first()
     if existing:
         if existing.structured_resume_id != structured.pk or existing.standard_id != standard.pk:
@@ -321,6 +360,7 @@ def create_assessment(*, structured, standard, gateway, request_id) -> ResumeAss
         request_id=request_id,
         total_score=normalized["total_score"],
         dimension_scores=normalized["dimension_scores"],
+        hard_failures=normalized["hard_failures"],
         evidence=normalized["evidence"],
         gaps=normalized["gaps"],
         verification_questions=normalized["verification_questions"],
@@ -328,6 +368,18 @@ def create_assessment(*, structured, standard, gateway, request_id) -> ResumeAss
         recommendation=normalized["recommendation"],
         model_name=gateway.credential.model,
     )
+    if (
+        assessment.hard_failures
+        and standard.criteria.get("auto_reject_on_hard_fail") is True
+        and structured.resume.application_id
+    ):
+        from recruitment.services.stages import reject_for_hard_requirements
+        assessment.auto_rejected = reject_for_hard_requirements(
+            application=structured.resume.application,
+            actor=actor,
+            failure_keys=[item["criterion_key"] for item in assessment.hard_failures],
+        )
+        assessment.save(update_fields=["auto_rejected"])
     RecruitmentAuditLog.objects.create(
         actor=None,
         boss_account=standard.job.boss_account,
@@ -358,5 +410,6 @@ def process_resume_score_task(task: AiProcessingTask):
         standard=task.standard,
         gateway=OpenAICompatibleGateway(credential),
         request_id=task.pk,
+        actor=task.requested_by,
     )
     return {"resume_assessment_id": assessment.pk}

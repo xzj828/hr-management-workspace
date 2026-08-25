@@ -34,6 +34,7 @@ const payload = () => ({
     { date: '2026-08-24', label: '8/24', candidates: 3, resumes: 2, interviews: 1, hires: 1 },
   ],
   recent_tasks: [{ id: 'task-1', account_name: '招聘主账号', action_label: '检查状态', status: 'succeeded', status_label: '成功', created_at: '2026-08-24T08:00:00Z', route: '/recruitment/automation' }],
+  resume_intelligence: { pending_parse: 2, pending_standard_review: 1, pending_hr_review: 3, recommended_advance: 4, by_job: [] },
 })
 
 describe('RecruitmentDashboardView', () => {
@@ -53,12 +54,23 @@ describe('RecruitmentDashboardView', () => {
     expect(wrapper.text()).toContain('近 7 天趋势')
     expect(wrapper.text()).toContain('职位进度')
     expect(wrapper.text()).toContain('最近自动化')
+    expect(wrapper.text()).toContain('简历初筛进度')
+    expect(wrapper.text()).toContain('待人工复核')
     expect(wrapper.text()).toContain('产品经理')
     expect(wrapper.text()).toContain('待筛选 3')
     expect(wrapper.text()).toContain('待面试 2')
     expect(wrapper.text()).toContain('50%')
     expect(wrapper.findAll('[data-test="dashboard-metric"]')).toHaveLength(5)
     expect(wrapper.findAll('[data-test="trend-day"]')).toHaveLength(7)
+    expect(wrapper.findAll('[data-test^="intelligence-metric-"]')).toHaveLength(4)
+  })
+
+  it('opens the filtered resume workspace from an intelligence count', async () => {
+    const wrapper = mount(RecruitmentDashboardView)
+    await flushPromises()
+
+    await wrapper.get('[data-test="intelligence-metric-pending_hr_review"]').trigger('click')
+    expect(pushMock).toHaveBeenCalledWith('/recruitment/resumes?filter=pending_hr_review')
   })
 
   it('opens a job workspace from its progress card', async () => {

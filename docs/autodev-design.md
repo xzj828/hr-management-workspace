@@ -24,7 +24,7 @@
 | 前端 | Vue 3.5、Vue Router 4.5、Pinia 3、ECharts 6、Vite 7 |
 | 后端 | Python、Django 5.2、Django REST Framework 3.16 |
 | 数据 | SQLite 默认；环境变量启用 PostgreSQL |
-| 文件 | Django FileField，本地 media 目录；openpyxl、ReportLab |
+| 文件 | Django FileField，本地 media；python-docx、openpyxl、pypdf/pdfium、RapidOCR |
 | 服务 | Waitress 8 线程、WhiteNoise 静态资源 |
 | 自动化 | 本机 RPA Worker、Playwright、`@joohw/boss-cli` 0.6.6 验证版本 |
 | 测试 | Django TestCase/APITestCase、Vitest、Vue Test Utils、jsdom |
@@ -34,7 +34,7 @@
 
 ### 架构模式
 
-单仓库、模块化单体。开发时 Vue/Vite 与 Django REST 分离运行；生产构建后由 Django/Waitress 同源托管 SPA、API 和媒体文件。招聘自动化以数据库任务为边界，由本机 Worker 轮询执行。
+单仓库、模块化单体。开发时 Vue/Vite 与 Django REST 分离运行；生产构建后由 Django/Waitress 同源托管 SPA、API 和媒体文件。招聘自动化与简历智能处理都以数据库任务为边界，分别由 RPA Worker 和 AI Worker 轮询执行。
 
 ```text
 用户浏览器
@@ -51,7 +51,10 @@
                     SQLite / PostgreSQL         v
                                 │        本机 RPA Worker
                                 │          ├─ 隔离浏览器
-                                └─ media   └─ BOSS CLI
+                                │          └─ BOSS CLI
+                                └─ media + 本机 AI Worker
+                                           ├─ Word/Excel/PDF/PNG 提取与 OCR
+                                           └─ OpenAI 兼容模型（仅发送提取文本）
 ```
 
 ### 数据流
@@ -61,6 +64,7 @@
 3. 考勤导入在请求内解析并生成原始日记录、异常队列和核算结果。
 4. 招聘自动化先创建不可变确认快照，再生成批次或 RPA 任务。
 5. Worker 用本地 Token 租约任务，提交事件、证据和结果；服务端推进业务阶段。
+6. 岗位依据和简历原文件留在 `media`。AI Worker 先本地提取文字块，再把文字块发送到账号配置的兼容模型；模型返回值必须通过字段、证据 ID 和分数校验后才能入库。
 
 ## 组件设计
 
@@ -88,10 +92,18 @@
 - 状态机：draft → approved → pending/running → succeeded/partial/failed/waiting_human。
 - 安全门：账号授权、登录状态、人工确认、日额度、幂等键、目标重新核验、写操作不自动重试。
 
+### Resume Intelligence
+
+- 实体：文件提取、岗位标准版本、结构化简历版本、评分版本、AI 处理任务。
+- 岗位依据支持 DOC/DOCX 与多工作表 XLSX；Excel 块保留工作表名和行号，扫描 PDF/PNG 使用本地 OCR。
+- 评分必须绑定 HR 已启用的标准；维度非零分必须引用简历原文证据，服务端重新计算总分。
+- 硬性指标只有明确反证才判为不满足；缺失信息进入核实问题。自动淘汰必须在标准中显式开启，并写阶段历史和审计。
+- 发布标准与每次评分均保留版本，不覆盖历史结果；模型 Key 按登录账号加密保存。
+
 ### 本地运行与运维
 
 - `setup-local.ps1` 创建虚拟环境、安装依赖、构建前端、迁移并初始化管理员。
-- `start-local.ps1` 启动 Waitress 与 Worker，健康检查后输出访问地址。
+- `start-local.ps1` 启动 Waitress、一个 RPA Worker 和一个 AI Worker，健康检查后输出访问地址。
 - `backup-local.ps1` 复制数据库和考勤原始文件到时间戳目录。
 
 ## 权限模型
@@ -116,7 +128,7 @@
 
 - “统一人事系统”尚未有跨招聘/员工/考勤的领域关系和首页任务模型。
 - Supervisor/Viewer 只有动作权限差异，没有数据范围差异。
-- Copilot 是设置占位，不构成可评价的 AI 产品功能。
+- 复杂多轮招聘对话仍未纳入 Copilot；当前能力集中在岗位标准整理、简历结构化、证据评分和核实建议。
 - [待确认] 缺少真实用户、业务量、月结时长、招聘转化等使用数据，无法判断市场效果。
 
 ## 技术决策记录
@@ -129,4 +141,4 @@
 | DB 任务租约而非消息队列 | 避免额外基础设施 | 适合当前规模；吞吐和可观测性上限较低 |
 | 显式人工确认和不可变快照 | 外发、额度与身份风险高 | 牺牲一步效率换取可审计安全 |
 | 组合指纹不等同平台身份 | BOSS 列表可能缺少稳定 ID | 防止同名误操作；执行前必须重新核验 |
-| 本地加密模型 Key | 为个人 Copilot 做准备 | SECRET_KEY 丢失会使凭证不可解密 |
+| 本地加密模型 Key | 按登录账号持久化模型配置 | SECRET_KEY 丢失会使凭证不可解密 |

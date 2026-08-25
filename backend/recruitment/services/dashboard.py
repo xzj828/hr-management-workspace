@@ -8,8 +8,10 @@ from recruitment.models import (
     BossAccount,
     InterviewInvitation,
     JobApplication,
+    JobStandardVersion,
     RecruitmentJob,
     Resume,
+    ResumeAssessment,
     RpaTask,
 )
 
@@ -33,10 +35,10 @@ FUNNEL_GROUPS = [
 def _scope(user):
     if user.is_superuser:
         accounts = BossAccount.objects.filter(active=True)
-        jobs = RecruitmentJob.objects.all()
+        jobs = RecruitmentJob.objects.filter(archived_at__isnull=True)
     else:
         accounts = BossAccount.objects.filter(active=True, authorized_users=user).distinct()
-        jobs = RecruitmentJob.objects.filter(
+        jobs = RecruitmentJob.objects.filter(archived_at__isnull=True).filter(
             Q(boss_account__authorized_users=user) | Q(boss_account__isnull=True, owner=user)
         ).distinct()
     applications = JobApplication.objects.filter(job__in=jobs, archived_at__isnull=True)
@@ -164,6 +166,40 @@ def build_recruitment_dashboard(user):
         "route": "/recruitment/automation",
     } for task in tasks.select_related("boss_account").order_by("-created_at")[:8]]
 
+    intelligence_resumes = Resume.objects.filter(
+        application__in=applications,
+        archived_at__isnull=True,
+    ).select_related("application__job").prefetch_related("structured_versions")
+    latest_assessments = {}
+    for assessment in ResumeAssessment.objects.filter(
+        structured_resume__resume__in=intelligence_resumes,
+    ).select_related("structured_resume__resume").order_by("structured_resume__resume_id", "-created_at", "-id"):
+        latest_assessments.setdefault(assessment.structured_resume.resume_id, assessment)
+
+    intelligence_by_job = []
+    for job in jobs.filter(status=RecruitmentJob.Status.OPEN).order_by("title", "id"):
+        job_resumes = [resume for resume in intelligence_resumes if resume.application.job_id == job.pk]
+        recommendations = [latest_assessments.get(resume.pk) for resume in job_resumes]
+        intelligence_by_job.append({
+            "job": job.pk,
+            "job_title": job.title,
+            "pending_parse": sum(not resume.structured_versions.exists() for resume in job_resumes),
+            "pending_standard_review": int(job.standard_versions.filter(status=JobStandardVersion.Status.DRAFT).exists()),
+            "pending_hr_review": sum(
+                assessment is not None and assessment.recommendation == ResumeAssessment.Recommendation.REVIEW
+                for assessment in recommendations
+            ),
+            "recommended_advance": sum(
+                assessment is not None and assessment.recommendation == ResumeAssessment.Recommendation.ADVANCE
+                for assessment in recommendations
+            ),
+        })
+    resume_intelligence = {
+        key: sum(row[key] for row in intelligence_by_job)
+        for key in ("pending_parse", "pending_standard_review", "pending_hr_review", "recommended_advance")
+    }
+    resume_intelligence["by_job"] = intelligence_by_job
+
     return {
         "metrics": metrics,
         "today_actions": today_actions,
@@ -172,4 +208,5 @@ def build_recruitment_dashboard(user):
         "job_progress": job_progress,
         "trend": trend,
         "recent_tasks": recent_tasks,
+        "resume_intelligence": resume_intelligence,
     }

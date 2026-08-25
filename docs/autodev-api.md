@@ -47,6 +47,11 @@
 | CandidateDiscovery | account, job, source, fingerprint, identity quality, profile, criteria, expiry | account+job+fingerprint 唯一 |
 | CandidateExternalIdentity | account, candidate, platform ID/fingerprint, quality | account+fingerprint 唯一 |
 | ApplicationStageHistory | application, from/to, reason, source, actor/task | 只追加审计 |
+| FileTextExtraction | source kind/id/hash, method, blocks, status/error | Word/Excel/PDF/PNG 本地提取结果；块 ID 是证据锚点 |
+| JobStandardVersion | job, version, criteria, hard requirements, status | 同职位仅一个 published；发布后不可变 |
+| StructuredResumeVersion | resume, version, data, evidence, warnings | PDF/PNG 共用结构；原始未知字段保持 null |
+| ResumeAssessment | structure, standard, version, score, hard failures, evidence, recommendation | 请求 UUID 唯一；重评新增版本 |
+| AiProcessingTask | kind, lease/status, resume/job/standard, error/result | DB 租约；岗位标准、结构化、评分三类任务 |
 
 ### 自动化与流程域
 
@@ -88,6 +93,7 @@
 | POST | `/api/auth/logout/` | 用户菜单退出 |
 | GET | `/api/auth/me/` | Shell 恢复会话 |
 | GET/PUT/DELETE | `/api/account/model-credential/` | Copilot 模型配置 |
+| POST | `/api/account/model-credential/test/` | 测试 OpenAI 兼容连接；只返回模型与延迟，不返回 Key |
 
 ### 考勤资源
 
@@ -122,10 +128,21 @@
 | POST | `.../candidate-discoveries/search/` | 推荐/关键词搜索，创建只读发现任务 |
 | POST | `.../candidate-discoveries/prepare-deep-match/` | 创建深度匹配确认快照 |
 | POST | `.../candidate-discoveries/import-selected/` | ids；幂等导入候选人/应聘 |
-| 简历只读 | `/api/recruitment/resumes[/<id>/]` | archived=1；版本和文件可用状态 |
+| 简历只读 | `/api/recruitment/resumes[/<id>/]` | job, archived=1；版本、文件和最新结构化状态 |
 | GET | `/api/recruitment/resumes/<id>/file/` | `download=1` 下载，否则内联预览；写审计 |
+| POST | `/api/recruitment/resumes/<id>/retry-structure/` | 重试或补建简历结构化任务 |
+| 岗位依据 GET/POST | `/api/recruitment/job-documents[/<id>/]` | `.doc/.docx/.xlsx`，版本化、职位绑定、归档恢复 |
+| 岗位标准 GET/PATCH | `/api/recruitment/job-standards[/<id>/]` | job；仅 draft 可修改 |
+| POST | `/api/recruitment/job-standards/generate/` | 根据当前岗位依据异步生成草稿 |
+| POST | `/api/recruitment/job-standards/<id>/publish/` | 校验权重 100、硬性指标和证据后发布 |
+| 结构化简历 GET | `/api/recruitment/structured-resumes[/<id>/]` | job, resume；不在简历列表返回全文 |
+| 评分 GET | `/api/recruitment/resume-assessments[/<id>/]` | job, resume；返回维度证据与版本 |
+| POST | `/api/recruitment/resume-assessments/score/` | job + resume_ids + request_id；批量幂等评分 |
+| POST | `/api/recruitment/resume-assessments/<id>/rescore/` | 新 request_id 创建重评任务 |
+| AI 任务 GET | `/api/recruitment/ai-tasks/` | job, resume, kind, status |
+| POST | `/api/recruitment/ai-tasks/<uuid>/retry/` | 显式恢复失败/等待配置任务 |
 | GET/POST/DELETE | `/api/recruitment/demo-data/` | 状态/加载/只清除演示数据 |
-| GET | `/api/recruitment/dashboard/` | 招聘指标、今日动作、风险、漏斗、趋势、任务 |
+| GET | `/api/recruitment/dashboard/` | 招聘指标、简历智能处理计数、今日动作、风险、漏斗、趋势、任务 |
 
 ### 沟通、审批与执行
 

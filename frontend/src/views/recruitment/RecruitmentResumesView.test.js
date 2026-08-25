@@ -85,7 +85,7 @@ describe('RecruitmentResumesView', () => {
 
     const upload = wrapper.get('[data-test="word-upload"]')
     expect(upload.attributes()).not.toHaveProperty('disabled')
-    expect(wrapper.get('[data-test="word-file-input"]').attributes('accept')).toBe('.doc,.docx')
+    expect(wrapper.get('[data-test="word-file-input"]').attributes('accept')).toBe('.doc,.docx,.xlsx')
 
     await wrapper.get('[data-test="toggle-archived-resumes"]').trigger('click')
     await flushPromises()

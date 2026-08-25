@@ -1111,6 +1111,8 @@ class ResumeAssessment(models.Model):
     request_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     total_score = models.DecimalField(max_digits=5, decimal_places=2)
     dimension_scores = models.JSONField(default=list, blank=True)
+    hard_failures = models.JSONField(default=list, blank=True)
+    auto_rejected = models.BooleanField(default=False)
     evidence = models.JSONField(default=list, blank=True)
     gaps = models.JSONField(default=list, blank=True)
     verification_questions = models.JSONField(default=list, blank=True)

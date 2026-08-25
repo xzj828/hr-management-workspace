@@ -386,6 +386,36 @@ class ResumeAssessmentServiceTests(TestCase):
         self.assertEqual(first.pk, second.pk)
         self.assertEqual(ResumeAssessment.objects.count(), 1)
 
+    def test_explicit_hard_requirement_failure_can_auto_reject_with_evidence(self):
+        criteria = scoring_criteria()
+        criteria["hard_requirements"] = [
+            {"key": "degree", "text": "本科及以上", "evidence_block_ids": []},
+        ]
+        criteria["auto_reject_on_hard_fail"] = True
+        JobStandardVersion.objects.filter(pk=self.standard.pk).update(criteria=criteria)
+        self.standard.refresh_from_db()
+        payload = assessment_payload(self.block_id)
+        payload["hard_requirement_results"] = [{
+            "criterion_key": "degree",
+            "status": "not_met",
+            "reason": "简历明确写明大专",
+            "resume_evidence_block_ids": [self.block_id],
+        }]
+
+        assessment = create_assessment(
+            structured=self.structured,
+            standard=self.standard,
+            gateway=FakeGateway(payload),
+            request_id=uuid.uuid4(),
+            actor=self.user,
+        )
+
+        self.structured.resume.application.refresh_from_db()
+        self.assertEqual(assessment.recommendation, "hold")
+        self.assertTrue(assessment.auto_rejected)
+        self.assertEqual(self.structured.resume.application.stage, JobApplication.Stage.REJECTED)
+        self.assertEqual(assessment.hard_failures[0]["criterion_key"], "degree")
+
 
 class ResumeAssessmentApiTests(APITestCase):
     def setUp(self):

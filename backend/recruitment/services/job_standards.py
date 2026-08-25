@@ -21,7 +21,7 @@ SENSITIVE_CRITERIA_KEYS = {"age", "ethnicity", "gender", "marital_status", "preg
 
 
 def _evidence_ids(criteria):
-    for group in ("dimensions", "required", "preferred", "risks"):
+    for group in ("dimensions", "hard_requirements", "required", "preferred", "risks"):
         for item in criteria.get(group, []) or []:
             for block_id in item.get("evidence_block_ids", []) or []:
                 yield str(block_id)
@@ -33,11 +33,13 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
     normalized = {
         "summary": str(criteria.get("summary") or "").strip(),
         "dimensions": criteria.get("dimensions") or [],
+        "hard_requirements": criteria.get("hard_requirements") or [],
+        "auto_reject_on_hard_fail": bool(criteria.get("auto_reject_on_hard_fail", False)),
         "required": criteria.get("required") or [],
         "preferred": criteria.get("preferred") or [],
         "risks": criteria.get("risks") or [],
     }
-    for group in ("dimensions", "required", "preferred", "risks"):
+    for group in ("dimensions", "hard_requirements", "required", "preferred", "risks"):
         if not isinstance(normalized[group], list):
             raise ValueError(f"{group} 必须是列表")
         if any(not isinstance(item, dict) for item in normalized[group]):
@@ -67,6 +69,18 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
         total += weight
     if require_publishable and total != Decimal("100"):
         raise ValueError("评分维度权重合计必须为 100%")
+    hard_keys = set()
+    for item in normalized["hard_requirements"]:
+        key = str(item.get("key") or "").strip().lower()
+        if not key or key in hard_keys:
+            raise ValueError("硬性指标标识不能为空或重复")
+        if key in SENSITIVE_CRITERIA_KEYS:
+            raise ValueError("性别、年龄、民族、婚育等敏感属性不能作为硬性指标")
+        if not str(item.get("text") or "").strip():
+            raise ValueError("硬性指标必须填写明确要求")
+        item["key"] = key
+        item["text"] = str(item["text"]).strip()
+        hard_keys.add(key)
     unknown = sorted(set(_evidence_ids(normalized)) - set(allowed_evidence_ids))
     if unknown:
         raise ValueError(f"评分标准引用了不存在的原文证据：{unknown[0]}")
@@ -99,6 +113,8 @@ def build_standard_prompt(extractions: list[FileTextExtraction]) -> tuple[str, s
                 "criteria": {
                     "summary": "string",
                     "dimensions": [{"key": "string", "name": "string", "weight": "number", "description": "string", "evidence_block_ids": ["string"]}],
+                    "hard_requirements": [{"key": "string", "text": "string", "evidence_block_ids": ["string"]}],
+                    "auto_reject_on_hard_fail": False,
                     "required": [{"text": "string", "evidence_block_ids": ["string"]}],
                     "preferred": [],
                     "risks": [],

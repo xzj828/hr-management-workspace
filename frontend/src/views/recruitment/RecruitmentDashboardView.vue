@@ -10,6 +10,7 @@ const error = ref('')
 const dashboard = reactive({
   metrics: { open_jobs: 0, active_candidates: 0, waiting_resumes: 0, waiting_interviews: 0, boss_accounts_ready: 0 },
   today_actions: [], alerts: [], funnel: [], job_progress: [], trend: [], recent_tasks: [],
+  resume_intelligence: { pending_parse: 0, pending_standard_review: 0, pending_hr_review: 0, recommended_advance: 0, by_job: [] },
 })
 
 const metricCards = [
@@ -21,6 +22,12 @@ const metricCards = [
 ]
 
 const actionIcons = { to_contact: 'user', to_screen: 'document', to_interview: 'calendar-check', waiting_human: 'alert-circle' }
+const intelligenceCards = [
+  { key: 'pending_parse', label: '待解析简历', note: '等待结构化', icon: 'document', filter: 'pending_parse' },
+  { key: 'pending_standard_review', label: '待确认标准', note: '需要 HR 检查', icon: 'sliders', filter: 'pending_standard_review' },
+  { key: 'pending_hr_review', label: '待人工复核', note: 'AI 建议复核', icon: 'eye', filter: 'pending_hr_review' },
+  { key: 'recommended_advance', label: '建议进一步沟通', note: '仍需 HR 决策', icon: 'check-circle', filter: 'recommended_advance' },
+]
 const funnelMax = computed(() => Math.max(1, ...dashboard.funnel.map((item) => item.count)))
 const trendMax = computed(() => Math.max(1, ...dashboard.trend.flatMap((item) => [item.candidates, item.resumes, item.interviews, item.hires])))
 const isEmpty = computed(() => !loading.value && !error.value && Object.values(dashboard.metrics).every((value) => value === 0))
@@ -60,6 +67,11 @@ onMounted(async () => {
       <button v-for="(card, index) in metricCards" :key="card.key" type="button" class="recruitment-metric" :class="{ 'recruitment-metric--primary': index === 0 }" data-test="dashboard-metric" @click="go(card.route)">
         <span class="recruitment-metric__icon"><AppIcon :name="card.icon" :size="18" /></span><span>{{ card.label }}</span><strong>{{ dashboard.metrics[card.key] }}</strong><small>{{ card.note }}</small>
       </button>
+    </section>
+
+    <section class="intelligence-overview" aria-label="简历智能处理概览">
+      <header><div><span class="panel-kicker">RESUME INTELLIGENCE</span><h3>简历初筛进度</h3></div><span>AI 结果不会自动改变招聘流程</span></header>
+      <div><button v-for="card in intelligenceCards" :key="card.key" :data-test="`intelligence-metric-${card.key}`" @click="go(`/recruitment/resumes?filter=${card.filter}`)"><AppIcon :name="card.icon" :size="16" /><span><strong>{{ card.label }}</strong><small>{{ card.note }}</small></span><b>{{ dashboard.resume_intelligence?.[card.key] || 0 }}</b><AppIcon name="chevron-right" :size="12" /></button></div>
     </section>
 
     <section v-if="isEmpty" class="panel recruitment-dashboard-empty">
@@ -118,3 +130,7 @@ onMounted(async () => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.intelligence-overview{display:grid;gap:12px;padding:17px 18px;background:linear-gradient(110deg,#102c2a,#173c38);border:1px solid rgba(255,255,255,.06);border-radius:15px;box-shadow:0 14px 38px rgba(15,42,41,.13)}.intelligence-overview>header{display:flex;align-items:end;justify-content:space-between;gap:18px}.intelligence-overview h3{margin:4px 0 0;color:#fff;font-family:Georgia,"Noto Serif SC",serif;font-size:17px}.intelligence-overview .panel-kicker{color:#5bc7b6}.intelligence-overview>header>span{color:#7fa19c;font-size:8px}.intelligence-overview>div{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.intelligence-overview button{display:grid;grid-template-columns:30px minmax(0,1fr) auto 12px;align-items:center;gap:9px;min-width:0;padding:10px 11px;color:#9fc2bd;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07);border-radius:10px;text-align:left;transition:background .16s ease,transform .16s ease}.intelligence-overview button:hover{transform:translateY(-1px);background:rgba(255,255,255,.08)}.intelligence-overview button>span{display:grid;gap:3px}.intelligence-overview button strong{overflow:hidden;color:#e8f6f3;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.intelligence-overview button small{color:#71958f;font-size:7px}.intelligence-overview button b{color:#6de0cf;font-family:Georgia,serif;font-size:21px;font-weight:500}@media(max-width:1000px){.intelligence-overview>div{grid-template-columns:repeat(2,1fr)}}
+</style>

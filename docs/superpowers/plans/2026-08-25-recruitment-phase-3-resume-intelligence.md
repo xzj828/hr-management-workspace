@@ -522,17 +522,17 @@ git commit -m "feat: structure archived resumes with evidence"
 - Modify: `backend/recruitment/urls.py`
 - Modify: `backend/recruitment/tests/test_resume_intelligence_api.py`
 
-- [ ] **Step 1: Write failing scoring tests**
+- [x] **Step 1: Write failing scoring tests**
 
 Assert scoring without a published standard returns 409; each dimension references a declared criterion and valid resume evidence; dimensions with no evidence are marked `information_missing`; weighted total is recomputed server-side rather than trusted from the model; confidence is bounded 0-1; recommendation is one of three values; batch requests are idempotent; scoring does not modify application stage.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run the scoring test class only.
 
 Expected: FAIL because scoring actions do not exist.
 
-- [ ] **Step 3: Implement assessment validation**
+- [x] **Step 3: Implement assessment validation**
 
 Expose:
 
@@ -550,7 +550,7 @@ Dimension result shape:
 
 Allowed status values are `supported`, `not_supported`, and `information_missing`. Recompute total as the sum of clamped dimension scores. A no-evidence nonzero score is invalid. Recommendations remain advisory and never call stage services.
 
-- [ ] **Step 4: Add scoring APIs**
+- [x] **Step 4: Add scoring APIs**
 
 Add:
 
@@ -560,7 +560,7 @@ Add:
 
 Return 409 for missing published standards or incomplete structures; return individual task results for valid batch members instead of discarding the entire batch because one resume is invalid.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run all resume-intelligence tests. Expected: PASS.
 
@@ -581,17 +581,17 @@ git commit -m "feat: score resumes with traceable evidence"
 - Modify: `frontend/src/views/recruitment/RecruitmentResumesView.test.js`
 - Modify: `frontend/src/style.css`
 
-- [ ] **Step 1: Write failing component and store tests**
+- [x] **Step 1: Write failing component and store tests**
 
 Test the connection button states, masked credentials, standard status card, unique primary action, drawer loading/error/normal states, dimension add/remove, weights totaling 100, draft save, publish confirmation, and low-frequency actions inside the overflow menu.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `npm test -- --run src/stores/modelCredential.test.js src/components/JobStandardDrawer.test.js src/views/recruitment/RecruitmentResumesView.test.js`.
 
 Expected: FAIL because test connection and the standard drawer do not exist.
 
-- [ ] **Step 3: Implement model connection state**
+- [x] **Step 3: Implement model connection state**
 
 Add store state:
 
@@ -601,17 +601,17 @@ connection: { status: 'unknown', model: '', latency_ms: null, detail: '' }
 
 Add `testConnection()` POSTing to `account/model-credential/test/`. The drawer disables testing while saving, shows success latency, and shows API errors without exposing request headers or keys.
 
-- [ ] **Step 4: Implement the standard workspace**
+- [x] **Step 4: Implement the standard workspace**
 
 Replace the NEXT PHASE placeholder with a real status card. `JobStandardDrawer` receives `job`, `standard`, and `documents`; emits `saved`, `published`, and `close`; loads full detail only when opened. Publish stays disabled until dimensions exist and weights total 100. Keep one visible primary action and move retry/history/deactivate to the overflow menu.
 
-- [ ] **Step 5: Run tests and build**
+- [x] **Step 5: Run tests and build**
 
 Run targeted tests and `npm run build`.
 
 Expected: tests PASS and Vite build succeeds.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add frontend/src
@@ -627,31 +627,31 @@ git commit -m "feat: confirm job standards in resume center"
 - Modify: `frontend/src/views/recruitment/RecruitmentResumesView.test.js`
 - Modify: `frontend/src/style.css`
 
-- [ ] **Step 1: Write failing UI tests**
+- [x] **Step 1: Write failing UI tests**
 
 Cover list columns for parse status, score, and recommendation; waiting-config/processing/failed/complete states; tabs for original, structured, evidence, and history; evidence links that activate the original tab and indicate page/region; row overflow retry; checkbox selection; and a floating batch bar that disappears when selection clears.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run the two component/page test files.
 
 Expected: FAIL because the panel and interactions do not exist.
 
-- [ ] **Step 3: Implement the resume intelligence panel**
+- [x] **Step 3: Implement the resume intelligence panel**
 
 The component receives `resume`, `structure`, `assessment`, and `tasks`. It emits `retry-structure`, `score`, `rescore`, and `close`. Render unknown fields as “信息不足”, never as inferred facts. Render each dimension with score/max, status, reason, and evidence chips. Show an explicit “AI 建议，需 HR 复核” label beside recommendations.
 
-- [ ] **Step 4: Implement list and batch operations**
+- [x] **Step 4: Implement list and batch operations**
 
 Load standards, latest structures, assessments, and tasks for the selected job. Add list columns and checkboxes. Create a UUID request ID per batch click and POST selected resume IDs. Poll active task states every three seconds only while active tasks exist; stop polling on unmount or job change.
 
-- [ ] **Step 5: Run frontend tests and build**
+- [x] **Step 5: Run frontend tests and build**
 
 Run all frontend tests and production build.
 
 Expected: all tests PASS and build succeeds.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add frontend/src
@@ -669,19 +669,19 @@ git commit -m "feat: review structured resumes and assessments"
 - Modify: `docs/autodev-design.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write failing dashboard tests**
+- [x] **Step 1: Write failing dashboard tests**
 
 Assert per-job counts for `pending_parse`, `pending_standard_review`, `pending_hr_review`, and `recommended_advance`; confirm archived/demo/current-job filters remain correct; test that each card links to the appropriate resume query.
 
-- [ ] **Step 2: Implement dashboard aggregation and cards**
+- [x] **Step 2: Implement dashboard aggregation and cards**
 
 Add a `resume_intelligence` object to the existing dashboard response. Render compact summary cards only when a job is selected; clicking a count routes to `/recruitment/resumes?filter=<status>` without editing data.
 
-- [ ] **Step 3: Update operational documentation**
+- [x] **Step 3: Update operational documentation**
 
 Document the five new entities, endpoint matrix, AI worker, local extraction dependencies, LibreOffice behavior for `.doc`, model configuration, privacy boundary, and backup expectations. Remove the outdated statement that Copilot has no real backend.
 
-- [ ] **Step 4: Run migrations and all backend tests**
+- [x] **Step 4: Run migrations and all backend tests**
 
 Run:
 
@@ -693,7 +693,7 @@ Run:
 
 Expected: migrations apply, all Django tests PASS, and checks report no issues.
 
-- [ ] **Step 5: Run all frontend tests and build**
+- [x] **Step 5: Run all frontend tests and build**
 
 Run:
 
@@ -704,7 +704,7 @@ npm run build
 
 Expected: all Vitest tests PASS and Vite production build succeeds.
 
-- [ ] **Step 6: Run startup and browser smoke verification**
+- [x] **Step 6: Run startup and browser smoke verification**
 
 Run `scripts/test-startup.ps1`, start the app, log in, and verify:
 

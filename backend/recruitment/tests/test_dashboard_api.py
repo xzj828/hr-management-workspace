@@ -4,7 +4,10 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from attendance.models import AccountProfile
-from recruitment.models import BossAccount, Candidate, JobApplication, RecruitmentJob, Resume, RpaTask
+from recruitment.models import (
+    BossAccount, Candidate, FileTextExtraction, JobApplication, JobStandardVersion,
+    RecruitmentJob, Resume, ResumeAssessment, RpaTask, StructuredResumeVersion,
+)
 
 
 class RecruitmentDashboardApiTests(TestCase):
@@ -35,7 +38,7 @@ class RecruitmentDashboardApiTests(TestCase):
         self.application = JobApplication.objects.create(
             candidate=candidate, job=self.job, source="boss", stage=JobApplication.Stage.WAITING_RESUME,
         )
-        Resume.objects.create(
+        self.resume = Resume.objects.create(
             candidate=candidate, application=self.application, original_name="甲.pdf",
             file="recruitment/resumes/demo-a.pdf", content_type="application/pdf", file_size=128,
             acquired_at=timezone.now(),
@@ -61,12 +64,40 @@ class RecruitmentDashboardApiTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(
             set(response.data),
-            {"metrics", "today_actions", "alerts", "funnel", "job_progress", "trend", "recent_tasks"},
+            {"metrics", "today_actions", "alerts", "funnel", "job_progress", "trend", "recent_tasks", "resume_intelligence"},
         )
         self.assertEqual(len(response.data["trend"]), 7)
         self.assertTrue(all("route" in item for item in response.data["today_actions"]))
         self.assertTrue(all({"key", "label", "count"} <= set(item) for item in response.data["funnel"]))
         self.assertEqual(response.data["recent_tasks"][0]["status"], RpaTask.Status.WAITING_HUMAN)
+
+    def test_resume_intelligence_counts_are_job_scoped_and_use_latest_assessment(self):
+        JobStandardVersion.objects.create(
+            job=self.job, version=1, status="draft", criteria={}, created_by=self.hr,
+        )
+        extraction = FileTextExtraction.objects.create(
+            source_kind="resume", source_id=self.resume.id, source_sha256="a" * 64,
+            method="pdf_text", plain_text="产品经验", blocks=[{"id": "block-1", "text": "产品经验"}], status="ready",
+        )
+        structured = StructuredResumeVersion.objects.create(
+            resume=self.resume, version=1, extraction=extraction, data={}, evidence=[], model_name="model-a",
+        )
+        standard = JobStandardVersion.objects.create(
+            job=self.job, version=2, status="published", criteria={}, created_by=self.hr, published_by=self.hr,
+        )
+        ResumeAssessment.objects.create(
+            structured_resume=structured, standard=standard, version=1, total_score=60,
+            confidence="0.700", recommendation="review", model_name="model-a",
+        )
+
+        response = self.client.get("/api/recruitment/dashboard/")
+
+        intelligence = response.data["resume_intelligence"]
+        self.assertEqual(intelligence["pending_parse"], 0)
+        self.assertEqual(intelligence["pending_standard_review"], 1)
+        self.assertEqual(intelligence["pending_hr_review"], 1)
+        self.assertEqual(intelligence["recommended_advance"], 0)
+        self.assertEqual(intelligence["by_job"][0]["job"], self.job.id)
 
     def test_dashboard_is_scoped_to_authorized_accounts(self):
         response = self.client.get("/api/recruitment/dashboard/")
@@ -113,4 +144,5 @@ class RecruitmentDashboardApiTests(TestCase):
         self.assertEqual(response.data["metrics"]["open_jobs"], 0)
         self.assertEqual(response.data["job_progress"], [])
         self.assertEqual(response.data["recent_tasks"], [])
+        self.assertEqual(response.data["resume_intelligence"]["pending_parse"], 0)
         self.assertEqual(len(response.data["trend"]), 7)

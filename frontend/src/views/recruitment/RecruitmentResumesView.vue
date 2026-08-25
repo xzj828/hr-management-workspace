@@ -175,7 +175,7 @@ async function uploadWord(event) {
     const body = new FormData()
     body.append('job', String(currentJob.value.id))
     body.append('category', wordCategory.value)
-    body.append('title', file.name.replace(/\.(docx?|DOCX?)$/, ''))
+    body.append('title', file.name.replace(/\.(docx?|xlsx)$/i, ''))
     body.append('file', file)
     await api('recruitment/job-documents/', { method: 'POST', body })
     await Promise.all([loadJobDocuments(), loadStandards()])
@@ -277,7 +277,7 @@ async function toggleArchiveView() {
           </div>
           <h3 id="resume-screening-preview-title">岗位评分标准</h3>
           <p v-if="currentStandard">V{{ currentStandard.version }} · {{ currentStandard.criteria?.dimensions?.length || 0 }} 个评分维度。{{ currentStandard.status === 'published' ? '已锁定，可用于简历评分。' : '等待 HR 检查权重、依据和待确认问题。' }}</p>
-          <p v-else>上传 Word 用户画像与招聘需求，由模型整理成草稿；HR 确认后才会用于简历评分。</p>
+          <p v-else>上传 Word 或多工作表 Excel 用户画像与招聘需求，也可录入硬性指标；HR 确认后才用于简历评分。</p>
         </div>
       </div>
 
@@ -289,8 +289,8 @@ async function toggleArchiveView() {
 
       <div class="resume-screening-preview__actions">
         <label class="resume-word-category"><span>文档用途</span><select v-model="wordCategory"><option value="persona">候选人画像</option><option value="requirement">招聘需求</option><option value="other">其他标准</option></select></label>
-        <input ref="wordInput" data-test="word-file-input" type="file" accept=".doc,.docx" hidden @change="uploadWord" />
-        <button class="secondary-button button-with-icon resume-screening-preview__action" data-test="word-upload" type="button" :disabled="wordUploading" @click="wordInput?.click()"><AppIcon name="upload" :size="16" /><span>{{ wordUploading ? '上传中…' : '上传 Word' }}</span></button>
+        <input ref="wordInput" data-test="word-file-input" type="file" accept=".doc,.docx,.xlsx" hidden @change="uploadWord" />
+        <button class="secondary-button button-with-icon resume-screening-preview__action" data-test="word-upload" type="button" :disabled="wordUploading" @click="wordInput?.click()"><AppIcon name="upload" :size="16" /><span>{{ wordUploading ? '上传中…' : '上传 Word / Excel' }}</span></button>
         <button v-if="currentStandard" class="primary-button resume-screening-preview__action" data-test="open-standard" type="button" @click="standardDrawerOpen = true">{{ currentStandard.status === 'draft' ? '检查并确认' : '查看标准' }}</button>
         <button v-else class="primary-button resume-screening-preview__action" data-test="generate-standard" type="button" :disabled="generatingStandard || !jobDocuments.length" @click="generateStandard">{{ generatingStandard ? '生成中…' : '生成标准' }}</button>
         <small>{{ generationNote || (jobDocuments.length ? `已归档 ${jobDocuments.length} 份岗位标准文档` : '先上传至少一份 Word 文档') }}</small>

@@ -12,6 +12,7 @@ from docx.oxml.text.paragraph import CT_P
 from PIL import Image
 from pypdf import PdfReader
 import pypdfium2 as pdfium
+from openpyxl import load_workbook
 
 
 class ExtractionError(RuntimeError):
@@ -86,6 +87,31 @@ def extract_docx(path: Path) -> ExtractionResult:
             if cells:
                 blocks.append(TextBlock(text=" | ".join(cells), page=None, section="table"))
     return _result("docx", blocks)
+
+
+def extract_xlsx(path: Path) -> ExtractionResult:
+    try:
+        workbook = load_workbook(filename=path, read_only=True, data_only=False)
+    except Exception as exc:
+        raise ExtractionError("invalid_xlsx", "无法读取 Excel 文档，请确认文件未损坏") from exc
+    blocks = []
+    try:
+        for worksheet in workbook.worksheets:
+            for row_number, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+                values = [str(value).strip() for value in row if value is not None and str(value).strip()]
+                if values:
+                    blocks.append(
+                        TextBlock(
+                            text=" | ".join(values),
+                            page=None,
+                            section=f"sheet:{worksheet.title}:row:{row_number}",
+                        )
+                    )
+    finally:
+        workbook.close()
+    if not blocks:
+        raise ExtractionError("xlsx_no_text", "Excel 文档中没有可用内容")
+    return _result("xlsx", blocks)
 
 
 class LibreOfficeConverter:
@@ -241,6 +267,8 @@ def extract_file(path: Path, *, content_type: str, ocr=None, converter=None) -> 
     suffix = path.suffix.lower()
     if suffix == ".docx":
         return extract_docx(path)
+    if suffix == ".xlsx":
+        return extract_xlsx(path)
     if suffix == ".doc":
         with TemporaryDirectory() as directory:
             try:

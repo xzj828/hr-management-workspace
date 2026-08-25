@@ -332,6 +332,7 @@ class ResumeAssessmentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "resume", "resume_name", "structured_resume", "standard", "standard_version",
             "version", "request_id", "total_score", "dimension_scores", "evidence", "gaps",
+            "hard_failures", "auto_rejected",
             "verification_questions", "confidence", "recommendation", "recommendation_label",
             "model_name", "prompt_version", "created_at",
         ]

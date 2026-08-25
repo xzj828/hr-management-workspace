@@ -148,6 +148,22 @@ class JobStandardServiceTests(TestCase):
         with self.assertRaises(ValueError):
             validate_criteria(unknown, allowed_evidence_ids={self.block_id}, require_publishable=True)
 
+    def test_accepts_explicit_hard_requirements_but_rejects_sensitive_ones(self):
+        criteria = valid_criteria(self.block_id)
+        criteria["hard_requirements"] = [
+            {"key": "degree", "text": "本科及以上", "evidence_block_ids": [self.block_id]},
+        ]
+        criteria["auto_reject_on_hard_fail"] = True
+        normalized = validate_criteria(
+            criteria, allowed_evidence_ids={self.block_id}, require_publishable=True,
+        )
+        self.assertTrue(normalized["auto_reject_on_hard_fail"])
+        self.assertEqual(normalized["hard_requirements"][0]["key"], "degree")
+
+        criteria["hard_requirements"][0]["key"] = "age"
+        with self.assertRaises(ValueError):
+            validate_criteria(criteria, allowed_evidence_ids={self.block_id}, require_publishable=True)
+
 
 class JobStandardApiTests(APITestCase):
     def setUp(self):

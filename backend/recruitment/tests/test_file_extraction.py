@@ -5,6 +5,7 @@ from django.test import SimpleTestCase
 from docx import Document
 from PIL import Image, ImageDraw
 from reportlab.pdfgen import canvas
+from openpyxl import Workbook
 
 from recruitment.services.file_extraction import ExtractionError, extract_file
 
@@ -35,6 +36,28 @@ class MissingDocConverter:
 
 
 class FileExtractionTests(SimpleTestCase):
+    def test_xlsx_keeps_sheet_names_and_row_locations(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "persona.xlsx"
+            workbook = Workbook()
+            profile = workbook.active
+            profile.title = "人才画像"
+            profile.append(["指标", "要求"])
+            profile.append(["行业经验", "SaaS 3 年以上"])
+            hard = workbook.create_sheet("硬性条件")
+            hard.append(["学历", "本科及以上"])
+            workbook.save(path)
+
+            result = extract_file(
+                path,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+        self.assertEqual(result.method, "xlsx")
+        self.assertEqual([block["section"] for block in result.blocks], [
+            "sheet:人才画像:row:1", "sheet:人才画像:row:2", "sheet:硬性条件:row:1",
+        ])
+        self.assertIn("SaaS 3 年以上", result.plain_text)
     def test_docx_keeps_paragraph_and_table_order(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "requirement.docx"

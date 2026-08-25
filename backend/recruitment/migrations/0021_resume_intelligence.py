@@ -113,6 +113,8 @@ class Migration(migrations.Migration):
                 ('request_id', models.UUIDField(default=uuid.uuid4, editable=False, unique=True)),
                 ('total_score', models.DecimalField(decimal_places=2, max_digits=5)),
                 ('dimension_scores', models.JSONField(blank=True, default=list)),
+                ('hard_failures', models.JSONField(blank=True, default=list)),
+                ('auto_rejected', models.BooleanField(default=False)),
                 ('evidence', models.JSONField(blank=True, default=list)),
                 ('gaps', models.JSONField(blank=True, default=list)),
                 ('verification_questions', models.JSONField(blank=True, default=list)),
