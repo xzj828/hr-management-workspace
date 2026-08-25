@@ -164,6 +164,12 @@ class JobStandardServiceTests(TestCase):
         with self.assertRaises(ValueError):
             validate_criteria(criteria, allowed_evidence_ids={self.block_id}, require_publishable=True)
 
+        criteria["hard_requirements"][0] = {
+            "key": "other_gate", "text": "年龄不超过 35 岁", "evidence_block_ids": [self.block_id],
+        }
+        with self.assertRaises(ValueError):
+            validate_criteria(criteria, allowed_evidence_ids={self.block_id}, require_publishable=True)
+
 
 class JobStandardApiTests(APITestCase):
     def setUp(self):

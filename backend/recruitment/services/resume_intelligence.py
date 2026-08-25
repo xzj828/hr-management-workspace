@@ -229,6 +229,8 @@ def validate_assessment_payload(*, payload: dict, standard: JobStandardVersion, 
             raise ValueError("非零得分必须提供简历原文证据")
         if status_value == "information_missing" and score != 0:
             raise ValueError("信息不足的维度得分必须为 0")
+        if status_value == "not_supported" and score != 0:
+            raise ValueError("不满足的维度得分必须为 0")
         total += score
         normalized_scores.append(
             {
@@ -381,7 +383,7 @@ def create_assessment(*, structured, standard, gateway, request_id, actor=None) 
         )
         assessment.save(update_fields=["auto_rejected"])
     RecruitmentAuditLog.objects.create(
-        actor=None,
+        actor=actor,
         boss_account=standard.job.boss_account,
         action="resume_assessed",
         target_id=str(assessment.pk),

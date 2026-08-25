@@ -351,6 +351,12 @@ class ResumeAssessmentServiceTests(TestCase):
         with self.assertRaises(ValueError):
             validate_assessment_payload(payload=payload, standard=self.standard, structured=self.structured)
 
+    def test_not_supported_dimension_cannot_receive_points(self):
+        payload = assessment_payload(self.block_id)
+        payload["dimension_scores"][0]["status"] = "not_supported"
+        with self.assertRaises(ValueError):
+            validate_assessment_payload(payload=payload, standard=self.standard, structured=self.structured)
+
     def test_rescoring_same_inputs_creates_a_new_assessment_version(self):
         gateway = FakeGateway(assessment_payload(self.block_id))
         first = create_assessment(

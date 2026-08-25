@@ -1,4 +1,5 @@
 import json
+import re
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -18,6 +19,14 @@ from recruitment.services.file_extraction import ExtractionError, extract_file
 
 
 SENSITIVE_CRITERIA_KEYS = {"age", "ethnicity", "gender", "marital_status", "pregnancy", "sex"}
+SENSITIVE_CRITERIA_TERMS = ("性别", "年龄", "民族", "婚育", "婚姻", "怀孕", "生育")
+
+
+def _contains_sensitive_criterion(*values) -> bool:
+    text = " ".join(str(value or "") for value in values).lower()
+    return any(term in text for term in SENSITIVE_CRITERIA_TERMS) or bool(
+        re.search(r"\b(age|gender|sex|ethnicity|marital|pregnan(?:t|cy))\b", text)
+    )
 
 
 def _evidence_ids(criteria):
@@ -53,7 +62,9 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
         key = str(dimension.get("key") or "").strip().lower()
         if not key or key in seen:
             raise ValueError("评分维度标识不能为空或重复")
-        if key in SENSITIVE_CRITERIA_KEYS:
+        if key in SENSITIVE_CRITERIA_KEYS or _contains_sensitive_criterion(
+            key, dimension.get("name"), dimension.get("description")
+        ):
             raise ValueError("性别、年龄、民族、婚育等敏感属性不能作为评分维度")
         seen.add(key)
         if not str(dimension.get("name") or "").strip() or not str(dimension.get("description") or "").strip():
@@ -74,7 +85,7 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
         key = str(item.get("key") or "").strip().lower()
         if not key or key in hard_keys:
             raise ValueError("硬性指标标识不能为空或重复")
-        if key in SENSITIVE_CRITERIA_KEYS:
+        if key in SENSITIVE_CRITERIA_KEYS or _contains_sensitive_criterion(key, item.get("text")):
             raise ValueError("性别、年龄、民族、婚育等敏感属性不能作为硬性指标")
         if not str(item.get("text") or "").strip():
             raise ValueError("硬性指标必须填写明确要求")
