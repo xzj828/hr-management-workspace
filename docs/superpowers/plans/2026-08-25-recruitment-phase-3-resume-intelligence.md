@@ -56,7 +56,7 @@
 - Modify: `backend/accounts/urls.py`
 - Modify: `backend/accounts/tests.py`
 
-- [ ] **Step 1: Write failing gateway and connection API tests**
+- [x] **Step 1: Write failing gateway and connection API tests**
 
 Create tests that patch `urllib.request.urlopen`, assert a POST to `<api_url>/chat/completions`, assert the decrypted key is sent only in the Authorization header, and return:
 
@@ -69,13 +69,13 @@ Create tests that patch `urllib.request.urlopen`, assert a POST to `<api_url>/ch
 
 Add cases for HTTP 401 -> `model_auth_failed`, HTTP 429 -> `model_rate_limited`, timeout -> `model_timeout`, invalid JSON -> `model_invalid_response`, and `POST /api/account/model-credential/test/` returning `{status, model, latency_ms}` without an API key.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `..\.venv\Scripts\python.exe manage.py test accounts.tests -v 2` from `backend`.
 
 Expected: FAIL because `accounts.services.model_gateway` and the connection endpoint do not exist.
 
-- [ ] **Step 3: Implement the gateway and endpoint**
+- [x] **Step 3: Implement the gateway and endpoint**
 
 Implement these public types and signatures:
 
@@ -98,13 +98,13 @@ class OpenAICompatibleGateway:
 
 Normalize the URL with `rstrip('/')`, call `/chat/completions`, use `temperature: 0`, strip optional Markdown JSON fences, and parse one JSON object. Read the secret with `decrypt_secret`; never place it in exceptions or response data. Add `POST model-credential/test/` with `IsAuthenticated` and the current user's credential only.
 
-- [ ] **Step 4: Run tests and verify pass**
+- [x] **Step 4: Run tests and verify pass**
 
 Run: `..\.venv\Scripts\python.exe manage.py test accounts -v 2` from `backend`.
 
 Expected: all account tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add backend/accounts
