@@ -12,9 +12,11 @@ from .models import (
     CandidateDiscovery,
     ConversationAction,
     ExecutionBatch,
+    HumanAttention,
     JobApplication,
     JobRequirementDocument,
     JobRequirementDocumentVersion,
+    MessageSyncPolicy,
     RecruitmentJob,
     Resume,
     RpaTask,
@@ -122,6 +124,41 @@ class JobRequirementDocumentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "job", "category", "category_label", "title", "current_version",
             "versions", "archived_at", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class MessageSyncPolicySerializer(serializers.ModelSerializer):
+    account_name = serializers.CharField(source="boss_account.name", read_only=True)
+
+    class Meta:
+        model = MessageSyncPolicy
+        fields = [
+            "id", "boss_account", "account_name", "enabled", "interval_minutes",
+            "last_scheduled_at", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "account_name", "last_scheduled_at", "created_at", "updated_at"]
+
+    def validate_boss_account(self, account):
+        return _validate_authorized_account(account, self.context["request"].user)
+
+
+class HumanAttentionSerializer(serializers.ModelSerializer):
+    attention_type_label = serializers.CharField(source="get_attention_type_display", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    account_name = serializers.CharField(source="boss_account.name", read_only=True, allow_null=True)
+    job_title = serializers.CharField(source="job.title", read_only=True, allow_null=True)
+    candidate_name = serializers.CharField(source="application.candidate.name", read_only=True, allow_null=True)
+    resolved_by_name = serializers.CharField(source="resolved_by.username", read_only=True, allow_null=True)
+
+    class Meta:
+        model = HumanAttention
+        fields = [
+            "id", "attention_type", "attention_type_label", "status", "status_label",
+            "title", "detail", "priority", "boss_account", "account_name", "job",
+            "job_title", "application", "candidate_name", "workflow_run", "workflow_node_run",
+            "resolved_by_name", "resolution_note", "resolved_at", "archived_at",
+            "created_at", "updated_at",
         ]
         read_only_fields = fields
 

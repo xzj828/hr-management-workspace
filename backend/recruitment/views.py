@@ -20,9 +20,11 @@ from .models import (
     CandidateDiscovery,
     ConversationAction,
     ExecutionBatch,
+    HumanAttention,
     JobApplication,
     JobRequirementDocument,
     JobRequirementDocumentVersion,
+    MessageSyncPolicy,
     RecruitmentAuditLog,
     RecruitmentJob,
     Resume,
@@ -49,6 +51,8 @@ from .serializers import (
     JobApplicationSerializer,
     JobRequirementDocumentSerializer,
     JobRequirementDocumentVersionSerializer,
+    HumanAttentionSerializer,
+    MessageSyncPolicySerializer,
     PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
     ResumeSerializer,
@@ -67,6 +71,7 @@ from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
 from .services.lifecycle import LifecycleConflict, archive_object, restore_object
 from .services.job_documents import create_document, create_document_version, set_current_version
+from .services.human_attention import archive_attention, resolve_attention
 from .services.workflow_nodes import execute_workflow_node
 from .services.workflow_runtime import advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
 
@@ -265,6 +270,53 @@ class JobRequirementDocumentVersionViewSet(viewsets.ReadOnlyModelViewSet):
             filename=version.original_name,
             content_type="application/octet-stream",
         )
+
+
+class MessageSyncPolicyViewSet(viewsets.ModelViewSet):
+    queryset = MessageSyncPolicy.objects.select_related("boss_account")
+    serializer_class = MessageSyncPolicySerializer
+    permission_classes = [RecruitmentWritePermission]
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(boss_account__authorized_users=self.request.user)
+        return queryset.distinct().order_by("boss_account_id")
+
+
+class HumanAttentionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = HumanAttention.objects.select_related(
+        "boss_account", "job", "application__candidate", "workflow_run", "workflow_node_run", "resolved_by"
+    )
+    serializer_class = HumanAttentionSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(
+                Q(boss_account__authorized_users=self.request.user)
+                | Q(boss_account__isnull=True, job__owner=self.request.user)
+            )
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset.distinct()
+
+    @action(detail=True, methods=["post"])
+    def resolve(self, request, pk=None):
+        attention = resolve_attention(
+            attention=self.get_object(),
+            actor=request.user,
+            note=str(request.data.get("note", "")),
+            approved=request.data.get("approved", True) is not False,
+        )
+        return Response(self.get_serializer(attention).data)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        return Response(self.get_serializer(archive_attention(attention=self.get_object())).data)
 
 
 class CandidateViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
