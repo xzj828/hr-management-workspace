@@ -86,13 +86,13 @@ class RpaTaskApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 403)
 
-    def test_second_active_task_is_rejected_cleanly(self):
+    def test_multiple_pending_tasks_are_queued_for_serial_execution(self):
         self.assertEqual(self.create_task().status_code, 201)
 
         response = self.create_task(action="sync_positions")
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(RpaTask.objects.count(), 1)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(RpaTask.objects.count(), 2)
 
     def test_pending_task_can_be_cancelled(self):
         task_id = self.create_task().data["id"]

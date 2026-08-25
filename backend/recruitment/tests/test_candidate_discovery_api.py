@@ -147,6 +147,7 @@ class CandidateDiscoveryApiTests(APITestCase):
         RpaTask.objects.create(
             boss_account=self.account,
             action=RpaTask.Action.CHECK_STATUS,
+            status=RpaTask.Status.RUNNING,
             created_by=self.hr,
         )
 
