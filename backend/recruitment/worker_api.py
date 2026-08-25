@@ -253,6 +253,7 @@ def complete_task_view(request, task_id):
                     if discovery is None:
                         continue
                     import_discoveries(discoveries=[discovery], actor=task.created_by)
+                    discovery.refresh_from_db(fields=["imported_candidate", "imported_at"])
                     application = JobApplication.objects.get(candidate=discovery.imported_candidate, job=campaign.job)
                     raw_path = Path(str(item.get("path", "")))
                     resolved = raw_path.resolve(strict=True)

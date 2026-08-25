@@ -1,4 +1,6 @@
 from datetime import timedelta
+import tempfile
+from pathlib import Path
 
 from django.contrib.auth.models import User
 from django.test import override_settings
@@ -13,8 +15,10 @@ from recruitment.models import (
     HumanAttention,
     JobApplication,
     RecruitmentJob,
+    Resume,
     RpaTask,
     RpaWorker,
+    SearchCampaign,
 )
 
 
@@ -264,3 +268,47 @@ class WorkerApiTests(APITestCase):
         request_task = RpaTask.objects.exclude(pk=self.task.pk).get(action=RpaTask.Action.REQUEST_RESUME)
         self.assertTrue(request_task.request_payload["first_contact"])
         self.assertEqual(request_task.request_payload["target"]["name"], "周青")
+
+    def test_search_campaign_completion_archives_online_resume_and_creates_hr_attention(self):
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account, external_id="search-pull-job", title="数据工程师", owner=self.hr,
+        )
+        campaign = SearchCampaign.objects.create(
+            name="数据岗位主动寻访", boss_account=self.account, job=job, source="search",
+            status=SearchCampaign.Status.RUNNING, target_resume_count=1, max_scan_count=10,
+            criteria={"keyword": "Python"}, created_by=self.hr,
+        )
+        self.task.action = RpaTask.Action.SEARCH_AND_PULL_RESUMES
+        self.task.request_payload = {"campaign_id": campaign.pk, "job": job.pk}
+        self.task.save(update_fields=["action", "request_payload"])
+
+        with tempfile.TemporaryDirectory() as media_root, self.settings(MEDIA_ROOT=media_root):
+            incoming = Path(media_root) / "rpa-incoming"
+            incoming.mkdir(parents=True)
+            image_path = incoming / "resume.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nresume-image")
+            self.heartbeat()
+            lease = self.client.post(
+                "/api/recruitment/worker/tasks/lease/", {"worker_key": "local-worker"},
+                format="json", **self.token_header,
+            )
+            row = {"display_name": "顾宁", "current_title": "数据开发", "city": "北京"}
+            response = self.client.post(
+                f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+                {
+                    "worker_key": "local-worker", "status": "succeeded",
+                    "result": {
+                        "candidates": [row], "scanned_count": 1,
+                        "resumes": [{"candidate": row, "path": str(image_path), "filename": "顾宁-在线简历.png"}],
+                    },
+                }, format="json", **self.token_header,
+            )
+
+            self.assertEqual(response.status_code, 200, response.data)
+            resume = Resume.objects.get()
+            self.assertEqual(resume.source, Resume.Source.BOSS_ONLINE)
+            self.assertEqual(resume.content_type, "image/png")
+            self.assertEqual(HumanAttention.objects.get().attention_type, HumanAttention.Type.GREETING_REQUIRED)
+            campaign.refresh_from_db()
+            self.assertEqual(campaign.status, SearchCampaign.Status.SUCCEEDED)
+            self.assertEqual(campaign.pulled_resume_count, 1)
