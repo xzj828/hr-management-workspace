@@ -166,11 +166,11 @@ git commit -m "feat: add persistent recruitment job context"
 - Modify: `frontend/src/navigation.js`
 - Modify: `frontend/src/styles.css`
 
-- [ ] **Step 1: Write failing component and layout tests**
+- [x] **Step 1: Write failing component and layout tests**
 
 Mark routes with `recruitmentScope: 'global' | 'job'`. Test that global routes render “全部职位 · 全局视图”; job routes render a searchable/selectable control; selecting job 12 pushes the same route with `{ query: { ...route.query, job: '12' } }`; scoped navigation links preserve `job`; and global navigation links omit it.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 npm.cmd test -- src/components/RecruitmentJobContext.test.js src/components/AppLayout.test.js
@@ -178,7 +178,7 @@ npm.cmd test -- src/components/RecruitmentJobContext.test.js src/components/AppL
 
 Expected: FAIL because route metadata and the context component do not exist.
 
-- [ ] **Step 3: Implement route metadata and context UI**
+- [x] **Step 3: Implement route metadata and context UI**
 
 Add route metadata:
 
@@ -190,11 +190,11 @@ Use `global` for dashboard/jobs/automation and `job` for candidates/pipeline/res
 
 The component must show job title as primary text and department/account as secondary text, emit selection through the store, update the route, and show “全部职位 · 全局视图” on global pages.
 
-- [ ] **Step 4: Add top-bar styles**
+- [x] **Step 4: Add top-bar styles**
 
 Add compact selector/global badge styles, a 320px maximum dropdown width, keyboard focus, 180ms open/close transition, long-label ellipsis, a stacked secondary label, responsive behavior below 1180px, and a `prefers-reduced-motion` override.
 
-- [ ] **Step 5: Run focused tests and build**
+- [x] **Step 5: Run focused tests and build**
 
 ```powershell
 npm.cmd test -- src/components/RecruitmentJobContext.test.js src/components/AppLayout.test.js
@@ -203,7 +203,7 @@ npm.cmd run build
 
 Expected: tests PASS and Vite build succeeds.
 
-- [ ] **Step 6: Commit the navigation slice**
+- [x] **Step 6: Commit the navigation slice**
 
 ```powershell
 git add frontend/src/components/RecruitmentJobContext.vue frontend/src/components/RecruitmentJobContext.test.js frontend/src/components/AppLayout.vue frontend/src/components/AppLayout.test.js frontend/src/router.js frontend/src/navigation.js frontend/src/styles.css

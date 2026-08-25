@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import {
   modules,
   moduleDestination,
@@ -12,8 +13,10 @@ import {
 import RecruitmentCopilotDrawer from '@/components/RecruitmentCopilotDrawer.vue'
 import UserAccountMenu from '@/components/UserAccountMenu.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import RecruitmentJobContext from '@/components/RecruitmentJobContext.vue'
 
 const auth = useAuthStore()
+const recruitmentContext = useRecruitmentContextStore()
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
@@ -28,12 +31,34 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => auth.user?.id,
+  async (userId) => {
+    if (!userId) {
+      recruitmentContext.reset()
+      return
+    }
+    try { await recruitmentContext.loadJobs({ userId }) } catch {}
+  },
+  { immediate: true },
+)
+
 function moduleRoute(moduleId) {
-  return { name: moduleDestination(moduleId) }
+  const name = moduleDestination(moduleId)
+  const item = navigationForModule(moduleId).find((entry) => entry.name === name)
+  return topNavigationRoute(item || { name })
+}
+
+function topNavigationRoute(item) {
+  if (item.scope === 'job' && recruitmentContext.selectedJobId) {
+    return { name: item.name, query: { job: recruitmentContext.selectedJobId } }
+  }
+  return { name: item.name }
 }
 
 async function signOut() {
   await auth.logout()
+  recruitmentContext.reset()
   router.push({ name: 'login' })
 }
 </script>
@@ -72,11 +97,12 @@ async function signOut() {
           <router-link
             v-for="item in topNavigation"
             :key="item.name"
-            :to="{ name: item.name }"
+            :to="topNavigationRoute(item)"
             class="top-navigation__link"
           ><AppIcon :name="item.icon" :size="18" /><span>{{ item.label }}</span></router-link>
         </nav>
         <div class="topbar__actions">
+          <RecruitmentJobContext v-if="currentModule === 'recruitment'" />
           <button v-if="currentModule === 'recruitment'" class="copilot-entry" type="button" @click="copilotOpen = true">
             <AppIcon name="sparkles" :size="17" /> Copilot
           </button>

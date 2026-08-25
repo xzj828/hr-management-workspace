@@ -5,12 +5,12 @@ export const modules = [
 
 const navigation = {
   recruitment: [
-    { name: 'recruitment-dashboard', label: '招聘看板', icon: 'dashboard' },
-    { name: 'recruitment-jobs', label: '职位管理', icon: 'briefcase' },
-    { name: 'recruitment-candidates', label: '候选人', icon: 'user' },
-    { name: 'recruitment-pipeline', label: '招聘流程', icon: 'workflow' },
-    { name: 'recruitment-automation', label: '自动化任务', icon: 'refresh' },
-    { name: 'recruitment-resumes', label: '简历中心', icon: 'document' },
+    { name: 'recruitment-dashboard', label: '招聘看板', icon: 'dashboard', scope: 'global' },
+    { name: 'recruitment-jobs', label: '职位管理', icon: 'briefcase', scope: 'global' },
+    { name: 'recruitment-candidates', label: '候选人', icon: 'user', scope: 'job' },
+    { name: 'recruitment-pipeline', label: '招聘流程', icon: 'workflow', scope: 'job' },
+    { name: 'recruitment-automation', label: '自动化任务', icon: 'refresh', scope: 'global' },
+    { name: 'recruitment-resumes', label: '简历中心', icon: 'document', scope: 'job' },
   ],
   attendance: [
     { name: 'attendance-dashboard', label: '考勤看板', icon: 'dashboard' },
