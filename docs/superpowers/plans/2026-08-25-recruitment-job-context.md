@@ -114,7 +114,7 @@ git commit -m "fix: isolate recruitment data by job"
 - Create: `frontend/src/stores/recruitmentContext.js`
 - Create: `frontend/src/stores/recruitmentContext.test.js`
 
-- [ ] **Step 1: Write failing store tests**
+- [x] **Step 1: Write failing store tests**
 
 Cover open-job loading, URL priority, per-user persistence, invalid selection clearing, and stale load suppression. Use a storage key shaped as `ximing-hr:recruitment-job:<user-id>` and assert:
 
@@ -128,7 +128,7 @@ expect(store.currentJob.id).toBe(12)
 
 Also resolve two deferred `loadJobs` calls in reverse order and assert the newest response remains in state.
 
-- [ ] **Step 2: Run the store test and verify failure**
+- [x] **Step 2: Run the store test and verify failure**
 
 ```powershell
 npm.cmd test -- src/stores/recruitmentContext.test.js
@@ -136,19 +136,19 @@ npm.cmd test -- src/stores/recruitmentContext.test.js
 
 Expected: FAIL because the store does not exist.
 
-- [ ] **Step 3: Implement the store**
+- [x] **Step 3: Implement the store**
 
 Implement state `jobs`, `selectedJobId`, `loading`, `error`, `loadedUserId`, and `requestSequence`; getters `currentJob` and `hasJobs`; actions `loadJobs`, `selectJob`, `restoreSelection`, `invalidateSelection`, and `reset`.
 
 `loadJobs` must call only `recruitment/jobs/?status=open`, ignore stale responses by sequence number, restore only IDs still present in `jobs`, and never auto-select the first item. `selectJob` must accept only IDs present in `jobs` and persist by user ID.
 
-- [ ] **Step 4: Run the store tests**
+- [x] **Step 4: Run the store tests**
 
 Run the command from Step 2.
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the store**
+- [x] **Step 5: Commit the store**
 
 ```powershell
 git add frontend/src/stores/recruitmentContext.js frontend/src/stores/recruitmentContext.test.js
