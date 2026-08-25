@@ -30,6 +30,7 @@ describe('RecruitmentResumesView', () => {
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [resumes[0]] })
+      if (path === 'recruitment/job-documents/?job=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/resumes/?job=1&archived=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/resumes/1/archive/') return Promise.resolve({ ...resumes[0], archived_at: '2026-08-24T10:00:00Z' })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
@@ -68,7 +69,7 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.get('.recruitment-download-link').findComponent(AppIcon).props('name')).toBe('download')
   })
 
-  it('reserves an honest, inactive location for the next-stage screening workflow', async () => {
+  it('offers Word requirement upload while keeping parsing and scoring in the next phase', async () => {
     const wrapper = mount(RecruitmentResumesView)
     await flushPromises()
 
@@ -79,11 +80,9 @@ describe('RecruitmentResumesView', () => {
     expect(preview.text()).toContain('提取初筛标准')
     expect(preview.text()).toContain('生成简历评分')
 
-    const upload = wrapper.get('[data-test="future-word-upload"]')
-    expect(upload.attributes()).toHaveProperty('disabled')
-    const callCount = apiMock.mock.calls.length
-    await upload.trigger('click')
-    expect(apiMock).toHaveBeenCalledTimes(callCount)
+    const upload = wrapper.get('[data-test="word-upload"]')
+    expect(upload.attributes()).not.toHaveProperty('disabled')
+    expect(wrapper.get('[data-test="word-file-input"]').attributes('accept')).toBe('.doc,.docx')
 
     await wrapper.get('[data-test="toggle-archived-resumes"]').trigger('click')
     await flushPromises()
@@ -94,6 +93,7 @@ describe('RecruitmentResumesView', () => {
   it('does not offer preview or download for a missing PDF', async () => {
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [{ ...resumes[0], id: 4, file_available: false }] })
+      if (path === 'recruitment/job-documents/?job=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
@@ -115,5 +115,22 @@ describe('RecruitmentResumesView', () => {
     await flushPromises()
 
     expect(apiMock).toHaveBeenCalledWith('recruitment/resumes/1/archive/', { method: 'POST' })
+  })
+
+  it('renders BOSS online resume screenshots as images instead of PDF frames', async () => {
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [{
+        ...resumes[0], id: 8, original_name: 'online.png', content_type: 'image/png', source_label: 'BOSS 在线简历',
+        preview_url: '/api/recruitment/resumes/8/file/', download_url: '/api/recruitment/resumes/8/file/?download=1',
+      }] })
+      if (path === 'recruitment/job-documents/?job=1') return Promise.resolve({ results: [] })
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    const wrapper = mount(RecruitmentResumesView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('PNG 在线简历')
+    await wrapper.get('[data-test="preview-8"]').trigger('click')
+    expect(wrapper.get('.recruitment-image-preview').attributes('src')).toBe('/api/recruitment/resumes/8/file/')
+    expect(wrapper.find('iframe').exists()).toBe(false)
   })
 })

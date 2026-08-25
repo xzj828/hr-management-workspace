@@ -17,6 +17,10 @@ const error = ref('')
 const lifecycleTarget = ref(null)
 const lifecycleSaving = ref(false)
 const showArchived = ref(false)
+const jobDocuments = ref([])
+const wordInput = ref(null)
+const wordCategory = ref('persona')
+const wordUploading = ref(false)
 const selectedVersions = computed(() => selected.value ? resumes.value.filter((item) => item.candidate === selected.value.candidate || item.candidate_name === selected.value.candidate_name) : [])
 const fileStatusLabel = (resume) => resume.file_available ? '已入库' : '文件不可用'
 let loadSequence = 0
@@ -38,6 +42,32 @@ async function loadResumes() {
   }
 }
 
+async function loadJobDocuments() {
+  if (!currentJob.value) return
+  try { jobDocuments.value = listItems(await api(`recruitment/job-documents/?job=${currentJob.value.id}`)) }
+  catch (err) { error.value = err.message }
+}
+
+async function uploadWord(event) {
+  const file = event.target.files?.[0]
+  if (!file || !currentJob.value) return
+  wordUploading.value = true; error.value = ''
+  try {
+    const body = new FormData()
+    body.append('job', String(currentJob.value.id))
+    body.append('category', wordCategory.value)
+    body.append('title', file.name.replace(/\.(docx?|DOCX?)$/, ''))
+    body.append('file', file)
+    await api('recruitment/job-documents/', { method: 'POST', body })
+    await loadJobDocuments()
+  } catch (err) { error.value = err.message }
+  finally { wordUploading.value = false; event.target.value = '' }
+}
+
+function resumeFormat(resume) {
+  return resume.content_type === 'image/png' ? 'PNG 在线简历' : 'PDF 附件简历'
+}
+
 watch(
   () => currentJob.value?.id,
   async () => {
@@ -48,7 +78,7 @@ watch(
     showArchived.value = false
     error.value = ''
     loading.value = Boolean(currentJob.value)
-    if (currentJob.value) await loadResumes()
+    if (currentJob.value) await Promise.all([loadResumes(), loadJobDocuments()])
   },
   { immediate: true },
 )
@@ -86,7 +116,7 @@ async function toggleArchiveView() {
       <div>
         <span class="eyebrow">Resume Library</span>
         <h2>简历中心</h2>
-        <p>{{ currentJob ? `${currentJob.title} · 管理该职位候选人的 PDF 简历` : '选择职位后查看对应简历资产' }}</p>
+        <p>{{ currentJob ? `${currentJob.title} · 统一管理 BOSS 在线简历与候选人 PDF 附件` : '选择职位后查看对应简历资产' }}</p>
       </div>
       <div v-if="currentJob" class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-resumes" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前简历' : '归档记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="loadResumes" /></div>
     </header>
@@ -110,7 +140,7 @@ async function toggleArchiveView() {
             <span class="recruitment-chip resume-screening-preview__status">下一阶段</span>
           </div>
           <h3 id="resume-screening-preview-title">智能初筛</h3>
-          <p>按职位上传 Word 用户画像与招聘需求，系统将据此提取初筛标准并为简历评分。当前仅保留入口，暂不可用。</p>
+          <p>按职位上传 Word 用户画像与招聘需求并保留版本。当前先作为后续初筛评分依据归档，内容解析与评分在第三阶段启用。</p>
         </div>
       </div>
 
@@ -121,14 +151,17 @@ async function toggleArchiveView() {
       </ol>
 
       <div class="resume-screening-preview__actions">
-        <button
-          class="secondary-button button-with-icon resume-screening-preview__action"
-          data-test="future-word-upload"
-          type="button"
-          disabled
-        ><AppIcon name="upload" :size="16" /><span>上传 Word（暂未开放）</span></button>
-        <small>不影响当前简历预览、下载与归档</small>
+        <label class="resume-word-category"><span>文档用途</span><select v-model="wordCategory"><option value="persona">候选人画像</option><option value="requirement">招聘需求</option><option value="other">其他标准</option></select></label>
+        <input ref="wordInput" data-test="word-file-input" type="file" accept=".doc,.docx" hidden @change="uploadWord" />
+        <button class="secondary-button button-with-icon resume-screening-preview__action" data-test="word-upload" type="button" :disabled="wordUploading" @click="wordInput?.click()"><AppIcon name="upload" :size="16" /><span>{{ wordUploading ? '上传中…' : '上传 Word' }}</span></button>
+        <small>{{ jobDocuments.length ? `已归档 ${jobDocuments.length} 份岗位标准文档` : '支持 .doc / .docx，单文件不超过 25MB' }}</small>
       </div>
+    </section>
+
+    <section v-if="!showArchived && jobDocuments.length" class="resume-requirement-docs">
+      <a v-for="document in jobDocuments" :key="document.id" :href="`/api/recruitment/job-document-versions/${document.current_version.id}/file/`">
+        <AppIcon name="document" :size="17" /><span><strong>{{ document.title }}</strong><small>{{ document.category_label }} · V{{ document.current_version.version }} · {{ formatRecruitmentDate(document.updated_at) }}</small></span><AppIcon name="download" :size="14" />
+      </a>
     </section>
 
     <section class="recruitment-data-shell">
@@ -139,7 +172,7 @@ async function toggleArchiveView() {
             <tr v-for="resume in resumes" :key="resume.id">
               <td><strong>{{ resume.candidate_name }}</strong></td>
               <td>{{ resume.job_title || '—' }}</td>
-              <td><strong class="recruitment-file-name">{{ resume.original_name }}</strong><small class="block-text">PDF · {{ formatFileSize(resume.file_size) }} · V{{ resume.version || 1 }}</small></td>
+              <td><strong class="recruitment-file-name">{{ resume.original_name }}</strong><small class="block-text">{{ resumeFormat(resume) }} · {{ formatFileSize(resume.file_size) }} · V{{ resume.version || 1 }}</small></td>
               <td>{{ resume.source_label }}</td>
               <td>{{ formatRecruitmentDate(resume.updated_at) }}</td>
               <td>
@@ -153,7 +186,7 @@ async function toggleArchiveView() {
                 <button v-else :data-test="`archive-resume-${resume.id}`" type="button" class="danger-text-button" @click="lifecycleTarget = resume">归档</button>
               </td>
             </tr>
-            <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">{{ showArchived ? '该职位暂无已归档简历' : `该职位暂无简历，可从候选人页面为 ${currentJob.title} 保存在线简历 PDF。` }}</td></tr>
+            <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">{{ showArchived ? '该职位暂无已归档简历' : `该职位暂无简历，可通过主动寻访拉取在线简历，或从沟通消息归档 PDF 附件。` }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -169,15 +202,16 @@ async function toggleArchiveView() {
         <div><dt>文件指纹</dt><dd class="resume-hash">{{ selected.sha256 ? selected.sha256.slice(0, 12) : '历史文件' }}</dd></div>
       </dl>
       <section v-if="selectedVersions.length > 1" class="resume-version-list"><span>历史版本</span><button v-for="version in selectedVersions" :key="version.id" type="button" :class="{ active: version.id === selected.id }" @click="selected = version"><strong>V{{ version.version || 1 }}</strong><small>{{ formatRecruitmentDate(version.acquired_at || version.updated_at) }}</small></button></section>
+      <img v-if="selected.file_available && selected.content_type === 'image/png'" class="recruitment-image-preview" :src="selected.preview_url" :alt="`${selected.candidate_name}的在线简历`" />
       <iframe
-        v-if="selected.file_available"
+        v-else-if="selected.file_available"
         class="recruitment-pdf-preview"
         :src="selected.preview_url"
         :title="`${selected.candidate_name}的简历`"
       ></iframe>
       <div v-else class="recruitment-file-unavailable">简历文件不可用</div>
       <template #footer>
-        <a class="secondary-button recruitment-download-link button-with-icon" :href="selected.download_url"><AppIcon name="download" :size="16" /><span>下载 PDF</span></a>
+        <a class="secondary-button recruitment-download-link button-with-icon" :href="selected.download_url"><AppIcon name="download" :size="16" /><span>下载{{ selected.content_type === 'image/png' ? '在线简历' : ' PDF' }}</span></a>
       </template>
     </RecruitmentDetailDrawer>
     <ArchiveConfirmModal v-if="lifecycleTarget" title="归档简历" :name="lifecycleTarget.original_name" description="简历会从当前简历中心移除，文件与访问审计暂时保留，可从归档记录恢复。" action-label="确认归档" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="archiveResume" />
