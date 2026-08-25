@@ -384,7 +384,7 @@ git commit -m "feat: refresh job context after position sync"
 **Files:**
 - Verification only; any failure returns to the task that owns the affected file before this task can complete.
 
-- [ ] **Step 1: Run the complete backend suite**
+- [x] **Step 1: Run the complete backend suite**
 
 ```powershell
 ..\.venv\Scripts\python.exe manage.py test -v 1
@@ -392,7 +392,7 @@ git commit -m "feat: refresh job context after position sync"
 
 Expected: all Django tests pass.
 
-- [ ] **Step 2: Run the complete frontend suite and production build**
+- [x] **Step 2: Run the complete frontend suite and production build**
 
 ```powershell
 npm.cmd test
@@ -401,7 +401,7 @@ npm.cmd run build
 
 Expected: all Vitest tests pass and Vite produces `backend/frontend_dist` without errors.
 
-- [ ] **Step 3: Run Windows startup smoke checks**
+- [x] **Step 3: Run Windows startup smoke checks**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-startup.ps1
@@ -409,7 +409,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-startup.ps1
 
 Expected: startup, SPA assets, API health, and content types pass.
 
-- [ ] **Step 4: Rebuild/restart and complete browser acceptance**
+- [x] **Step 4: Rebuild/restart and complete browser acceptance**
 
 Verify: global pages show “全部职位 · 全局视图”; no-selection job pages do not load mixed data; a job selection persists across candidates/pipeline/resumes and refresh; dashboard stays global; job cards drill down; rapid job switching never flashes old rows; successful sync refreshes the selector; failed sync preserves it.
 
