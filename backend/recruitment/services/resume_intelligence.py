@@ -1,4 +1,5 @@
 import json
+import re
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -11,6 +12,7 @@ from recruitment.models import (
     FileTextExtraction,
     JobStandardVersion,
     RecruitmentAuditLog,
+    Resume,
     ResumeAssessment,
     StructuredResumeVersion,
 )
@@ -18,6 +20,10 @@ from recruitment.services.file_extraction import ExtractionError, extract_file
 
 
 SENSITIVE_FIELDS = {"age", "birth_date", "ethnicity", "gender", "marital_status", "pregnancy", "sex"}
+CONTACT_FIELDS = {"name", "phone", "email", "mobile", "wechat", "weixin"}
+SENSITIVE_TEXT = re.compile(r"(?:性别|年龄|民族|婚育|婚姻|怀孕|生育|\b(?:age|gender|sex|ethnicity|marital|pregnan(?:t|cy))\b)", re.I)
+PHONE_TEXT = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
+EMAIL_TEXT = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
 STRUCTURED_LIST_FIELDS = (
     "work_experiences",
     "project_experiences",
@@ -92,6 +98,79 @@ def validate_structured_payload(payload: dict, *, extraction: FileTextExtraction
     }
 
 
+def _redact_for_scoring(value):
+    """Remove contact and protected attributes recursively before model scoring."""
+    if isinstance(value, dict):
+        return {
+            key: _redact_for_scoring(item)
+            for key, item in value.items()
+            if str(key).lower() not in SENSITIVE_FIELDS | CONTACT_FIELDS
+        }
+    if isinstance(value, list):
+        return [_redact_for_scoring(item) for item in value]
+    if isinstance(value, str):
+        text = EMAIL_TEXT.sub("[邮箱已隐藏]", PHONE_TEXT.sub("[手机号已隐藏]", value))
+        return "[受保护属性已隐藏]" if SENSITIVE_TEXT.search(text) else text
+    return value
+
+
+def _structured_rule_value(data, field):
+    if field == "highest_degree":
+        ranks = {"高中": 1, "中专": 1, "大专": 2, "专科": 2, "本科": 3, "学士": 3, "硕士": 4, "研究生": 4, "博士": 5}
+        degrees = []
+        for item in data.get("educations", []) or []:
+            value = item.get("degree") if isinstance(item, dict) else item
+            if value:
+                degrees.append(str(value))
+        return max(degrees, key=lambda value: max((rank for name, rank in ranks.items() if name in value), default=0), default=None)
+    if field == "skills":
+        return [str(item.get("name") if isinstance(item, dict) else item) for item in data.get("skills", []) or []]
+    if field == "city":
+        return (data.get("basics") or {}).get("city")
+    return data.get(field)
+
+
+def _rule_met(actual, rule):
+    if actual in (None, "", []):
+        return None
+    operator, expected = rule["operator"], rule["value"]
+    if operator in {"gte", "lte"} and rule["field"] == "total_experience_months":
+        try:
+            return float(actual) >= float(expected) if operator == "gte" else float(actual) <= float(expected)
+        except (TypeError, ValueError):
+            return None
+    if rule["field"] == "highest_degree":
+        ranks = {"高中": 1, "中专": 1, "大专": 2, "专科": 2, "本科": 3, "学士": 3, "硕士": 4, "研究生": 4, "博士": 5}
+        def rank(value): return max((score for name, score in ranks.items() if name in str(value)), default=0)
+        if operator == "gte": return rank(actual) >= rank(expected)
+        return any(rank(actual) == rank(item) for item in (expected if isinstance(expected, list) else [expected]))
+    if operator == "contains_all":
+        haystack = " ".join(actual).lower()
+        return all(str(item).lower() in haystack for item in (expected if isinstance(expected, list) else [expected]))
+    if operator == "in":
+        return str(actual).lower() in {str(item).lower() for item in (expected if isinstance(expected, list) else [expected])}
+    return None
+
+
+def deterministic_hard_failures(*, standard, structured, model_results):
+    by_key = {item["criterion_key"]: item for item in model_results}
+    failures = []
+    for criterion in standard.criteria.get("hard_requirements", []):
+        rule = criterion.get("rule")
+        if not rule:
+            continue
+        actual = _structured_rule_value(structured.data, rule["field"])
+        if _rule_met(actual, rule) is False:
+            model_item = by_key.get(criterion["key"], {})
+            failures.append({
+                "criterion_key": criterion["key"], "text": criterion["text"],
+                "status": "not_met", "reason": "结构化字段明确不满足已确认规则",
+                "rule": rule, "actual_value": actual,
+                "resume_evidence_block_ids": model_item.get("resume_evidence_block_ids", []),
+            })
+    return failures
+
+
 def build_resume_structure_prompt(extraction):
     system = (
         "你是简历结构化助手。只能依据原文块生成 JSON，不得推断缺失经历。"
@@ -121,6 +200,7 @@ def build_resume_structure_prompt(extraction):
 def create_structured_resume(*, resume, extraction, gateway) -> StructuredResumeVersion:
     system, user = build_resume_structure_prompt(extraction)
     normalized = validate_structured_payload(gateway.complete_json(system=system, user=user).data, extraction=extraction)
+    resume = Resume.objects.select_for_update().get(pk=resume.pk)
     latest = StructuredResumeVersion.objects.filter(resume=resume).order_by("-version").first()
     model_name = gateway.credential.model
     if (
@@ -319,8 +399,8 @@ def build_assessment_prompt(*, standard, structured):
     user = json.dumps(
         {
             "criteria": standard.criteria,
-            "structured_resume": structured.data,
-            "resume_blocks": structured.extraction.blocks,
+            "structured_resume": _redact_for_scoring(structured.data),
+            "resume_blocks": _redact_for_scoring(structured.extraction.blocks),
             "allowed_recommendations": list(ResumeAssessment.Recommendation.values),
             "hard_requirements": standard.criteria.get("hard_requirements", []),
             "hard_requirement_rule": "只有简历原文明确证明不满足时返回 not_met；没写或无法判断必须返回 information_missing",
@@ -350,6 +430,7 @@ def create_assessment(*, structured, standard, gateway, request_id, actor=None) 
         standard=standard,
         structured=structured,
     )
+    StructuredResumeVersion.objects.select_for_update().get(pk=structured.pk)
     version = (
         ResumeAssessment.objects.filter(structured_resume=structured, standard=standard)
         .aggregate(value=Max("version"))["value"]
@@ -370,8 +451,15 @@ def create_assessment(*, structured, standard, gateway, request_id, actor=None) 
         recommendation=normalized["recommendation"],
         model_name=gateway.credential.model,
     )
+    deterministic_failures = deterministic_hard_failures(
+        standard=standard, structured=structured, model_results=assessment.hard_failures
+    )
+    if deterministic_failures:
+        assessment.hard_failures = deterministic_failures
+        assessment.recommendation = ResumeAssessment.Recommendation.HOLD
+        assessment.save(update_fields=["hard_failures", "recommendation"])
     if (
-        assessment.hard_failures
+        deterministic_failures
         and standard.criteria.get("auto_reject_on_hard_fail") is True
         and structured.resume.application_id
     ):
@@ -379,9 +467,14 @@ def create_assessment(*, structured, standard, gateway, request_id, actor=None) 
         assessment.auto_rejected = reject_for_hard_requirements(
             application=structured.resume.application,
             actor=actor,
-            failure_keys=[item["criterion_key"] for item in assessment.hard_failures],
+            failure_keys=[item["criterion_key"] for item in deterministic_failures],
         )
         assessment.save(update_fields=["auto_rejected"])
+        RecruitmentAuditLog.objects.create(
+            actor=actor, boss_account=standard.job.boss_account,
+            action="hard_requirement_auto_rejected", target_id=str(assessment.pk),
+            detail={"failures": deterministic_failures},
+        )
     RecruitmentAuditLog.objects.create(
         actor=actor,
         boss_account=standard.job.boss_account,

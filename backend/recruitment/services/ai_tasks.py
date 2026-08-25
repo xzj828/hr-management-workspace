@@ -1,5 +1,7 @@
 from datetime import timedelta
+import hashlib
 import uuid
+import threading
 
 from django.db import connection, transaction
 from django.utils import timezone
@@ -11,6 +13,8 @@ from recruitment.services.file_extraction import ExtractionError
 
 
 RETRY_DELAYS = (30, 120, 300)
+PROMPT_REVISION = "phase3-v2"
+LEASE_SECONDS = 180
 
 
 def _has_model_configuration(user) -> bool:
@@ -27,6 +31,14 @@ def _initial_status(user):
     return AiProcessingTask.Status.PENDING if _has_model_configuration(user) else AiProcessingTask.Status.WAITING_CONFIG
 
 
+def _model_fingerprint(user):
+    credential = UserModelCredential.objects.filter(user=user).first()
+    if not credential:
+        return "unconfigured"
+    raw = f"{credential.pk}|{credential.api_url}|{credential.model}|{credential.updated_at.isoformat()}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
 def _current_document_versions(job):
     return list(
         JobRequirementDocument.objects.filter(job=job, archived_at__isnull=True, current_version__isnull=False)
@@ -36,12 +48,13 @@ def _current_document_versions(job):
     )
 
 
-def enqueue_job_standard(*, job, requested_by) -> tuple[AiProcessingTask, bool]:
+def enqueue_job_standard(*, job, requested_by, request_id=None) -> tuple[AiProcessingTask, bool]:
     versions = _current_document_versions(job)
     if not versions:
         raise ValueError("该职位没有可解析的岗位 Word 文档")
     fingerprint = ":".join(sha[:12] for _, sha in versions)
-    key = f"job-standard:{job.pk}:{fingerprint}"
+    generation = str(request_id or "auto")
+    key = f"job-standard:{job.pk}:{requested_by.pk}:{_model_fingerprint(requested_by)}:{PROMPT_REVISION}:{fingerprint}:{generation}"
     return AiProcessingTask.objects.get_or_create(
         idempotency_key=key,
         defaults={
@@ -54,8 +67,8 @@ def enqueue_job_standard(*, job, requested_by) -> tuple[AiProcessingTask, bool]:
     )
 
 
-def enqueue_resume_structure(*, resume, requested_by) -> tuple[AiProcessingTask, bool]:
-    key = f"resume-structure:{resume.pk}:{resume.sha256 or resume.version}"
+def enqueue_resume_structure(*, resume, requested_by, request_id=None) -> tuple[AiProcessingTask, bool]:
+    key = f"resume-structure:{resume.pk}:{requested_by.pk}:{_model_fingerprint(requested_by)}:{PROMPT_REVISION}:{resume.sha256 or resume.version}:{request_id or 'auto'}"
     return AiProcessingTask.objects.get_or_create(
         idempotency_key=key,
         defaults={
@@ -101,6 +114,7 @@ def lease_next_task(*, lease_seconds=180) -> AiProcessingTask | None:
         status=AiProcessingTask.Status.PENDING,
         leased_at=None,
         lease_expires_at=None,
+        lease_token=None,
         error_code="lease_expired",
         error_message="任务租约过期，已自动恢复",
         available_at=now,
@@ -120,7 +134,8 @@ def lease_next_task(*, lease_seconds=180) -> AiProcessingTask | None:
     task.status = AiProcessingTask.Status.MODEL
     task.leased_at = now
     task.lease_expires_at = now + timedelta(seconds=lease_seconds)
-    task.save(update_fields=["status", "leased_at", "lease_expires_at", "updated_at"])
+    task.lease_token = uuid.uuid4()
+    task.save(update_fields=["status", "leased_at", "lease_expires_at", "lease_token", "updated_at"])
     return task
 
 
@@ -152,6 +167,33 @@ TASK_EXECUTORS = {
 def _clear_lease(task):
     task.leased_at = None
     task.lease_expires_at = None
+    task.lease_token = None
+
+
+def _run_with_heartbeat(task):
+    token = task.lease_token
+    stopped = threading.Event()
+
+    def heartbeat():
+        while not stopped.wait(45):
+            updated = AiProcessingTask.objects.filter(
+                pk=task.pk, lease_token=token,
+                status__in=[AiProcessingTask.Status.EXTRACTING, AiProcessingTask.Status.OCR, AiProcessingTask.Status.MODEL],
+            ).update(lease_expires_at=timezone.now() + timedelta(seconds=LEASE_SECONDS))
+            if not updated:
+                return
+
+    thread = threading.Thread(target=heartbeat, name=f"ai-task-heartbeat-{task.pk}", daemon=True)
+    thread.start()
+    try:
+        result = TASK_EXECUTORS[task.kind](task) or {}
+    finally:
+        stopped.set()
+        thread.join(timeout=2)
+    if not AiProcessingTask.objects.filter(pk=task.pk, lease_token=token).exists():
+        raise RuntimeError("AI 任务租约已转移，当前执行结果已丢弃")
+    task.refresh_from_db()
+    return result
 
 
 def execute_task(task: AiProcessingTask) -> AiProcessingTask:
@@ -170,10 +212,12 @@ def execute_task(task: AiProcessingTask) -> AiProcessingTask:
     task.error_message = ""
     if not task.lease_expires_at:
         task.leased_at = timezone.now()
-        task.lease_expires_at = task.leased_at + timedelta(seconds=180)
+        task.lease_expires_at = task.leased_at + timedelta(seconds=LEASE_SECONDS)
+    if not task.lease_token:
+        task.lease_token = uuid.uuid4()
     task.save()
     try:
-        result = TASK_EXECUTORS[task.kind](task) or {}
+        result = _run_with_heartbeat(task)
     except ModelGatewayError as exc:
         task.error_code = exc.code
         task.error_message = str(exc)[:500]

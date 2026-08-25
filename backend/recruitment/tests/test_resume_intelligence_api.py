@@ -20,6 +20,7 @@ from recruitment.models import (
     StructuredResumeVersion,
 )
 from recruitment.services.resume_intelligence import (
+    build_assessment_prompt,
     create_assessment,
     create_structured_resume,
     validate_assessment_payload,
@@ -395,14 +396,15 @@ class ResumeAssessmentServiceTests(TestCase):
     def test_explicit_hard_requirement_failure_can_auto_reject_with_evidence(self):
         criteria = scoring_criteria()
         criteria["hard_requirements"] = [
-            {"key": "degree", "text": "本科及以上", "evidence_block_ids": []},
+            {"key": "experience", "text": "至少 6 年工作经验", "evidence_block_ids": [],
+             "rule": {"field": "total_experience_months", "operator": "gte", "value": 72}},
         ]
         criteria["auto_reject_on_hard_fail"] = True
         JobStandardVersion.objects.filter(pk=self.standard.pk).update(criteria=criteria)
         self.standard.refresh_from_db()
         payload = assessment_payload(self.block_id)
         payload["hard_requirement_results"] = [{
-            "criterion_key": "degree",
+            "criterion_key": "experience",
             "status": "not_met",
             "reason": "简历明确写明大专",
             "resume_evidence_block_ids": [self.block_id],
@@ -420,7 +422,35 @@ class ResumeAssessmentServiceTests(TestCase):
         self.assertEqual(assessment.recommendation, "hold")
         self.assertTrue(assessment.auto_rejected)
         self.assertEqual(self.structured.resume.application.stage, JobApplication.Stage.REJECTED)
-        self.assertEqual(assessment.hard_failures[0]["criterion_key"], "degree")
+        self.assertEqual(assessment.hard_failures[0]["criterion_key"], "experience")
+
+    def test_scoring_prompt_redacts_identity_contact_and_sensitive_text(self):
+        self.structured.data["basics"].update({"name": "林然", "phone": "13800000000", "email": "candidate@example.com"})
+        self.structured.extraction.blocks.append({"id": "private", "text": "性别 女，电话 13800000000"})
+        _system, prompt = build_assessment_prompt(standard=self.standard, structured=self.structured)
+        self.assertNotIn("13800000000", prompt)
+        self.assertNotIn("candidate@example.com", prompt)
+        self.assertNotIn("林然", prompt)
+        self.assertNotIn("性别 女", prompt)
+
+    def test_model_not_met_without_deterministic_rule_does_not_auto_reject(self):
+        criteria = scoring_criteria()
+        criteria["hard_requirements"] = [{"key": "degree", "text": "本科及以上", "evidence_block_ids": []}]
+        criteria["auto_reject_on_hard_fail"] = False
+        JobStandardVersion.objects.filter(pk=self.standard.pk).update(criteria=criteria)
+        self.standard.refresh_from_db()
+        payload = assessment_payload(self.block_id)
+        payload["hard_requirement_results"] = [{
+            "criterion_key": "degree", "status": "not_met", "reason": "模型判断",
+            "resume_evidence_block_ids": [self.block_id],
+        }]
+        assessment = create_assessment(
+            structured=self.structured, standard=self.standard, gateway=FakeGateway(payload),
+            request_id=uuid.uuid4(), actor=self.user,
+        )
+        self.structured.resume.application.refresh_from_db()
+        self.assertFalse(assessment.auto_rejected)
+        self.assertNotEqual(self.structured.resume.application.stage, JobApplication.Stage.REJECTED)
 
 
 class ResumeAssessmentApiTests(APITestCase):

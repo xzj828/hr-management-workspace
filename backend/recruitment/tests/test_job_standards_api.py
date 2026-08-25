@@ -151,7 +151,8 @@ class JobStandardServiceTests(TestCase):
     def test_accepts_explicit_hard_requirements_but_rejects_sensitive_ones(self):
         criteria = valid_criteria(self.block_id)
         criteria["hard_requirements"] = [
-            {"key": "degree", "text": "本科及以上", "evidence_block_ids": [self.block_id]},
+            {"key": "degree", "text": "本科及以上", "evidence_block_ids": [self.block_id],
+             "rule": {"field": "highest_degree", "operator": "gte", "value": "本科"}},
         ]
         criteria["auto_reject_on_hard_fail"] = True
         normalized = validate_criteria(
@@ -167,6 +168,11 @@ class JobStandardServiceTests(TestCase):
         criteria["hard_requirements"][0] = {
             "key": "other_gate", "text": "年龄不超过 35 岁", "evidence_block_ids": [self.block_id],
         }
+        with self.assertRaises(ValueError):
+            validate_criteria(criteria, allowed_evidence_ids={self.block_id}, require_publishable=True)
+
+        criteria = valid_criteria(self.block_id)
+        criteria["auto_reject_on_hard_fail"] = "false"
         with self.assertRaises(ValueError):
             validate_criteria(criteria, allowed_evidence_ids={self.block_id}, require_publishable=True)
 

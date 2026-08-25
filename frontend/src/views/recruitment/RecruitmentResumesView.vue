@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onUnmounted, ref, watch } from 'vue'
+import { routeLocationKey } from 'vue-router'
 import { api, listItems } from '@/api'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
@@ -11,6 +12,7 @@ import JobStandardDrawer from '@/components/JobStandardDrawer.vue'
 import ResumeIntelligencePanel from '@/components/ResumeIntelligencePanel.vue'
 
 const context = useRecruitmentContextStore()
+const route = inject(routeLocationKey, { query: {} })
 const currentJob = computed(() => context.currentJob)
 const resumes = ref([])
 const selected = ref(null)
@@ -53,6 +55,13 @@ const parseStatus = (resume) => {
   return activeTaskStatuses.has(task.status) ? '处理中' : task.status_label
 }
 const recommendationFor = (resume) => assessmentFor(resume)?.recommendation_label || '待评分'
+const displayedResumes = computed(() => {
+  const filter = route.query.filter
+  if (filter === 'pending_parse') return resumes.value.filter((resume) => !structureFor(resume))
+  if (filter === 'pending_hr_review') return resumes.value.filter((resume) => assessmentFor(resume)?.recommendation === 'review')
+  if (filter === 'recommended_advance') return resumes.value.filter((resume) => assessmentFor(resume)?.recommendation === 'advance')
+  return resumes.value
+})
 
 async function loadResumes() {
   if (!currentJob.value) return
@@ -99,15 +108,17 @@ async function loadIntelligence() {
   const sequence = ++intelligenceSequence
   try {
     const job = currentJob.value.id
-    const [structurePayload, assessmentPayload, taskPayload] = await Promise.all([
+    const [structurePayload, assessmentPayload, taskPayload, standardPayload] = await Promise.all([
       api(`recruitment/structured-resumes/?job=${job}`),
       api(`recruitment/resume-assessments/?job=${job}`),
       api(`recruitment/ai-tasks/?job=${job}`),
+      api(`recruitment/job-standards/?job=${job}`),
     ])
     if (sequence !== intelligenceSequence) return
     structures.value = listItems(structurePayload)
     assessments.value = listItems(assessmentPayload)
     aiTasks.value = listItems(taskPayload)
+    standards.value = listItems(standardPayload)
     syncPolling()
   } catch (err) {
     if (sequence === intelligenceSequence) error.value = err.message
@@ -135,7 +146,7 @@ async function scoreResumes(resumeIds) {
 async function scoreSelected() { await scoreResumes([...selectedResumeIds.value]) }
 async function retryStructure(resume) {
   try {
-    const task = await api(`recruitment/resumes/${resume.id}/retry-structure/`, { method: 'POST' })
+    const task = await api(`recruitment/resumes/${resume.id}/retry-structure/`, { method: 'POST', body: JSON.stringify({ request_id: requestId() }) })
     aiTasks.value = [task, ...aiTasks.value.filter((item) => !(item.resume === resume.id && item.kind === 'resume_structure'))]
     syncPolling()
   } catch (err) { error.value = err.message }
@@ -154,9 +165,10 @@ async function generateStandard() {
   if (!currentJob.value || !jobDocuments.value.length) return
   generatingStandard.value = true; error.value = ''; generationNote.value = ''
   try {
-    const result = await api('recruitment/job-standards/generate/', { method: 'POST', body: JSON.stringify({ job: currentJob.value.id }) })
+    const result = await api('recruitment/job-standards/generate/', { method: 'POST', body: JSON.stringify({ job: currentJob.value.id, request_id: requestId() }) })
     generationNote.value = result.status === 'waiting_config' ? '等待配置大模型后生成' : '标准草稿正在后台生成'
-    window.setTimeout(loadStandards, 1200)
+    aiTasks.value = [{ id: result.task_id, kind: 'job_standard', status: result.status }, ...aiTasks.value]
+    syncPolling()
   } catch (err) { error.value = err.message }
   finally { generatingStandard.value = false }
 }
@@ -178,7 +190,7 @@ async function uploadWord(event) {
     body.append('title', file.name.replace(/\.(docx?|xlsx)$/i, ''))
     body.append('file', file)
     await api('recruitment/job-documents/', { method: 'POST', body })
-    await Promise.all([loadJobDocuments(), loadStandards()])
+    await Promise.all([loadJobDocuments(), loadStandards(), loadIntelligence()])
   } catch (err) { error.value = err.message }
   finally { wordUploading.value = false; event.target.value = '' }
 }
@@ -309,7 +321,7 @@ async function toggleArchiveView() {
         <table class="data-table">
           <thead><tr><th v-if="!showArchived" class="resume-select-cell"></th><th>候选人</th><th>文件</th><th>解析状态</th><th>评分</th><th>AI 建议</th><th>更新时间</th><th></th></tr></thead>
           <tbody>
-            <tr v-for="resume in resumes" :key="resume.id">
+            <tr v-for="resume in displayedResumes" :key="resume.id">
               <td v-if="!showArchived" class="resume-select-cell"><input v-model="selectedResumeIds" :data-test="`select-resume-${resume.id}`" type="checkbox" :value="resume.id" :disabled="!structureFor(resume)" :aria-label="`选择${resume.candidate_name}`" /></td>
               <td><strong>{{ resume.candidate_name }}</strong></td>
               <td><strong class="recruitment-file-name">{{ resume.original_name }}</strong><small class="block-text">{{ resumeFormat(resume) }} · {{ formatFileSize(resume.file_size) }} · V{{ resume.version || 1 }} · {{ fileStatusLabel(resume) }}</small></td>
@@ -325,7 +337,7 @@ async function toggleArchiveView() {
                 <button v-else :data-test="`archive-resume-${resume.id}`" type="button" class="danger-text-button" @click="lifecycleTarget = resume">归档</button>
               </td>
             </tr>
-            <tr v-if="!loading && !resumes.length"><td colspan="8" class="table-empty">{{ showArchived ? '该职位暂无已归档简历' : `该职位暂无简历，可通过主动寻访拉取在线简历，或从沟通消息归档 PDF 附件。` }}</td></tr>
+            <tr v-if="!loading && !displayedResumes.length"><td colspan="8" class="table-empty">{{ showArchived ? '该职位暂无已归档简历' : route.query.filter ? '当前筛选条件下暂无简历' : `该职位暂无简历，可通过主动寻访拉取在线简历，或从沟通消息归档 PDF 附件。` }}</td></tr>
           </tbody>
         </table>
       </div>

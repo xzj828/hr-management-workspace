@@ -342,7 +342,9 @@ class JobStandardVersionViewSet(viewsets.ReadOnlyModelViewSet):
         if not job:
             raise NotFound("职位不存在或无权访问")
         try:
-            task, created = enqueue_job_standard(job=job, requested_by=request.user)
+            task, created = enqueue_job_standard(
+                job=job, requested_by=request.user, request_id=request.data.get("request_id") or None
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(
@@ -972,7 +974,9 @@ class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
                 task = retry_ai_task(task=task, requested_by=request.user)
                 created = False
             else:
-                task, created = enqueue_resume_structure(resume=resume, requested_by=request.user)
+                task, created = enqueue_resume_structure(
+                    resume=resume, requested_by=request.user, request_id=request.data.get("request_id") or None
+                )
         except (PermissionError, ValueError) as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(
@@ -1085,9 +1089,14 @@ class ResumeAssessmentViewSet(viewsets.ReadOnlyModelViewSet):
             request_id = uuid.UUID(str(request.data.get("request_id")))
         except (TypeError, ValueError, AttributeError):
             raise ValidationError({"request_id": "请输入有效的请求标识"})
+        current_standard = JobStandardVersion.objects.filter(
+            job=assessment.standard.job, status=JobStandardVersion.Status.PUBLISHED
+        ).first()
+        if not current_standard:
+            raise ValidationError({"standard": "当前职位没有已启用的评分标准"})
         task, created = enqueue_resume_score(
             structured_resume=assessment.structured_resume,
-            standard=assessment.standard,
+            standard=current_standard,
             requested_by=request.user,
             request_id=request_id,
         )

@@ -1191,6 +1191,7 @@ class AiProcessingTask(models.Model):
     available_at = models.DateTimeField(default=timezone.now, db_index=True)
     leased_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
+    lease_token = models.UUIDField(null=True, blank=True, editable=False)
     error_code = models.CharField(max_length=80, blank=True)
     error_message = models.CharField(max_length=500, blank=True)
     result_ref = models.JSONField(default=dict, blank=True)

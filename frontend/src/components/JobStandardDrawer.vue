@@ -16,13 +16,14 @@ const confirmPublish = ref(false)
 const menuOpen = ref(false)
 const isDraft = computed(() => props.standard?.status === 'draft')
 const totalWeight = computed(() => form.dimensions.reduce((sum, item) => sum + Number(item.weight || 0), 0))
-const canPublish = computed(() => isDraft.value && form.dimensions.length > 0 && Math.abs(totalWeight.value - 100) < 0.001)
+const hardRulesComplete = computed(() => !form.auto_reject_on_hard_fail || form.hard_requirements.every((item) => item.rule?.field && item.rule?.operator && String(item.rule?.value ?? '').trim()))
+const canPublish = computed(() => isDraft.value && form.dimensions.length > 0 && Math.abs(totalWeight.value - 100) < 0.001 && hardRulesComplete.value)
 
 function hydrate() {
   const criteria = props.standard?.criteria || {}
   form.summary = criteria.summary || ''
   form.dimensions = (criteria.dimensions || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])] }))
-  form.hard_requirements = (criteria.hard_requirements || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])] }))
+  form.hard_requirements = (criteria.hard_requirements || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])], rule: item.rule ? { ...item.rule } : { field: 'total_experience_months', operator: 'gte', value: '' } }))
   form.auto_reject_on_hard_fail = criteria.auto_reject_on_hard_fail === true
   form.required = [...(criteria.required || [])]
   form.preferred = [...(criteria.preferred || [])]
@@ -35,13 +36,21 @@ function addDimension() {
   form.dimensions.push({ key: `dimension_${Date.now()}`, name: '新评分维度', weight: 0, description: '', evidence_block_ids: [] })
 }
 function removeDimension(index) { form.dimensions.splice(index, 1) }
-function addHardRequirement() { form.hard_requirements.push({ key: `hard_${Date.now()}`, text: '', evidence_block_ids: [] }) }
+function addHardRequirement() { form.hard_requirements.push({ key: `hard_${Date.now()}`, text: '', evidence_block_ids: [], rule: { field: 'total_experience_months', operator: 'gte', value: '' } }) }
 function removeHardRequirement(index) { form.hard_requirements.splice(index, 1) }
+function ruleOperators(field) { return field === 'skills' ? [{ value: 'contains_all', label: '必须全部包含' }] : field === 'city' ? [{ value: 'in', label: '属于其中之一' }] : field === 'highest_degree' ? [{ value: 'gte', label: '不低于' }, { value: 'in', label: '属于其中之一' }] : [{ value: 'gte', label: '不少于' }, { value: 'lte', label: '不超过' }] }
+function normalizeRule(rule) {
+  if (!rule?.field) return undefined
+  let value = rule.value
+  if (rule.field === 'total_experience_months') value = Number(value)
+  else if (['skills', 'city'].includes(rule.field)) value = String(value).split(/[，,]/).map((item) => item.trim()).filter(Boolean)
+  return { field: rule.field, operator: rule.operator, value }
+}
 function payload() {
   return {
     criteria: {
       summary: form.summary.trim(), dimensions: form.dimensions.map((item) => ({ ...item, weight: Number(item.weight || 0) })),
-      hard_requirements: form.hard_requirements.map((item) => ({ ...item, text: item.text.trim() })),
+      hard_requirements: form.hard_requirements.map((item) => ({ ...item, text: item.text.trim(), rule: normalizeRule(item.rule) })),
       auto_reject_on_hard_fail: form.auto_reject_on_hard_fail,
       required: form.required, preferred: form.preferred, risks: form.risks,
     },
@@ -84,7 +93,7 @@ async function publish() {
           <label class="standard-field standard-field--summary"><span>岗位目标摘要</span><textarea v-model="form.summary" rows="3" :disabled="!isDraft" placeholder="说明这个岗位真正要解决的问题" /></label>
           <section class="hard-requirements">
             <header><div><span class="panel-kicker">HARD GATES</span><h3>硬性指标</h3><p>只有简历出现明确反证才视为不满足；没有写明会交给 HR 核实。</p></div><button v-if="isDraft" class="secondary-button" data-test="add-hard-requirement" @click="addHardRequirement">添加指标</button></header>
-            <article v-for="(item, index) in form.hard_requirements" :key="item.key"><span>{{ String(index + 1).padStart(2, '0') }}</span><label><small>指标标识</small><input v-model.trim="item.key" :disabled="!isDraft" placeholder="例如 degree" /></label><label><small>淘汰条件</small><input v-model.trim="item.text" :disabled="!isDraft" placeholder="例如：学历低于本科" /></label><button v-if="isDraft" :data-test="`remove-hard-requirement-${index}`" aria-label="删除硬性指标" @click="removeHardRequirement(index)">×</button></article>
+            <article v-for="(item, index) in form.hard_requirements" :key="item.key"><span>{{ String(index + 1).padStart(2, '0') }}</span><label><small>指标标识</small><input v-model.trim="item.key" :disabled="!isDraft" placeholder="例如 degree" /></label><label><small>淘汰条件</small><input v-model.trim="item.text" :disabled="!isDraft" placeholder="例如：学历低于本科" /></label><button v-if="isDraft" :data-test="`remove-hard-requirement-${index}`" aria-label="删除硬性指标" @click="removeHardRequirement(index)">×</button><div v-if="form.auto_reject_on_hard_fail" class="hard-rule"><label><small>自动判定字段</small><select v-model="item.rule.field" :disabled="!isDraft" @change="item.rule.operator = ruleOperators(item.rule.field)[0].value; item.rule.value = ''"><option value="total_experience_months">工作经验（月）</option><option value="highest_degree">最高学历</option><option value="skills">技能</option><option value="city">所在城市</option></select></label><label><small>条件</small><select v-model="item.rule.operator" :disabled="!isDraft"><option v-for="operator in ruleOperators(item.rule.field)" :key="operator.value" :value="operator.value">{{ operator.label }}</option></select></label><label><small>阈值（多个用逗号）</small><input v-model="item.rule.value" :disabled="!isDraft" placeholder="例如 36 / 本科 / Java,Vue" /></label></div></article>
             <label v-if="form.hard_requirements.length" class="hard-reject-toggle"><input v-model="form.auto_reject_on_hard_fail" type="checkbox" :disabled="!isDraft" /><span><strong>明确不满足时自动淘汰</strong><small>会改变招聘阶段并记录触发指标与原文证据；信息不足不会触发。</small></span></label>
           </section>
           <section class="standard-dimensions">
@@ -104,7 +113,7 @@ async function publish() {
 
       <footer v-if="standard" class="standard-drawer__footer">
         <div class="standard-more"><button class="ghost-button" aria-label="更多操作" @click="menuOpen = !menuOpen">···</button><div v-if="menuOpen"><button @click="emit('retry')">重新生成草稿</button><button disabled>查看历史版本</button></div></div>
-        <span v-if="isDraft && totalWeight !== 100">权重合计必须为 100 才能启用</span>
+        <span v-if="isDraft && totalWeight !== 100">权重合计必须为 100 才能启用</span><span v-else-if="isDraft && !hardRulesComplete">自动淘汰需补全每项确定性规则</span>
         <button v-if="isDraft" class="secondary-button" data-test="save-standard" :disabled="saving" @click="save">保存草稿</button>
         <button v-if="isDraft" class="primary-button" data-test="publish-standard" :disabled="saving || !canPublish" @click="confirmPublish = true">确认并启用</button>
       </footer>
@@ -117,5 +126,5 @@ async function publish() {
 </template>
 
 <style scoped>
-.hard-requirements{display:grid;gap:9px;padding:17px;background:#fffaf0;border:1px solid #eedfbd;border-radius:12px}.hard-requirements>header{display:flex;align-items:center;justify-content:space-between;gap:14px}.hard-requirements h3{margin:4px 0 2px;color:#3d3321;font-family:Georgia,"Noto Serif SC",serif;font-size:17px}.hard-requirements header p{margin:0;color:#8a7652;font-size:8px}.hard-requirements article{display:grid;grid-template-columns:28px 120px minmax(0,1fr) 26px;align-items:end;gap:8px;padding:10px;background:#fff;border:1px solid #eadfc9;border-radius:9px}.hard-requirements article>span{align-self:center;color:#a87522;font:10px Georgia,serif}.hard-requirements article label{display:grid;gap:4px}.hard-requirements article small{color:#8b7b60;font-size:8px}.hard-requirements article input{width:100%;height:34px;padding:0 9px;color:var(--ink);background:#fff;border:1px solid #ded6c7;border-radius:7px}.hard-requirements article>button{width:25px;height:25px;color:#9b8474;background:transparent;border:0;border-radius:6px;font-size:17px}.hard-requirements article>button:hover{color:#b33f4a;background:#fff0f0}.hard-reject-toggle{display:flex;align-items:flex-start;gap:9px;padding:11px 12px;color:#704c18;background:#fff3d7;border-radius:8px}.hard-reject-toggle input{margin-top:2px;accent-color:#b17418}.hard-reject-toggle span{display:grid;gap:3px}.hard-reject-toggle strong{font-size:9px}.hard-reject-toggle small{color:#987443;font-size:8px;line-height:1.5}
+.hard-requirements{display:grid;gap:9px;padding:17px;background:#fffaf0;border:1px solid #eedfbd;border-radius:12px}.hard-requirements>header{display:flex;align-items:center;justify-content:space-between;gap:14px}.hard-requirements h3{margin:4px 0 2px;color:#3d3321;font-family:Georgia,"Noto Serif SC",serif;font-size:17px}.hard-requirements header p{margin:0;color:#8a7652;font-size:8px}.hard-requirements article{display:grid;grid-template-columns:28px 120px minmax(0,1fr) 26px;align-items:end;gap:8px;padding:10px;background:#fff;border:1px solid #eadfc9;border-radius:9px}.hard-requirements article>span{align-self:center;color:#a87522;font:10px Georgia,serif}.hard-requirements article label{display:grid;gap:4px}.hard-requirements article small{color:#8b7b60;font-size:8px}.hard-requirements article input,.hard-requirements article select{width:100%;height:34px;padding:0 9px;color:var(--ink);background:#fff;border:1px solid #ded6c7;border-radius:7px}.hard-requirements article>button{width:25px;height:25px;color:#9b8474;background:transparent;border:0;border-radius:6px;font-size:17px}.hard-requirements article>button:hover{color:#b33f4a;background:#fff0f0}.hard-rule{grid-column:2/4;display:grid;grid-template-columns:1.1fr 1fr 1.5fr;gap:8px;padding-top:3px}.hard-reject-toggle{display:flex;align-items:flex-start;gap:9px;padding:11px 12px;color:#704c18;background:#fff3d7;border-radius:8px}.hard-reject-toggle input{margin-top:2px;accent-color:#b17418}.hard-reject-toggle span{display:grid;gap:3px}.hard-reject-toggle strong{font-size:9px}.hard-reject-toggle small{color:#987443;font-size:8px;line-height:1.5}
 </style>

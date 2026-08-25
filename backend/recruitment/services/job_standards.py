@@ -13,6 +13,7 @@ from recruitment.models import (
     FileTextExtraction,
     JobRequirementDocument,
     JobStandardVersion,
+    RecruitmentJob,
     RecruitmentAuditLog,
 )
 from recruitment.services.file_extraction import ExtractionError, extract_file
@@ -39,15 +40,20 @@ def _evidence_ids(criteria):
 def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require_publishable: bool) -> dict:
     if not isinstance(criteria, dict):
         raise ValueError("评分标准必须是 JSON 对象")
+    auto_reject = criteria.get("auto_reject_on_hard_fail", False)
+    if not isinstance(auto_reject, bool):
+        raise ValueError("自动淘汰开关必须是布尔值")
     normalized = {
         "summary": str(criteria.get("summary") or "").strip(),
         "dimensions": criteria.get("dimensions") or [],
         "hard_requirements": criteria.get("hard_requirements") or [],
-        "auto_reject_on_hard_fail": bool(criteria.get("auto_reject_on_hard_fail", False)),
+        "auto_reject_on_hard_fail": auto_reject,
         "required": criteria.get("required") or [],
         "preferred": criteria.get("preferred") or [],
         "risks": criteria.get("risks") or [],
     }
+    if _contains_sensitive_criterion(normalized["summary"]):
+        raise ValueError("性别、年龄、民族、婚育等敏感属性不能作为筛选依据")
     for group in ("dimensions", "hard_requirements", "required", "preferred", "risks"):
         if not isinstance(normalized[group], list):
             raise ValueError(f"{group} 必须是列表")
@@ -91,7 +97,28 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
             raise ValueError("硬性指标必须填写明确要求")
         item["key"] = key
         item["text"] = str(item["text"]).strip()
+        rule = item.get("rule")
+        if rule is not None:
+            if not isinstance(rule, dict):
+                raise ValueError("硬性指标自动判定规则必须是对象")
+            field = str(rule.get("field") or "").strip()
+            operator = str(rule.get("operator") or "").strip()
+            supported = {
+                "total_experience_months": {"gte", "lte"},
+                "highest_degree": {"in", "gte"},
+                "skills": {"contains_all"},
+                "city": {"in"},
+            }
+            if field not in supported or operator not in supported[field] or rule.get("value") in (None, "", []):
+                raise ValueError("硬性指标自动判定规则不完整或不受支持")
+            item["rule"] = {"field": field, "operator": operator, "value": rule["value"]}
         hard_keys.add(key)
+    if normalized["auto_reject_on_hard_fail"] and any(not item.get("rule") for item in normalized["hard_requirements"]):
+        raise ValueError("启用自动淘汰前，每个硬性指标都必须配置可确定判定的字段、条件和阈值")
+    for group in ("required", "preferred", "risks"):
+        for item in normalized[group]:
+            if _contains_sensitive_criterion(*item.values()):
+                raise ValueError("性别、年龄、民族、婚育等敏感属性不能作为筛选依据")
     unknown = sorted(set(_evidence_ids(normalized)) - set(allowed_evidence_ids))
     if unknown:
         raise ValueError(f"评分标准引用了不存在的原文证据：{unknown[0]}")
@@ -161,6 +188,7 @@ def create_standard_draft(*, job, document_versions, gateway, actor) -> JobStand
     questions = payload.get("unresolved_questions") or []
     if not isinstance(questions, list):
         raise ModelGatewayError("model_invalid_response", "模型返回的待确认问题格式无效")
+    job = RecruitmentJob.objects.select_for_update().get(pk=job.pk)
     next_version = (JobStandardVersion.objects.filter(job=job).aggregate(value=Max("version"))["value"] or 0) + 1
     standard = JobStandardVersion.objects.create(
         job=job,
