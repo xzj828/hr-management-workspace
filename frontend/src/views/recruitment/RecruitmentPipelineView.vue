@@ -1,11 +1,16 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { api, listItems } from '@/api'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import ModalPanel from '@/components/ModalPanel.vue'
+import AppIcon from '@/components/AppIcon.vue'
 import { stageColumns } from '@/recruitment'
 
+const context = useRecruitmentContextStore()
+const currentJob = computed(() => context.currentJob)
 const applications = ref([])
 const draggedId = ref(null)
 const selected = ref(null)
@@ -13,20 +18,24 @@ const loading = ref(true)
 const error = ref('')
 const pendingMove = ref(null)
 const stageReason = ref('')
+let loadSequence = 0
 
 function applicationsFor(stage) {
   return applications.value.filter((application) => application.stage === stage)
 }
 
 async function loadApplications() {
+  if (!currentJob.value) return
+  const sequence = ++loadSequence
   loading.value = true
   error.value = ''
   try {
-    applications.value = listItems(await api('recruitment/applications/'))
+    const result = listItems(await api(`recruitment/applications/?job=${currentJob.value.id}`))
+    if (sequence === loadSequence) applications.value = result
   } catch (err) {
-    error.value = err.message
+    if (sequence === loadSequence) error.value = err.message
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
@@ -63,7 +72,19 @@ async function confirmMove() {
   }
 }
 
-onMounted(loadApplications)
+watch(
+  () => currentJob.value?.id,
+  async () => {
+    loadSequence += 1
+    applications.value = []
+    selected.value = null
+    pendingMove.value = null
+    error.value = ''
+    loading.value = Boolean(currentJob.value)
+    if (currentJob.value) await loadApplications()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -72,14 +93,18 @@ onMounted(loadApplications)
       <div>
         <span class="eyebrow">Hiring Pipeline</span>
         <h2>招聘流程</h2>
-        <p>拖动候选人更新阶段；确认原因后保存，自动与人工变化均可追溯。</p>
+        <p>{{ currentJob ? `${currentJob.title} · ${applications.length} 位候选人 / 招聘目标 ${currentJob.headcount || '未设置'} 人` : '选择职位后查看对应招聘流程' }}</p>
       </div>
-      <RecruitmentDemoMenu @changed="loadApplications" />
+      <RecruitmentDemoMenu v-if="currentJob" @changed="loadApplications" />
     </header>
 
-    <p v-if="error" class="recruitment-error-strip">{{ error }}</p>
+    <section v-if="!currentJob" class="panel job-context-required"><AppIcon name="workflow" :size="25" /><div><strong>请先选择在招职位</strong><p>招聘流程按职位独立推进，不再混合展示全部候选人。</p></div></section>
 
-    <section class="recruitment-board" aria-label="候选人招聘流程">
+    <p v-else-if="error" class="recruitment-error-strip">{{ error }}</p>
+
+    <section v-if="currentJob && !loading && !applications.length" class="panel pipeline-zero-state"><AppIcon name="users" :size="23" /><div><strong>该职位还没有候选人</strong><p>先发现并确认候选人，再在这里推进招聘阶段。</p></div><RouterLink data-test="discover-candidates-link" class="primary-button" :to="{ name: 'recruitment-candidates', query: { job: String(currentJob.id) } }">前往候选人发现</RouterLink></section>
+
+    <section v-if="currentJob && (loading || applications.length)" class="recruitment-board" aria-label="候选人招聘流程">
       <article
         v-for="column in stageColumns"
         :key="column.key"
@@ -103,7 +128,7 @@ onMounted(loadApplications)
             <strong>{{ application.candidate.name }}</strong>
             <span>{{ application.job_title }}</span>
             <small>{{ application.candidate.current_title || '—' }} · {{ application.candidate.current_city || '—' }}</small>
-            <i>{{ application.candidate.resume_count ? `${application.candidate.resume_count} 份简历` : '暂无简历' }}</i>
+            <i>{{ application.resume_count ? `${application.resume_count} 份简历` : '暂无简历' }}</i>
           </button>
           <p v-if="!loading && !applicationsFor(column.key).length" class="recruitment-column__empty">暂无候选人</p>
         </div>
@@ -117,7 +142,7 @@ onMounted(loadApplications)
         <div><dt>当前岗位</dt><dd>{{ selected.candidate.current_title || '—' }}</dd></div>
         <div><dt>所在城市</dt><dd>{{ selected.candidate.current_city || '—' }}</dd></div>
         <div><dt>负责人</dt><dd>{{ selected.owner_name || '未分配' }}</dd></div>
-        <div><dt>简历</dt><dd>{{ selected.candidate.resume_count ? `${selected.candidate.resume_count} 份简历` : '暂无简历' }}</dd></div>
+        <div><dt>简历</dt><dd>{{ selected.resume_count ? `${selected.resume_count} 份简历` : '暂无简历' }}</dd></div>
       </dl>
       <section v-if="selected.stage_history?.length" class="recruitment-detail-section"><span>阶段记录</span><article v-for="history in selected.stage_history" :key="history.id" class="stage-history-line"><strong>{{ history.from_stage }} → {{ history.to_stage }}</strong><small>{{ history.reason }} · {{ history.actor_name || '系统' }}</small></article></section>
     </RecruitmentDetailDrawer>

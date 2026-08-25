@@ -1,12 +1,15 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api, listItems } from '@/api'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { formatFileSize, formatRecruitmentDate } from '@/recruitment'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 
+const context = useRecruitmentContextStore()
+const currentJob = computed(() => context.currentJob)
 const resumes = ref([])
 const selected = ref(null)
 const loading = ref(true)
@@ -16,20 +19,39 @@ const lifecycleSaving = ref(false)
 const showArchived = ref(false)
 const selectedVersions = computed(() => selected.value ? resumes.value.filter((item) => item.candidate === selected.value.candidate || item.candidate_name === selected.value.candidate_name) : [])
 const fileStatusLabel = (resume) => resume.file_available ? '已入库' : '文件不可用'
+let loadSequence = 0
 
 async function loadResumes() {
+  if (!currentJob.value) return
+  const sequence = ++loadSequence
   loading.value = true
   error.value = ''
   try {
-    resumes.value = listItems(await api(`recruitment/resumes/${showArchived.value ? '?archived=1' : ''}`))
+    const params = new URLSearchParams({ job: String(currentJob.value.id) })
+    if (showArchived.value) params.set('archived', '1')
+    const result = listItems(await api(`recruitment/resumes/?${params}`))
+    if (sequence === loadSequence) resumes.value = result
   } catch (err) {
-    error.value = err.message
+    if (sequence === loadSequence) error.value = err.message
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
-onMounted(loadResumes)
+watch(
+  () => currentJob.value?.id,
+  async () => {
+    loadSequence += 1
+    resumes.value = []
+    selected.value = null
+    lifecycleTarget.value = null
+    showArchived.value = false
+    error.value = ''
+    loading.value = Boolean(currentJob.value)
+    if (currentJob.value) await loadResumes()
+  },
+  { immediate: true },
+)
 
 async function archiveResume() {
   if (!lifecycleTarget.value) return
@@ -64,11 +86,14 @@ async function toggleArchiveView() {
       <div>
         <span class="eyebrow">Resume Library</span>
         <h2>简历中心</h2>
-        <p>集中管理从招聘渠道取得的 PDF 简历，支持预览、下载、归档与版本管理。</p>
+        <p>{{ currentJob ? `${currentJob.title} · 管理该职位候选人的 PDF 简历` : '选择职位后查看对应简历资产' }}</p>
       </div>
-      <div class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-resumes" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前简历' : '归档记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="loadResumes" /></div>
+      <div v-if="currentJob" class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-resumes" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前简历' : '归档记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="loadResumes" /></div>
     </header>
 
+    <section v-if="!currentJob" class="panel job-context-required"><AppIcon name="document" :size="25" /><div><strong>请先选择在招职位</strong><p>简历按候选人的应聘职位归档，选择职位后才能预览和管理。</p></div></section>
+
+    <template v-else>
     <p v-if="error" class="recruitment-error-strip">{{ error }}</p>
 
     <section
@@ -128,7 +153,7 @@ async function toggleArchiveView() {
                 <button v-else :data-test="`archive-resume-${resume.id}`" type="button" class="danger-text-button" @click="lifecycleTarget = resume">归档</button>
               </td>
             </tr>
-            <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">{{ showArchived ? '暂无已归档简历' : '暂无简历，可从“演示数据”加载 3 份 PDF。' }}</td></tr>
+            <tr v-if="!loading && !resumes.length"><td colspan="7" class="table-empty">{{ showArchived ? '该职位暂无已归档简历' : `该职位暂无简历，可从候选人页面为 ${currentJob.title} 保存在线简历 PDF。` }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -156,5 +181,6 @@ async function toggleArchiveView() {
       </template>
     </RecruitmentDetailDrawer>
     <ArchiveConfirmModal v-if="lifecycleTarget" title="归档简历" :name="lifecycleTarget.original_name" description="简历会从当前简历中心移除，文件与访问审计暂时保留，可从归档记录恢复。" action-label="确认归档" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="archiveResume" />
+    </template>
   </div>
 </template>

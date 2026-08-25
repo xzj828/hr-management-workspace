@@ -29,6 +29,8 @@ const selectedApplicationIds = ref(new Set()), communicationOpen = ref(false), c
 const onlineResumeApplication = ref(null), onlineResumeSaving = ref(false)
 const lifecycleTarget = ref(null), lifecycleSaving = ref(false), showArchived = ref(false)
 let pollTimer = null
+let applicationSequence = 0
+let discoverySequence = 0
 
 const currentJob = computed(() => context.currentJob)
 const selectedDiscoveryCount = computed(() => selectedDiscoveryIds.value.size)
@@ -45,29 +47,35 @@ const lines = (value) => value.split('\n').map((item) => item.trim()).filter(Boo
 
 async function loadApplications() {
   if (!currentJob.value) return
+  const sequence = ++applicationSequence
   loading.value = true
   const params = new URLSearchParams({ job: String(currentJob.value.id) })
   if (search.value.trim()) params.set('search', search.value.trim())
   if (stage.value) params.set('stage', stage.value)
   if (showArchived.value) params.set('archived', '1')
   try {
-    applications.value = listItems(await api(`recruitment/applications/?${params}`))
+    const result = listItems(await api(`recruitment/applications/?${params}`))
+    if (sequence !== applicationSequence) return
+    applications.value = result
     const visible = new Set(applications.value.map((application) => application.id))
     selectedApplicationIds.value = new Set([...selectedApplicationIds.value].filter((id) => visible.has(id)))
-  } catch (err) { error.value = err.message }
-  finally { loading.value = false }
+  } catch (err) { if (sequence === applicationSequence) error.value = err.message }
+  finally { if (sequence === applicationSequence) loading.value = false }
 }
 
 async function loadDiscoveries() {
   if (!currentJob.value || showArchived.value) return
+  const sequence = ++discoverySequence
   discoveryLoading.value = true
   const params = new URLSearchParams({ imported: 'false', job: String(currentJob.value.id) })
   try {
-    discoveries.value = listItems(await api(`recruitment/candidate-discoveries/?${params}`))
+    const result = listItems(await api(`recruitment/candidate-discoveries/?${params}`))
+    if (sequence !== discoverySequence) return
+    discoveries.value = result
     const visible = new Set(discoveries.value.map((item) => String(item.id)))
     selectedDiscoveryIds.value = new Set([...selectedDiscoveryIds.value].filter((id) => visible.has(id)))
-  } catch (err) { error.value = err.message }
-  finally { discoveryLoading.value = false }
+  } catch (err) { if (sequence === discoverySequence) error.value = err.message }
+  finally { if (sequence === discoverySequence) discoveryLoading.value = false }
 }
 
 async function loadWorkspace() {
@@ -223,6 +231,8 @@ watch(
   () => currentJob.value?.id,
   async () => {
     stopPolling()
+    applicationSequence += 1
+    discoverySequence += 1
     applications.value = []
     discoveries.value = []
     selected.value = null

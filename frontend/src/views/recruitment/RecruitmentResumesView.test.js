@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 
 const apiMock = vi.hoisted(() => vi.fn())
 
@@ -10,6 +11,7 @@ vi.mock('@/api', () => ({
 
 import RecruitmentResumesView from './RecruitmentResumesView.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
 
 const resumes = [
@@ -20,14 +22,29 @@ const resumes = [
 
 describe('RecruitmentResumesView', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
+    const context = useRecruitmentContextStore()
+    context.jobs = [{ id: 1, title: 'Vue 前端工程师', headcount: 3, boss_account: 7 }]
+    context.selectedJobId = '1'
+    context.loaded = true
     apiMock.mockReset()
     apiMock.mockImplementation((path) => {
-      if (path === 'recruitment/resumes/') return Promise.resolve({ results: resumes })
-      if (path === 'recruitment/resumes/?archived=1') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [resumes[0]] })
+      if (path === 'recruitment/resumes/?job=1&archived=1') return Promise.resolve({ results: [] })
       if (path === 'recruitment/resumes/1/archive/') return Promise.resolve({ ...resumes[0], archived_at: '2026-08-24T10:00:00Z' })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
+  })
+
+  it('requires a job and does not request mixed resumes', async () => {
+    useRecruitmentContextStore().selectedJobId = ''
+    apiMock.mockClear()
+    const wrapper = mount(RecruitmentResumesView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请先选择在招职位')
+    expect(apiMock.mock.calls.some(([path]) => path.startsWith('recruitment/resumes/'))).toBe(false)
   })
 
   it('renders PDF metadata and opens an inline preview', async () => {
@@ -35,8 +52,8 @@ describe('RecruitmentResumesView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('周晓宁')
-    expect(wrapper.text()).toContain('徐雯')
-    expect(wrapper.text()).toContain('宋怡')
+    expect(wrapper.text()).not.toContain('徐雯')
+    expect(wrapper.text()).not.toContain('宋怡')
     expect(wrapper.text()).toContain('1.5 KB')
     expect(wrapper.text()).toContain('V2')
     expect(wrapper.text()).toContain('已入库')
@@ -70,12 +87,13 @@ describe('RecruitmentResumesView', () => {
 
     await wrapper.get('[data-test="toggle-archived-resumes"]').trigger('click')
     await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('recruitment/resumes/?job=1&archived=1')
     expect(wrapper.find('[data-test="resume-screening-preview"]').exists()).toBe(false)
   })
 
   it('does not offer preview or download for a missing PDF', async () => {
     apiMock.mockImplementation((path) => {
-      if (path === 'recruitment/resumes/') return Promise.resolve({ results: [{ ...resumes[0], id: 4, file_available: false }] })
+      if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [{ ...resumes[0], id: 4, file_available: false }] })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })

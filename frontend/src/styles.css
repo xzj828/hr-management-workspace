@@ -606,6 +606,10 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .job-context-required div { max-width: 420px; }
 .job-context-required strong { color: var(--ink); font-size: 16px; }
 .job-context-required p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.pipeline-zero-state { min-height: 170px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 15px; color: var(--teal-dark); }
+.pipeline-zero-state strong { color: var(--ink); font-size: 14px; }
+.pipeline-zero-state p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+.pipeline-zero-state a { text-decoration: none; }
 .candidate-tabs { display: flex; align-items: center; gap: 28px; min-height: 46px; border-bottom: 1px solid var(--line); }
 .candidate-tabs button { position: relative; height: 46px; padding: 0; border: 0; color: var(--muted); background: transparent; font-size: 13px; font-weight: 700; cursor: pointer; transition: color 150ms ease; }
 .candidate-tabs button::after { content: ''; position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--teal-dark); transform: scaleX(0); transition: transform 180ms cubic-bezier(.2,.8,.2,1); }

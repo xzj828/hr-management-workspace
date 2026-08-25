@@ -265,11 +265,11 @@ git commit -m "feat: scope candidate workspace to applications"
 - Modify: `frontend/src/views/recruitment/RecruitmentResumesView.test.js`
 - Modify: `frontend/src/styles.css`
 
-- [ ] **Step 1: Write failing pipeline and resume tests**
+- [x] **Step 1: Write failing pipeline and resume tests**
 
 With job 12 selected, assert calls to `recruitment/applications/?job=12` and `recruitment/resumes/?job=12`. Without a selection, assert no business request and the shared choice prompt. Assert pipeline empty state links to `{ name: 'recruitment-candidates', query: { job: '12' } }`. Assert archived resumes keep `job=12&archived=1`.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 ```powershell
 npm.cmd test -- src/views/recruitment/RecruitmentPipelineView.test.js src/views/recruitment/RecruitmentResumesView.test.js
@@ -277,11 +277,11 @@ npm.cmd test -- src/views/recruitment/RecruitmentPipelineView.test.js src/views/
 
 Expected: FAIL because both pages currently request unscoped lists.
 
-- [ ] **Step 3: Implement scoped loading and states**
+- [x] **Step 3: Implement scoped loading and states**
 
 Read the current job from the context store and watch its ID. On a valid ID, clear only page-local selection and reload with `job`; on no ID, render the job-choice state. Resume preview detail must display both `candidate_name` and `job_title`. Pipeline hero must show job headcount and current application count.
 
-- [ ] **Step 4: Run focused tests and build**
+- [x] **Step 4: Run focused tests and build**
 
 ```powershell
 npm.cmd test -- src/views/recruitment/RecruitmentPipelineView.test.js src/views/recruitment/RecruitmentResumesView.test.js
@@ -290,7 +290,7 @@ npm.cmd run build
 
 Expected: tests PASS and build succeeds.
 
-- [ ] **Step 5: Commit the scoped pages**
+- [x] **Step 5: Commit the scoped pages**
 
 ```powershell
 git add frontend/src/views/recruitment/RecruitmentPipelineView.vue frontend/src/views/recruitment/RecruitmentPipelineView.test.js frontend/src/views/recruitment/RecruitmentResumesView.vue frontend/src/views/recruitment/RecruitmentResumesView.test.js frontend/src/styles.css

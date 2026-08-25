@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 
 const apiMock = vi.hoisted(() => vi.fn())
 
@@ -9,22 +10,51 @@ vi.mock('@/api', () => ({
 }))
 
 import RecruitmentPipelineView from './RecruitmentPipelineView.vue'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
 
 const initialApplications = () => [
-  { id: 11, candidate: { id: 1, name: '周晓宁', current_title: '前端开发工程师', current_city: '北京', resume_count: 1 }, job: 1, job_title: 'Vue 前端工程师', stage: 'new', stage_label: '新候选人', owner_name: 'admin' },
-  { id: 12, candidate: { id: 2, name: '徐雯', current_title: '产品经理', current_city: '深圳', resume_count: 0 }, job: 2, job_title: '人事产品经理', stage: 'interviewing', stage_label: '面试中', owner_name: 'admin' },
+  { id: 11, candidate: { id: 1, name: '周晓宁', current_title: '前端开发工程师', current_city: '北京' }, job: 1, job_title: 'Vue 前端工程师', stage: 'new', stage_label: '新候选人', owner_name: 'admin', resume_count: 1 },
 ]
 
 describe('RecruitmentPipelineView', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
+    const context = useRecruitmentContextStore()
+    context.jobs = [{ id: 1, title: 'Vue 前端工程师', headcount: 3, boss_account: 7 }]
+    context.selectedJobId = '1'
+    context.loaded = true
     apiMock.mockReset()
     apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/applications/' && !options) return Promise.resolve({ results: initialApplications() })
+      if (path === 'recruitment/applications/?job=1' && !options) return Promise.resolve({ results: initialApplications() })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       if (path === 'recruitment/applications/11/') return Promise.resolve({ ...initialApplications()[0], stage: 'interviewing', stage_label: '面试中' })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
+  })
+
+  it('requires a job and never loads a mixed pipeline', async () => {
+    useRecruitmentContextStore().selectedJobId = ''
+    apiMock.mockClear()
+    const wrapper = mount(RecruitmentPipelineView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请先选择在招职位')
+    expect(apiMock.mock.calls.some(([path]) => path.startsWith('recruitment/applications/'))).toBe(false)
+  })
+
+  it('offers one direct next step when the selected job has no candidates', async () => {
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/applications/?job=1') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: false, counts: {} })
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    const RouterLink = { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' }
+    const wrapper = mount(RecruitmentPipelineView, { global: { stubs: { RouterLink } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('该职位还没有候选人')
+    expect(wrapper.findComponent(RouterLink).props('to')).toEqual({ name: 'recruitment-candidates', query: { job: '1' } })
   })
 
   it('moves a candidate and persists the new stage', async () => {
@@ -47,7 +77,7 @@ describe('RecruitmentPipelineView', () => {
 
   it('rolls the card back when persistence fails', async () => {
     apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/applications/' && !options) return Promise.resolve({ results: initialApplications() })
+      if (path === 'recruitment/applications/?job=1' && !options) return Promise.resolve({ results: initialApplications() })
       if (path === 'recruitment/demo-data/') return Promise.resolve({ loaded: true, counts: { jobs: 3, candidates: 10, applications: 10, resumes: 3 } })
       if (path === 'recruitment/applications/11/') return Promise.reject(new Error('阶段保存失败'))
       return Promise.reject(new Error(`unexpected path: ${path}`))
