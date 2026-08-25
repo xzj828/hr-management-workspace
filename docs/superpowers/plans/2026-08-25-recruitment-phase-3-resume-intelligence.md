@@ -459,17 +459,17 @@ git commit -m "feat: confirm versioned job standards"
 - Modify: `backend/recruitment/views.py`
 - Modify: `backend/recruitment/urls.py`
 
-- [ ] **Step 1: Write failing structure tests**
+- [x] **Step 1: Write failing structure tests**
 
 Use both PDF and PNG extraction fixtures. Assert they produce the same schema, evidence points to valid block IDs, missing facts remain null, conflicts enter `warnings`, contact fields are not logged, repeated runs create a new structured version only when the source or model output changed, and unauthorized users cannot read another account's result.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `..\.venv\Scripts\python.exe manage.py test recruitment.tests.test_resume_intelligence_api -v 2`.
 
 Expected: FAIL because structure endpoints do not exist.
 
-- [ ] **Step 3: Implement structure validation**
+- [x] **Step 3: Implement structure validation**
 
 Use this top-level shape:
 
@@ -491,7 +491,7 @@ Use this top-level shape:
 
 Each experience and achievement accepts `evidence_block_ids`. The validator removes sensitive demographic fields, rejects evidence IDs not present in the extraction, and converts unsupported or guessed values to null plus a warning.
 
-- [ ] **Step 4: Add scoped APIs**
+- [x] **Step 4: Add scoped APIs**
 
 Add:
 
@@ -503,7 +503,7 @@ Add:
 
 Resume serializers expose latest structure status and ID but never return full extracted text in list responses.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run resume intelligence, resume archive, lifecycle, and permission tests. Expected: PASS.
 

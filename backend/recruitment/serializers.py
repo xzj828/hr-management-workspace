@@ -6,6 +6,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from .models import (
     ApplicationStageHistory,
+    AiProcessingTask,
     AutomationApproval,
     BossAccount,
     Candidate,
@@ -20,6 +21,7 @@ from .models import (
     MessageSyncPolicy,
     RecruitmentJob,
     Resume,
+    StructuredResumeVersion,
     RpaTask,
     RpaTaskEvent,
     SearchCampaign,
@@ -273,6 +275,8 @@ class ResumeSerializer(serializers.ModelSerializer):
     file_available = serializers.SerializerMethodField()
     preview_url = serializers.SerializerMethodField()
     download_url = serializers.SerializerMethodField()
+    latest_structure_id = serializers.SerializerMethodField()
+    intelligence_status = serializers.SerializerMethodField()
 
     def get_file_available(self, obj):
         return bool(obj.file and obj.file.storage.exists(obj.file.name))
@@ -283,6 +287,16 @@ class ResumeSerializer(serializers.ModelSerializer):
     def get_download_url(self, obj):
         return f"/api/recruitment/resumes/{obj.pk}/file/?download=1"
 
+    def get_latest_structure_id(self, obj):
+        latest = obj.structured_versions.order_by("-version").first()
+        return latest.pk if latest else None
+
+    def get_intelligence_status(self, obj):
+        if obj.structured_versions.exists():
+            return "completed"
+        task = obj.ai_tasks.order_by("-created_at").first()
+        return task.status if task else "not_started"
+
     class Meta:
         model = Resume
         fields = [
@@ -290,8 +304,34 @@ class ResumeSerializer(serializers.ModelSerializer):
             "content_type", "file_size", "source", "source_label", "processing_status",
             "status_label", "file_available", "preview_url", "download_url", "is_demo",
             "sha256", "version", "external_id", "acquired_at", "created_at", "updated_at",
-            "archived_at",
+            "archived_at", "latest_structure_id", "intelligence_status",
         ]
+
+
+class StructuredResumeVersionSerializer(serializers.ModelSerializer):
+    resume_name = serializers.CharField(source="resume.original_name", read_only=True)
+
+    class Meta:
+        model = StructuredResumeVersion
+        fields = [
+            "id", "resume", "resume_name", "version", "data", "evidence", "warnings",
+            "model_name", "prompt_version", "created_at",
+        ]
+        read_only_fields = fields
+
+
+class AiProcessingTaskSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+
+    class Meta:
+        model = AiProcessingTask
+        fields = [
+            "id", "kind", "kind_label", "status", "status_label", "job", "document_version",
+            "resume", "standard", "progress", "attempt_count", "max_attempts", "available_at",
+            "error_code", "error_message", "result_ref", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
 
 
 class CommunicationPrepareSerializer(serializers.Serializer):

@@ -30,6 +30,7 @@ from .models import (
     RecruitmentAuditLog,
     RecruitmentJob,
     Resume,
+    StructuredResumeVersion,
     RpaTask,
     RpaWorker,
     SearchCampaign,
@@ -60,6 +61,8 @@ from .serializers import (
     PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
     ResumeSerializer,
+    StructuredResumeVersionSerializer,
+    AiProcessingTaskSerializer,
     RpaTaskSerializer,
     SearchCampaignSerializer,
     WorkflowTemplateSerializer,
@@ -76,7 +79,7 @@ from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
 from .services.lifecycle import LifecycleConflict, archive_object, restore_object
 from .services.job_documents import create_document, create_document_version, set_current_version
-from .services.ai_tasks import enqueue_job_standard, retry_task as retry_ai_task
+from .services.ai_tasks import enqueue_job_standard, enqueue_resume_structure, retry_task as retry_ai_task
 from .services.job_standards import publish_standard, update_standard_draft
 from .services.human_attention import archive_attention, resolve_attention
 from .services.standard_workflows import create_standard_workflow
@@ -916,7 +919,9 @@ class SearchCampaignViewSet(viewsets.ModelViewSet):
 
 
 class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
-    queryset = Resume.objects.select_related("candidate", "application__job").all()
+    queryset = Resume.objects.select_related("candidate", "application__job").prefetch_related(
+        "structured_versions", "ai_tasks"
+    ).all()
     serializer_class = ResumeSerializer
     permission_classes = [RecruitmentWritePermission]
 
@@ -946,6 +951,65 @@ class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
             detail={"candidate_id": resume.candidate_id, "version": resume.version},
         )
         return response
+
+    @action(detail=True, methods=["post"], url_path="retry-structure")
+    def retry_structure(self, request, pk=None):
+        resume = self.get_object()
+        task = resume.ai_tasks.filter(
+            kind=AiProcessingTask.Kind.RESUME_STRUCTURE,
+            status__in=[AiProcessingTask.Status.FAILED, AiProcessingTask.Status.WAITING_CONFIG],
+        ).order_by("-created_at").first()
+        try:
+            if task:
+                task = retry_ai_task(task=task, requested_by=request.user)
+                created = False
+            else:
+                task, created = enqueue_resume_structure(resume=resume, requested_by=request.user)
+        except (PermissionError, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(
+            AiProcessingTaskSerializer(task).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class StructuredResumeVersionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = StructuredResumeVersion.objects.select_related(
+        "resume__candidate", "resume__application__job", "extraction"
+    )
+    serializer_class = StructuredResumeVersionSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().filter(resume__application__job__in=accessible_jobs(self.request.user))
+        resume_id = self.request.query_params.get("resume")
+        if resume_id:
+            queryset = queryset.filter(resume_id=resume_id)
+        return queryset.distinct()
+
+
+class AiProcessingTaskViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = AiProcessingTask.objects.select_related("job", "resume", "standard", "requested_by")
+    serializer_class = AiProcessingTaskSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().filter(job__in=accessible_jobs(self.request.user))
+        for field in ("job", "kind", "status", "resume"):
+            value = self.request.query_params.get(field)
+            if value:
+                queryset = queryset.filter(**{field: value})
+        return queryset.distinct()
+
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        try:
+            task = retry_ai_task(task=self.get_object(), requested_by=request.user)
+        except PermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(self.get_serializer(task).data)
 
 
 class RpaTaskViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
