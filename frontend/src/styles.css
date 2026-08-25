@@ -808,10 +808,27 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .resume-word-category { display: grid; gap: 4px; color: #7b8898; font-size: 8px; }
 .resume-word-category select { min-width: 130px; height: 31px; padding: 0 9px; border: 1px solid #dce5e8; border-radius: 8px; color: #344256; background: #fff; font-size: 9px; }
 .resume-requirement-docs { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
-.resume-requirement-docs a { display: grid; grid-template-columns: 32px 1fr 16px; align-items: center; gap: 9px; min-height: 61px; padding: 11px 13px; color: #087f73; border: 1px solid #dfe8e8; border-radius: 13px; background: #fff; box-shadow: 0 8px 24px rgba(22,49,65,.035); transition: border-color .18s ease, transform .18s ease; }
+.resume-requirement-docs article { position: relative; }
+.resume-requirement-docs a { display: grid; grid-template-columns: 32px 1fr 16px; align-items: center; gap: 9px; min-height: 61px; padding: 11px 34px 11px 13px; color: #087f73; border: 1px solid #dfe8e8; border-radius: 13px; background: #fff; box-shadow: 0 8px 24px rgba(22,49,65,.035); transition: border-color .18s ease, transform .18s ease; }
 .resume-requirement-docs a:hover { border-color: #9fd3ca; transform: translateY(-2px); }
+.resume-requirement-docs article > button { position: absolute; top: 7px; right: 7px; width: 23px; height: 23px; border: 0; color: #9aa5b1; border-radius: 7px; background: transparent; cursor: pointer; }
+.resume-requirement-docs article > button:hover { color: #bd4f4f; background: #fff1f1; }
 .resume-requirement-docs a > span { min-width: 0; display: grid; gap: 4px; }
 .resume-requirement-docs strong { overflow: hidden; color: #2a374a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .resume-requirement-docs small { color: #8a97a8; font-size: 8px; }
 .recruitment-image-preview { width: 100%; height: auto; max-height: 68vh; object-fit: contain; object-position: top center; border: 1px solid #e2e8ec; border-radius: 10px; background: #f5f7f8; }
 @media (max-width: 900px) { .resume-requirement-docs { grid-template-columns: 1fr; } }
+.automation-campaign-strip { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.automation-campaign-strip article { display: grid; grid-template-columns: minmax(150px,.8fr) minmax(180px,1fr) auto; align-items: center; gap: 14px; padding: 13px 15px; border: 1px solid #e0e8ea; border-radius: 13px; background: rgba(255,255,255,.88); }
+.automation-campaign-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.automation-campaign-title > i { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #98a5b2; }
+.automation-campaign-title > i.is-running,.automation-campaign-title > i.is-queued { background: #159981; box-shadow: 0 0 0 4px rgba(21,153,129,.1); animation: pulse-status 1.6s ease-in-out infinite; }
+.automation-campaign-title > i.is-failed { background: #d76363; }
+.automation-campaign-title span { min-width: 0; display: grid; gap: 3px; }
+.automation-campaign-title strong { overflow: hidden; color: #263347; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.automation-campaign-title small,.automation-campaign-meter small { color: #8996a5; font-size: 8px; }
+.automation-campaign-meter { display: grid; gap: 5px; }
+.automation-campaign-meter > span { height: 3px; overflow: hidden; border-radius: 99px; background: #edf2f2; }
+.automation-campaign-meter > span i { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg,#128f80,#45c5ad); transition: width .3s ease; }
+.automation-campaign-strip article > button { border: 0; color: #b04e4e; background: transparent; font-size: 9px; cursor: pointer; }
+@media (max-width: 1000px) { .automation-campaign-strip { grid-template-columns: 1fr; } }

@@ -143,6 +143,22 @@ async function resolveAttention(item) {
   } catch (err) { error.value = err.message }
 }
 
+async function disposeCampaign(campaign) {
+  try {
+    if (['queued', 'running', 'paused'].includes(campaign.status)) {
+      await api(`recruitment/search-campaigns/${campaign.id}/stop/`, { method: 'POST' })
+    } else {
+      await api(`recruitment/search-campaigns/${campaign.id}/`, { method: 'DELETE' })
+    }
+    campaigns.value = listItems(await api('recruitment/search-campaigns/'))
+  } catch (err) { error.value = err.message }
+}
+
+function campaignProgress(campaign) {
+  if (!campaign.max_scan_count) return 0
+  return Math.min(100, Math.round((campaign.scanned_count / campaign.max_scan_count) * 100))
+}
+
 const schemeJobs = computed(() => openJobs.value.filter((job) => String(job.boss_account) === String(schemeForm.accountId)))
 
 function menuActionLabel(account, actionName) {
@@ -453,6 +469,14 @@ onUnmounted(() => {
         </div>
         <div v-else class="automation-attention-empty"><AppIcon name="check-circle" :size="20" /><span>当前没有人工介入事项</span></div>
       </aside>
+    </section>
+    <section v-if="campaigns.length" class="automation-campaign-strip" aria-label="主动寻访运行记录">
+      <article v-for="campaign in campaigns.slice(0, 4)" :key="campaign.id">
+        <div class="automation-campaign-title"><i :class="`is-${campaign.status}`"></i><span><strong>{{ campaign.name }}</strong><small>{{ campaign.job_title }} · 目标 {{ campaign.target_resume_count }} 份</small></span></div>
+        <div class="automation-campaign-meter"><span><i :style="{ width: `${campaignProgress(campaign)}%` }"></i></span><small>已扫描 {{ campaign.scanned_count }}/{{ campaign.max_scan_count }} · 已拉取 {{ campaign.pulled_resume_count }}</small></div>
+        <button v-if="campaign.status !== 'succeeded'" type="button" @click="disposeCampaign(campaign)">{{ ['queued','running','paused'].includes(campaign.status) ? '停止' : '删除' }}</button>
+        <span v-else class="recruitment-chip">已完成</span>
+      </article>
     </section>
     <section class="panel table-panel automation-panel automation-panel--accounts">
       <header class="panel__header panel__header--padded">

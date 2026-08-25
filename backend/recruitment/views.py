@@ -234,6 +234,17 @@ class JobRequirementDocumentViewSet(viewsets.ReadOnlyModelViewSet):
             raise ValidationError({"file": str(exc)}) from exc
         return Response(self.get_serializer(document).data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        document = self.get_object()
+        document.archived_at = timezone.now()
+        document.save(update_fields=["archived_at", "updated_at"])
+        RecruitmentAuditLog.objects.create(
+            actor=request.user, boss_account=document.job.boss_account,
+            action="job_requirement_document_archived", target_id=str(document.pk),
+        )
+        return Response(self.get_serializer(document).data)
+
     @action(detail=True, methods=["post"], url_path="versions")
     def add_version(self, request, pk=None):
         document = self.get_object()
@@ -807,6 +818,13 @@ class SearchCampaignViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        campaign = self.get_object()
+        if campaign.status not in {SearchCampaign.Status.DRAFT, SearchCampaign.Status.CANCELLED, SearchCampaign.Status.FAILED}:
+            raise ValidationError("运行中或已完成的主动寻访记录需要保留审计，不可删除")
+        campaign.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):

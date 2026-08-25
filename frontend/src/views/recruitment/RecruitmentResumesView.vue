@@ -68,6 +68,13 @@ function resumeFormat(resume) {
   return resume.content_type === 'image/png' ? 'PNG 在线简历' : 'PDF 附件简历'
 }
 
+async function archiveJobDocument(document) {
+  try {
+    await api(`recruitment/job-documents/${document.id}/archive/`, { method: 'POST' })
+    jobDocuments.value = jobDocuments.value.filter((item) => item.id !== document.id)
+  } catch (err) { error.value = err.message }
+}
+
 watch(
   () => currentJob.value?.id,
   async () => {
@@ -159,9 +166,10 @@ async function toggleArchiveView() {
     </section>
 
     <section v-if="!showArchived && jobDocuments.length" class="resume-requirement-docs">
-      <a v-for="document in jobDocuments" :key="document.id" :href="`/api/recruitment/job-document-versions/${document.current_version.id}/file/`">
-        <AppIcon name="document" :size="17" /><span><strong>{{ document.title }}</strong><small>{{ document.category_label }} · V{{ document.current_version.version }} · {{ formatRecruitmentDate(document.updated_at) }}</small></span><AppIcon name="download" :size="14" />
-      </a>
+      <article v-for="document in jobDocuments" :key="document.id">
+        <a :href="`/api/recruitment/job-document-versions/${document.current_version.id}/file/`"><AppIcon name="document" :size="17" /><span><strong>{{ document.title }}</strong><small>{{ document.category_label }} · V{{ document.current_version.version }} · {{ formatRecruitmentDate(document.updated_at) }}</small></span><AppIcon name="download" :size="14" /></a>
+        <button type="button" :data-test="`archive-job-document-${document.id}`" aria-label="移除岗位标准文档" @click="archiveJobDocument(document)">×</button>
+      </article>
     </section>
 
     <section class="recruitment-data-shell">

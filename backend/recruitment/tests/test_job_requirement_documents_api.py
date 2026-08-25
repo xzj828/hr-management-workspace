@@ -105,3 +105,17 @@ class JobRequirementDocumentApiTests(APITestCase):
         self.client.force_login(other)
         hidden = self.client.get(f"/api/recruitment/job-documents/?job={self.job.pk}")
         self.assertEqual(hidden.status_code, 404)
+
+    def test_archives_saved_document_without_deleting_versions(self):
+        created = self.client.post(
+            "/api/recruitment/job-documents/",
+            {"job": self.job.pk, "category": "persona", "title": "候选人画像", "file": self._file()},
+            format="multipart",
+        )
+        response = self.client.post(f"/api/recruitment/job-documents/{created.data['id']}/archive/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        document = JobRequirementDocument.objects.get(pk=created.data["id"])
+        self.assertIsNotNone(document.archived_at)
+        self.assertEqual(document.versions.count(), 1)
+        self.assertEqual(self.client.get(f"/api/recruitment/job-documents/?job={self.job.pk}").data["count"], 0)
