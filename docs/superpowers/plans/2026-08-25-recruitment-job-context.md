@@ -413,7 +413,7 @@ Expected: startup, SPA assets, API health, and content types pass.
 
 Verify: global pages show “全部职位 · 全局视图”; no-selection job pages do not load mixed data; a job selection persists across candidates/pipeline/resumes and refresh; dashboard stays global; job cards drill down; rapid job switching never flashes old rows; successful sync refreshes the selector; failed sync preserves it.
 
-- [ ] **Step 5: Verify a clean tree**
+- [x] **Step 5: Verify a clean tree**
 
 ```powershell
 git status --short --branch
