@@ -205,8 +205,19 @@ def stop_search_campaign(*, campaign):
     locked = SearchCampaign.objects.select_for_update().get(pk=snapshot["pk"])
     if locked.status in {SearchCampaign.Status.SUCCEEDED, SearchCampaign.Status.CANCELLED}:
         return locked
-    if any(task.status in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING} for task in tasks):
-        raise ValidationError("主动寻访已在浏览器中执行，当前适配器无法安全中断，请等待任务转人工或结束")
+    active_tasks = [
+        task for task in tasks
+        if task.status in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}
+    ]
+    for task in active_tasks:
+        task.status = RpaTask.Status.CANCEL_REQUESTED
+        task.save(update_fields=["status", "updated_at"])
+        append_event(
+            task=task,
+            event="cancel_requested",
+            message="用户停止主动寻访，已通知本机 Worker 中断当前任务",
+            data={"status": task.status},
+        )
     now = timezone.now()
     workflow_tasks = {}
     for task in (item for item in tasks if item.status == RpaTask.Status.PENDING):
@@ -268,6 +279,9 @@ def stop_search_campaign(*, campaign):
         )
         if task.workflow_node_run_id:
             workflow_tasks[task.workflow_node_run_id] = task.pk
+    if active_tasks:
+        # 运行中任务已请求取消，等待 Worker 回执后再收敛 campaign 状态。
+        return locked
     locked.status = SearchCampaign.Status.CANCELLED
     locked.stop_reason = SearchCampaign.StopReason.USER_STOPPED
     locked.completed_at = now

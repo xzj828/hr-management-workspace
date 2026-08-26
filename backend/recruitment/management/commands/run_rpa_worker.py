@@ -77,8 +77,11 @@ class WorkerApiClient:
     def complete(self, task_id, payload):
         return self._request(f"tasks/{task_id}/complete/", payload)
 
-    def control(self, task_id):
-        return self._get(f"tasks/{task_id}/control/?worker_key={self.worker_key}")
+    def control(self, task_id, *, lease_token, lease_generation):
+        return self._get(
+            f"tasks/{task_id}/control/?worker_key={self.worker_key}"
+            f"&lease_token={lease_token}&lease_generation={lease_generation}"
+        )
 
     def status_targets(self):
         return self._get("status-targets/")
@@ -457,19 +460,57 @@ def execute_rejection_notice(task, account, runner):
     }
 
 
+def _normalize_job_title(value):
+    return " ".join(str(value or "").split())
+
+
+def _expected_conversation_job_titles(payload):
+    expected = set()
+    direct_title = _normalize_job_title(payload.get("job_title", ""))
+    if direct_title:
+        expected.add(direct_title)
+    scopes = payload.get("passive_plan_scopes")
+    if isinstance(scopes, dict):
+        for scope in scopes.values():
+            if not isinstance(scope, dict):
+                continue
+            title = _normalize_job_title(scope.get("job_title", ""))
+            if title:
+                expected.add(title)
+    return expected
+
+
 def execute_sync_conversations(task, account, runner, checkpoint=None):
+    payload = task.get("request_payload") if isinstance(task.get("request_payload"), dict) else {}
+    expected_job_titles = _expected_conversation_job_titles(payload)
     if checkpoint is not None and not checkpoint("before_list", 0):
         return {
             "status": "succeeded",
-            "result": {"conversations": [], "checkpoint_stopped": True},
+            "result": {"conversations": [], "skipped": 0, "checkpoint_stopped": True},
         }
-    rows = parse_conversation_list(runner.conversations(account))
+    rows = parse_conversation_list(runner.conversations(account, unread=True))
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
-    name_counts = {row["name"]: sum(1 for item in rows if item["name"] == row["name"]) for row in rows}
+    eligible = []
+    skipped = 0
+    for row in rows:
+        if not row.get("unread"):
+            row["sync_error"] = "会话已读，未打开"
+            skipped += 1
+            continue
+        if expected_job_titles and _normalize_job_title(row.get("job_title", "")) not in expected_job_titles:
+            row["sync_error"] = "会话岗位与当前选择岗位不一致，未打开"
+            skipped += 1
+            continue
+        eligible.append(row)
+    name_counts = {
+        row["name"]: sum(1 for item in eligible if item["name"] == row["name"])
+        for row in eligible
+    }
     checkpoint_stopped = False
-    for sequence, row in enumerate(rows[:50], start=1):
+    for sequence, row in enumerate(eligible[:50], start=1):
         if name_counts[row["name"]] != 1:
             row["sync_error"] = "同名候选人不唯一，未打开会话"
+            skipped += 1
             continue
         if checkpoint is not None and not checkpoint("before_open_chat", sequence):
             checkpoint_stopped = True
@@ -485,7 +526,11 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
             break
     return {
         "status": "succeeded",
-        "result": {"conversations": rows, "checkpoint_stopped": checkpoint_stopped},
+        "result": {
+            "conversations": rows,
+            "skipped": skipped,
+            "checkpoint_stopped": checkpoint_stopped,
+        },
     }
 
 
@@ -803,7 +848,11 @@ class WorkerEngine:
         if callable(set_cancel_check):
             def cancellation_requested():
                 try:
-                    return self.api.control(task["id"]).get("cancel_requested") is True
+                    return self.api.control(
+                        task["id"],
+                        lease_token=task["lease_token"],
+                        lease_generation=task["lease_generation"],
+                    ).get("cancel_requested") is True
                 except RuntimeError:
                     return False
 

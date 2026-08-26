@@ -299,12 +299,18 @@ class WorkerApiTests(APITestCase):
         RpaTask.objects.filter(pk=task_id).update(status="cancel_requested")
 
         control = self.client.get(
-            f"/api/recruitment/worker/tasks/{task_id}/control/?worker_key=local-worker",
+            f"/api/recruitment/worker/tasks/{task_id}/control/",
+            {"worker_key": "local-worker", **self.lease_credentials(lease)},
             **self.token_header,
         )
         complete = self.client.post(
             f"/api/recruitment/worker/tasks/{task_id}/complete/",
-            {"worker_key": "local-worker", "status": "succeeded", "result": {"ignored": True}},
+            {
+                "worker_key": "local-worker",
+                **self.lease_credentials(lease),
+                "status": "succeeded",
+                "result": {"ignored": True},
+            },
             format="json", **self.token_header,
         )
 
@@ -444,7 +450,8 @@ class WorkerApiTests(APITestCase):
         candidate = Candidate.objects.create(identity_key="conversation-worker", name="林然")
         JobApplication.objects.create(candidate=candidate, job=job, source="boss")
         self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
-        self.task.save(update_fields=["action"])
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
         self.heartbeat()
         lease = self.client.post(
             "/api/recruitment/worker/tasks/lease/",
@@ -490,7 +497,8 @@ class WorkerApiTests(APITestCase):
         )
         JobApplication.objects.create(candidate=candidate, job=job, source="boss")
         self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
-        self.task.save(update_fields=["action"])
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
         self.heartbeat()
         lease = self.client.post(
             "/api/recruitment/worker/tasks/lease/",

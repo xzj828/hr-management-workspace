@@ -436,9 +436,15 @@ def _lock_task_for_worker(request, task_id):
         return worker, None, "task_missing"
     if task.worker_id != worker.pk:
         return worker, task, "worker_changed"
-    supplied_token = str(request.data.get("lease_token", "")).strip()
+    supplied_token = str(
+        request.data.get("lease_token")
+        or request.query_params.get("lease_token", "")
+    ).strip()
     try:
-        supplied_generation = int(request.data.get("lease_generation"))
+        supplied_generation = int(
+            request.data.get("lease_generation")
+            or request.query_params.get("lease_generation")
+        )
     except (TypeError, ValueError):
         supplied_generation = -1
     if (
@@ -1215,9 +1221,11 @@ def task_event_view(request, task_id):
 
 @api_view(["GET"])
 @permission_classes([HasRpaWorkerToken])
+@serialize_sqlite_lifecycle
+@transaction.atomic
 def task_control_view(request, task_id):
-    _, task = _assigned_task(request, task_id)
-    if task is None:
+    _, task, assignment = _lock_task_for_worker(request, task_id)
+    if task is None or assignment != "assigned":
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
     return Response({
         "status": task.status,
@@ -1403,6 +1411,19 @@ def complete_task_view(request, task_id):
             scope_stopped = sync_checkpoint_stopped or server_scope_stopped
             valid_plans = {} if scope_stopped else (scoped_plans or {})
             allowed_job_ids = None if unscoped_manual_sync and not scope_stopped else list(valid_plans)
+            payload = task.request_payload if isinstance(task.request_payload, dict) else {}
+            selected_job_id = payload.get("job")
+            if scoped_plans is None and selected_job_id:
+                selected_job = RecruitmentJob.objects.filter(
+                    pk=selected_job_id,
+                    boss_account=task.boss_account,
+                ).first()
+                if selected_job is None:
+                    return Response(
+                        {"detail": "消息同步缺少有效的所选岗位"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                allowed_job_ids = [selected_job.pk]
             sync_result = sync_conversation_states(
                 account=task.boss_account,
                 rows=rows,
@@ -1417,6 +1438,8 @@ def complete_task_view(request, task_id):
                     job__boss_account=task.boss_account,
                     candidate__name=str(row.get("name", "")).strip(),
                 )
+                if allowed_job_ids is not None:
+                    application_queryset = application_queryset.filter(job_id__in=allowed_job_ids)
                 applications = list(application_queryset[:2])
                 if len(applications) != 1:
                     continue

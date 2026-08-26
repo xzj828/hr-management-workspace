@@ -14,6 +14,7 @@ describe('recruitment job sync helpers', () => {
   it('maps worker states to stable progress', () => {
     expect(taskProgress('pending')).toEqual({ label: '等待执行', percent: 12 })
     expect(taskProgress('running')).toEqual({ label: '正在读取 BOSS 职位', percent: 62 })
+    expect(taskProgress('cancel_requested')).toEqual({ label: '正在取消', percent: 80 })
     expect(taskProgress('succeeded')).toEqual({ label: '同步完成', percent: 100 })
   })
 })

@@ -308,6 +308,28 @@ def cancel_run(run, *, actor):
         if node.pk in communication_node_ids:
             cancel_workflow_communication(workflow_node_run=node, actor=actor, now=now)
 
+    for task in tasks.filter(status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING]):
+        if task.workflow_node_run_id in communication_node_ids:
+            continue
+        if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:
+            campaign = SearchCampaign.objects.select_for_update().filter(
+                pk=task.request_payload.get("campaign_id"),
+                boss_account=locked.boss_account,
+            ).first()
+            if campaign is not None:
+                stop_search_campaign(campaign=campaign)
+            continue
+        if task.status == RpaTask.Status.CANCEL_REQUESTED:
+            continue
+        task.status = RpaTask.Status.CANCEL_REQUESTED
+        task.save(update_fields=["status", "updated_at"])
+        append_event(
+            task=task,
+            event="cancel_requested",
+            message="所属流程已取消，已通知本机 Worker 中断当前任务",
+            data={"status": task.status},
+        )
+
     stopped_campaign_ids = set()
     for task in tasks.filter(status=RpaTask.Status.PENDING):
         if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:

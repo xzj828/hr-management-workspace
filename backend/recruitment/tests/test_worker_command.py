@@ -108,7 +108,7 @@ class WorkerEngineTests(SimpleTestCase):
             def event(self, task_id, payload):
                 return payload
 
-            def control(self, task_id):
+            def control(self, task_id, *, lease_token, lease_generation):
                 return {"cancel_requested": True}
 
             def complete(self, task_id, payload):
@@ -125,6 +125,8 @@ class WorkerEngineTests(SimpleTestCase):
         task = {
             "id": "task-cancelled",
             "action": "sync_positions",
+            "lease_token": "test-lease-token",
+            "lease_generation": 1,
             "browser": {
                 "executable": "edge.exe",
                 "user_data_dir": "C:/profiles/expected",
@@ -162,7 +164,7 @@ class WorkerEngineTests(SimpleTestCase):
         inventory.return_value.download_resume_attachments.return_value = []
 
         class Runner:
-            def conversations(self, account):
+            def conversations(self, account, unread=False):
                 return "1. 林然｜产品经理｜未读 2"
 
             def open_chat(self, account, name):
@@ -173,11 +175,51 @@ class WorkerEngineTests(SimpleTestCase):
 [candidate] 2026-08-25 09:02 这是我的简历
 """)
 
-        outcome = execute_sync_conversations({}, CliAccountConfig("edge.exe", "profile", 53470), Runner())
+        outcome = execute_sync_conversations(
+            {"request_payload": {"job": 7, "job_title": "产品经理"}},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            Runner(),
+        )
 
         messages = outcome["result"]["conversations"][0]["messages"]
         self.assertEqual(len(messages), 3)
         self.assertEqual(messages[-1]["content"], "这是我的简历")
+
+    @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
+    def test_sync_opens_only_unread_conversations_for_selected_job(self, inventory):
+        inventory.return_value.download_resume_attachments.return_value = []
+
+        class Runner:
+            def __init__(self):
+                self.called_unread = None
+                self.opened = []
+
+            def conversations(self, account, unread=False):
+                self.called_unread = unread
+                return (
+                    "1. 林然｜产品经理｜已读\n"
+                    "2. 周青｜测试工程师｜未读 1\n"
+                    "3. 陈思｜产品经理｜未读 2\n"
+                )
+
+            def open_chat(self, account, name):
+                self.opened.append(name)
+                return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 2026-08-25 09:00 你好")
+
+        runner = Runner()
+        outcome = execute_sync_conversations(
+            {"request_payload": {"job": 7, "job_title": "产品经理"}},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            runner,
+        )
+
+        self.assertTrue(runner.called_unread)
+        self.assertEqual(runner.opened, ["陈思"])
+        conversations = outcome["result"]["conversations"]
+        by_name = {row["name"]: row for row in conversations}
+        self.assertIn("messages", by_name["陈思"])
+        self.assertEqual(by_name["林然"]["sync_error"], "会话已读，未打开")
+        self.assertEqual(by_name["周青"]["sync_error"], "会话岗位与当前选择岗位不一致，未打开")
 
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_status_observer_checks_all_accounts_outside_task_queue(self, inspect):

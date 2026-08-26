@@ -219,9 +219,10 @@ def message_sync_scopes_for_account(account):
         current_revision__isnull=False,
         job__boss_account__active=True,
         job__boss_account__archived_at__isnull=True,
-    ).values("job_id", "current_revision_id", "control_generation")
+    ).values("job_id", "job__title", "current_revision_id", "control_generation")
     return {
         str(item["job_id"]): {
+            "job_title": item["job__title"],
             "revision_id": item["current_revision_id"],
             "generation": item["control_generation"],
         }

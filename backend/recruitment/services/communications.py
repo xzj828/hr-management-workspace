@@ -17,6 +17,7 @@ from recruitment.models import (
     ExecutionBatch,
     HumanAttention,
     InterviewInvitation,
+    JobApplication,
     RecruitmentAuditLog,
     RecruitmentAutomationPlan,
     RpaTask,
@@ -358,6 +359,17 @@ def cancel_workflow_communication(*, workflow_node_run, actor, now=None):
         for value in active_tasks.values_list("request_payload__step_id", flat=True)
         if value is not None
     }
+    for task in active_tasks:
+        if task.status == RpaTask.Status.CANCEL_REQUESTED:
+            continue
+        task.status = RpaTask.Status.CANCEL_REQUESTED
+        task.save(update_fields=["status", "updated_at"])
+        append_event(
+            task=task,
+            event="cancel_requested",
+            message="所属流程已取消，已通知本机 Worker 中断当前沟通任务",
+            data={"status": task.status},
+        )
     for task in tasks.filter(status=RpaTask.Status.PENDING):
         task.status = RpaTask.Status.CANCELLED
         task.error_code = "workflow_cancelled"
@@ -620,8 +632,6 @@ def sync_conversation_states(*, account, rows, actor=None, allowed_job_ids=None)
             if name:
                 ambiguous += 1
             continue
-        from recruitment.models import JobApplication
-
         application = JobApplication.objects.get(pk=applications[0])
         if allowed_job_ids is not None and application.job_id not in allowed_job_ids:
             continue
