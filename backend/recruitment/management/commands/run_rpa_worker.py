@@ -165,7 +165,13 @@ def execute_check_status(task, account, runner):
                     account.cdp_port,
                     user_data_dir=account.user_data_dir,
                 )
-                if observed.login_status != "browser_stopped" or attempt == 19:
+                if observed.login_status != "browser_stopped" and not browser_was_running:
+                    try:
+                        record_managed_cdp(account.cdp_port, account.user_data_dir)
+                        browser_was_running = True
+                    except BrowserUnavailableError:
+                        pass
+                if (observed.login_status != "browser_stopped" and browser_was_running) or attempt == 19:
                     break
                 if login_process is not None and login_process.poll() is not None:
                     break

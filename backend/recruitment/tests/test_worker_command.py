@@ -215,8 +215,9 @@ class WorkerEngineTests(SimpleTestCase):
         self.assertEqual(completed[0]["error_code"], "boss_account_not_ready")
 
     @patch("recruitment.management.commands.run_rpa_worker.time.sleep")
+    @patch("recruitment.management.commands.run_rpa_worker.record_managed_cdp")
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
-    def test_open_login_waits_for_browser_debugging(self, inspect, sleep):
+    def test_open_login_waits_for_browser_debugging(self, inspect, record, sleep):
         inspect.side_effect = [
             BossBrowserStatus("browser_stopped", detail="starting"),
             BossBrowserStatus("waiting_login", detail="ready"),
@@ -231,6 +232,7 @@ class WorkerEngineTests(SimpleTestCase):
             outcome = execute_check_status({"open_login": True}, account, runner)
 
         self.assertEqual(inspect.call_count, 2)
+        record.assert_called_once_with(53470, "C:/profiles/a")
         sleep.assert_called_once()
         self.assertEqual(outcome["status"], "succeeded")
         self.assertEqual(outcome["result"]["login_status"], "waiting_login")
@@ -263,6 +265,19 @@ class WorkerEngineTests(SimpleTestCase):
         record.assert_called_once_with(53470, "C:/profiles/a")
         self.assertEqual(outcome["status"], "succeeded")
         self.assertEqual(outcome["result"]["login_status"], "waiting_login")
+
+    @patch("recruitment.management.commands.run_rpa_worker.record_managed_cdp")
+    @patch("recruitment.management.commands.run_rpa_worker.cdp_is_running", side_effect=[False, False])
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    def test_open_login_records_identity_when_browser_becomes_ready_between_probes(self, inspect, running, record):
+        inspect.return_value = BossBrowserStatus("waiting_login", detail="等待人工登录")
+        runner = type("Runner", (), {"login": lambda self, account: None})()
+        account = CliAccountConfig("edge.exe", "C:/profiles/a", 53470)
+
+        outcome = execute_check_status({"open_login": True}, account, runner)
+
+        record.assert_called_once_with(53470, "C:/profiles/a")
+        self.assertEqual(outcome["status"], "succeeded")
 
     @patch("recruitment.management.commands.run_rpa_worker.time.sleep")
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
