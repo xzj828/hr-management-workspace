@@ -1,5 +1,17 @@
 # 招聘工作区 Baseline 评估报告
 
+## 2026-08-26 招聘作业台参考图重做基线
+
+用户明确否决上一版终态，并提供新的构图硬标准：高饱和青蓝舞台、居中统一大卡、左浅青步骤区、右白工作区。独立评审将当前失败版重新评为：
+
+| 页面 | Compliance | Craft | Coherence | Functionality | 总分 | 状态 |
+|---|---:|---:|---:|---:|---:|---|
+| 招聘作业台（当前失败版） | 3 | 2 | 2 | 4 | 11/20 | NEEDS_IMPROVEMENT |
+
+当前 `840 × 254px` context 卡宽高比约 `3.3:1`，而参考主卡约 `1.26:1`；浅灰蓝背景、横向步骤条与独立检查侧卡均不再作为可接受方向。详细证据见 `recruitment-workbench/reference-rework-baseline-scorecard.md`。
+
+---
+
 视觉真值：现有考勤模块 + 根目录 `DESIGN.md`。
 
 | 页面 | Compliance | Craft | Coherence | Functionality | 总分 | 状态 |

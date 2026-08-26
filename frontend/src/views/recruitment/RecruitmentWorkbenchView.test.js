@@ -111,6 +111,17 @@ async function goToPlan(wrapper, { core = '', bonus = '' } = {}) {
   expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(true)
 }
 
+async function completePlanAndReview(wrapper) {
+  await wrapper.get('[data-test="complete-plan-step"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.find('[data-test="workbench-step-review"]').exists()).toBe(true)
+}
+
+async function goToReview(wrapper, options = {}) {
+  await goToPlan(wrapper, options)
+  await completePlanAndReview(wrapper)
+}
+
 describe('RecruitmentWorkbenchView', () => {
   let wrapper
 
@@ -156,7 +167,7 @@ describe('RecruitmentWorkbenchView', () => {
     sessionStorage.clear()
   })
 
-  it('presents the three steps as guarded pages with current-step semantics and previous navigation', async () => {
+  it('presents four guarded pages and keeps execution controls exclusively on the review step', async () => {
     let router
     ;({ wrapper, router } = await mountView())
 
@@ -164,12 +175,13 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="workbench-step-review"]').exists()).toBe(false)
     expect(router.currentRoute.value.query.step).toBe('context')
 
     await goToStandard(wrapper)
     expect(wrapper.get('[data-test="wizard-step-standard"]').attributes('aria-current')).toBe('step')
     expect(router.currentRoute.value.query).toMatchObject({ job: '51', step: 'standard' })
-    expect(wrapper.text()).toContain('岗位依据文件')
+    expect(wrapper.text()).toContain('岗位参考资料')
 
     router.back()
     await flushPromises()
@@ -181,9 +193,24 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-test="wizard-step-plan"]').attributes('aria-current')).toBe('step')
-    expect(wrapper.text()).toContain('执行前检查')
+    expect(wrapper.find('.workbench-review').exists()).toBe(false)
+    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="precheck-job"]').exists()).toBe(false)
     expect(wrapper.findAll('button.primary-button')).toHaveLength(1)
 
+    const writesBeforeReview = apiMock.mock.calls.filter(([, options]) => options?.method === 'POST').length
+    await completePlanAndReview(wrapper)
+    expect(wrapper.get('[data-test="wizard-step-review"]').attributes('aria-current')).toBe('step')
+    expect(router.currentRoute.value.query).toMatchObject({ job: '51', step: 'review' })
+    expect(wrapper.find('.workbench-review').exists()).toBe(true)
+    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="precheck-job"]').exists()).toBe(true)
+    expect(apiMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(writesBeforeReview)
+
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
     await wrapper.get('[data-test="previous-step"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(true)
@@ -192,9 +219,36 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
   })
 
-  it('guards direct deep links and does not auto-skip the first step during hydration', async () => {
+  it('resets the persistent work area for every newly selected step', async () => {
+    ;({ wrapper } = await mountView())
+    expect(wrapper.findAll('.workbench-wizard__step')).toHaveLength(4)
+    await goToStandard(wrapper)
+    const main = wrapper.get('.workbench-main')
+    const mainElement = main.element
+
+    mainElement.scrollTop = 180
+    await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.workbench-main').element).toBe(mainElement)
+    expect(mainElement.scrollTop).toBe(0)
+
+    mainElement.scrollTop = 240
+    await wrapper.get('[data-test="complete-plan-step"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="workbench-step-review"]').exists()).toBe(true)
+    expect(wrapper.findAll('.workbench-checks > li')).toHaveLength(6)
+    expect(mainElement.scrollTop).toBe(0)
+
+    mainElement.scrollTop = 120
+    await wrapper.get('[data-test="wizard-step-standard"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(true)
+    expect(mainElement.scrollTop).toBe(0)
+  })
+
+  it('guards direct review deep links and does not auto-skip incomplete prerequisite steps during hydration', async () => {
     let router
-    ;({ wrapper, router } = await mountView({ job: '51', step: 'plan' }))
+    ;({ wrapper, router } = await mountView({ job: '51', step: 'review' }))
 
     expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
     expect(router.currentRoute.value.query.step).toBe('context')
@@ -300,6 +354,41 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="bonus-requirements"]').element.value).toBe('AI 项目经验')
   })
 
+  it('restores a legacy three-step draft without completed.plan and gates review until plan is completed', async () => {
+    sessionStorage.setItem('ximing-hr:recruitment-workbench-draft:v1:9:51', JSON.stringify({
+      version: 1,
+      jobId: '51',
+      selectedAccountId: '7',
+      step: 'plan',
+      completed: { context: true, standard: true },
+      documentCategory: 'persona',
+      draft: {
+        schemeKind: 'active_resume_search',
+        workflowChoice: 'standard',
+        coreText: '旧草稿核心要求',
+        bonusText: '',
+        interval: 2,
+        source: 'search',
+        keyword: 'Python',
+        targetResumeCount: 4,
+        maxScanCount: 20,
+      },
+    }))
+
+    let router
+    ;({ wrapper, router } = await mountView({ job: '51', step: 'review' }))
+
+    expect(router.currentRoute.value.query.step).toBe('plan')
+    expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="workbench-step-review"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="active-keyword"]').element.value).toBe('Python')
+
+    await completePlanAndReview(wrapper)
+    expect(router.currentRoute.value.query.step).toBe('review')
+    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(true)
+  })
+
   it('removes a schema-invalid wizard draft and never treats a legacy operation receipt as truth', async () => {
     const wizardKey = 'ximing-hr:recruitment-workbench-draft:v1:9:51'
     const operationKey = 'ximing-hr:recruitment-operation:9:51'
@@ -358,7 +447,7 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="core-requirements"]').element.value).toBe('')
   })
 
-  it('uploads multiple requirement files sequentially through click selection', async () => {
+  it('hides the file-purpose selector and uploads reference files with the fixed compatibility category', async () => {
     let documentReads = 0
     const uploadOrder = []
     apiMock.mockImplementation(async (path, options) => {
@@ -377,7 +466,7 @@ describe('RecruitmentWorkbenchView', () => {
     })
     ;({ wrapper } = await mountView())
     await goToStandard(wrapper)
-    await wrapper.get('[data-test="document-category"]').setValue('requirement')
+    expect(wrapper.find('[data-test="document-category"]').exists()).toBe(false)
     const fileInput = wrapper.get('[data-test="workbench-file-input"]')
     Object.defineProperty(fileInput.element, 'files', {
       configurable: true,
@@ -396,7 +485,8 @@ describe('RecruitmentWorkbenchView', () => {
     ))
     expect(uploadCalls).toHaveLength(2)
     expect(uploadCalls[0][1].body.get('job')).toBe('51')
-    expect(uploadCalls[0][1].body.get('category')).toBe('requirement')
+    expect(uploadCalls[0][1].body.get('category')).toBe('persona')
+    expect(uploadCalls[1][1].body.get('category')).toBe('persona')
     expect(wrapper.text()).toContain('候选人画像')
     expect(wrapper.text()).toContain('岗位要求')
     expect(wrapper.text()).toContain('已上传')
@@ -478,6 +568,7 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
     await wrapper.get('[data-test="target-resume-count"]').setValue('5')
     await wrapper.get('[data-test="max-scan-count"]').setValue('30')
+    await completePlanAndReview(wrapper)
 
     await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
@@ -518,6 +609,7 @@ describe('RecruitmentWorkbenchView', () => {
     await goToPlan(wrapper, { core: 'Python' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
+    await completePlanAndReview(wrapper)
 
     const start = wrapper.get('[data-test="start-execution"]')
     await start.trigger('click')
@@ -543,16 +635,15 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="active-keyword"]').setValue('原始关键词')
     await wrapper.get('[data-test="target-resume-count"]').setValue('6')
     await wrapper.get('[data-test="max-scan-count"]').setValue('30')
+    await completePlanAndReview(wrapper)
 
     await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-test="active-keyword"]').setValue('等待期间被修改')
-    await wrapper.get('[data-test="scheme-passive"]').setValue(true)
     await router.push({ name: 'recruitment-workbench', query: { job: '52', step: 'context' } })
     await flushPromises()
 
     expect(useRecruitmentContextStore().selectedJobId).toBe('51')
-    expect(router.currentRoute.value.query).toMatchObject({ job: '51', step: 'plan' })
+    expect(router.currentRoute.value.query).toMatchObject({ job: '51', step: 'review' })
     expect(wrapper.text()).toContain('任务处理中，暂不能切换职位')
 
     const startCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')
@@ -583,7 +674,7 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
     ;({ wrapper } = await mountView())
-    await goToPlan(wrapper)
+    await goToReview(wrapper)
 
     expect(wrapper.get('[data-test="start-execution"]').attributes()).toHaveProperty('disabled')
     expect(wrapper.get('[data-test="precheck-browser"]').text()).toContain('隔离浏览器尚未启动')
@@ -605,6 +696,7 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
     await wrapper.get('[data-test="workflow-choice"]').setValue('custom:91')
+    await completePlanAndReview(wrapper)
 
     await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
@@ -630,13 +722,17 @@ describe('RecruitmentWorkbenchView', () => {
     })
 
     ;({ wrapper } = await mountView({ job: '51' }))
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
     expect(wrapper.get('[data-test="workflow-choice"]').element.value).toBe('standard')
     expect(wrapper.text()).not.toContain('当前任务使用的高级流程')
+    await completePlanAndReview(wrapper)
     await wrapper.get('[data-test="modify-operation"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-test="core-requirements"]').setValue('修改后的托管标准')
     await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
+    await completePlanAndReview(wrapper)
     await wrapper.get('[data-test="restart-operation"]').trigger('click')
     await flushPromises()
 
@@ -660,8 +756,11 @@ describe('RecruitmentWorkbenchView', () => {
     })
 
     ;({ wrapper } = await mountView({ job: '51' }))
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
     expect(wrapper.get('[data-test="workflow-choice"]').element.value).toBe('custom:91')
     expect(wrapper.text()).toContain('当前任务使用的高级流程')
+    await completePlanAndReview(wrapper)
     await wrapper.get('[data-test="restart-operation"]').trigger('click')
     await flushPromises()
 
@@ -689,6 +788,8 @@ describe('RecruitmentWorkbenchView', () => {
     })
 
     ;({ wrapper } = await mountView({ job: '51' }))
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
     const choice = wrapper.get('[data-test="workflow-choice"]')
     const values = choice.findAll('option').map((option) => option.attributes('value'))
     expect(values).toEqual(['standard', 'custom:93'])
@@ -697,6 +798,7 @@ describe('RecruitmentWorkbenchView', () => {
 
     await choice.setValue('custom:93')
     expect(choice.element.value).toBe('custom:93')
+    await completePlanAndReview(wrapper)
     expect(wrapper.get('[data-test="precheck-scheme"]').text()).toContain('HR 自定义图 · V1')
   })
 
@@ -717,10 +819,13 @@ describe('RecruitmentWorkbenchView', () => {
     await goToPlan(wrapper, { core: '旧核心要求', bonus: '旧加分项' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
+    await completePlanAndReview(wrapper)
     await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('network lost')
 
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
     await wrapper.get('[data-test="previous-step"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-test="core-requirements"]').setValue('更新后的核心要求')
@@ -733,6 +838,7 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="bonus-requirements"]').element.value).toBe('更新后的加分项')
     await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
+    await completePlanAndReview(wrapper)
     await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
 
@@ -763,6 +869,7 @@ describe('RecruitmentWorkbenchView', () => {
     await goToPlan(wrapper, { core: 'Python' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
+    await completePlanAndReview(wrapper)
 
     await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
@@ -832,6 +939,7 @@ describe('RecruitmentWorkbenchView', () => {
     })
 
     ;({ wrapper } = await mountView({ job: '51', step: 'plan' }))
+    await completePlanAndReview(wrapper)
     await wrapper.get('[data-test="stop-and-modify-operation"]').trigger('click')
     await flushPromises()
 
@@ -939,6 +1047,7 @@ describe('RecruitmentWorkbenchView', () => {
     })
 
     ;({ wrapper } = await mountView({ job: '51', step: 'plan' }))
+    await completePlanAndReview(wrapper)
     expect(wrapper.get('[data-test="plan-version-notice"]').text()).toContain('V2 更新为 V3')
     await wrapper.get('[data-test="restart-operation"]').trigger('click')
     await flushPromises()
@@ -967,6 +1076,7 @@ describe('RecruitmentWorkbenchView', () => {
     })
 
     ;({ wrapper, router } = await mountView({ job: '51', step: 'plan' }))
+    await completePlanAndReview(wrapper)
     const push = vi.spyOn(router, 'push')
     await wrapper.get('[data-test="stop-and-modify-operation"]').trigger('click')
     await flushPromises()

@@ -13,9 +13,10 @@ const route = useRoute()
 const router = useRouter()
 
 const WIZARD_DRAFT_VERSION = 1
-const WIZARD_STEPS = ['context', 'standard', 'plan']
+const WIZARD_STEPS = ['context', 'standard', 'plan', 'review']
 const MAX_JOB_DOCUMENT_SIZE = 25 * 1024 * 1024
 const JOB_DOCUMENT_SUFFIX = /\.(doc|docx|xlsx)$/i
+const JOB_DOCUMENT_CATEGORY = 'persona'
 
 const accounts = ref([])
 const workflowTemplates = ref([])
@@ -27,11 +28,11 @@ const loadError = ref('')
 const documentError = ref('')
 const submitError = ref('')
 const selectedAccountId = ref('')
-const documentCategory = ref('persona')
 const fileInput = ref(null)
+const workbenchMain = ref(null)
 const stepHeading = ref(null)
 const currentStep = ref('context')
-const completedSteps = reactive({ context: false, standard: false })
+const completedSteps = reactive({ context: false, standard: false, plan: false })
 const wizardError = ref('')
 const routeJobError = ref('')
 const storageNotice = ref('')
@@ -135,9 +136,33 @@ const contextStepComplete = computed(() => Boolean(
 ))
 const wizardSteps = computed(() => [
   { key: 'context', number: '01', label: '职位与账号', reachable: true },
-  { key: 'standard', number: '02', label: '画像与要求', reachable: completedSteps.context },
-  { key: 'plan', number: '03', label: '方案与执行', reachable: completedSteps.context && completedSteps.standard },
+  { key: 'standard', number: '02', label: '招聘标准', reachable: completedSteps.context },
+  { key: 'plan', number: '03', label: '执行方案', reachable: completedSteps.context && completedSteps.standard },
+  {
+    key: 'review',
+    number: '04',
+    label: '执行前检查',
+    reachable: completedSteps.context && completedSteps.standard && completedSteps.plan,
+  },
 ])
+const currentStepCopy = computed(() => ({
+  context: {
+    title: '职位与账号',
+    description: '确认本次作业使用的在招职位和授权执行账号。',
+  },
+  standard: {
+    title: '招聘标准',
+    description: '上传岗位参考资料，并补充用于寻访与评分的文字要求。',
+  },
+  plan: {
+    title: '执行方案',
+    description: '选择业务目标、运行流程和本次作业参数。',
+  },
+  review: {
+    title: '执行前检查',
+    description: '确认全部运行条件；只有本页的开始执行会发起正式动作。',
+  },
+}[currentStep.value]))
 
 const checks = computed(() => [
   {
@@ -197,7 +222,7 @@ const startDisabledReason = computed(() => {
   if (planError.value) return `任务状态同步失败，请等待自动刷新后再试：${planError.value}`
   if (uploading.value) return '文件仍在上传，请等待完成。'
   if (submitting.value || planAction.value) return '任务指令正在处理，请勿重复提交。'
-  if (currentStep.value !== 'plan') return '请先完成前置步骤，再进入执行方案。'
+  if (currentStep.value !== 'review') return '请先完成执行方案，再进入执行前检查。'
   if (currentPlan.value && !['stopped', 'failed', 'completed'].includes(currentPlanState.value)) {
     return '当前任务尚未停止，不能开启新版本。'
   }
@@ -453,7 +478,6 @@ function wizardStorageKey(jobId = selectedJob.value?.id) {
 }
 
 function resetWizardFields() {
-  documentCategory.value = 'persona'
   schemeKind.value = 'passive_resume'
   workflowChoice.value = 'standard'
   coreText.value = ''
@@ -465,6 +489,7 @@ function resetWizardFields() {
   maxScanCount.value = 20
   completedSteps.context = false
   completedSteps.standard = false
+  completedSteps.plan = false
   restoredWizardStep.value = 'context'
   currentStep.value = 'context'
   wizardError.value = ''
@@ -485,8 +510,9 @@ function persistWizardDraft(jobId = selectedJob.value?.id) {
     completed: {
       context: completedSteps.context,
       standard: completedSteps.standard,
+      plan: completedSteps.plan,
     },
-    documentCategory: documentCategory.value,
+    documentCategory: JOB_DOCUMENT_CATEGORY,
     draft: operationDraft(),
     editBase: serializedEditBase(),
   })
@@ -500,10 +526,11 @@ function isValidWizardDraft(stored, jobId) {
   if (!isRecord(stored) || stored.version !== WIZARD_DRAFT_VERSION || String(stored.jobId) !== String(jobId)) return false
   if (typeof stored.selectedAccountId !== 'string') return false
   if (!WIZARD_STEPS.includes(stored.step)) return false
-  if (!['persona', 'requirement', 'other'].includes(stored.documentCategory)) return false
   if (!isRecord(stored.completed)
     || typeof stored.completed.context !== 'boolean'
-    || typeof stored.completed.standard !== 'boolean') return false
+    || typeof stored.completed.standard !== 'boolean'
+    || (Object.prototype.hasOwnProperty.call(stored.completed, 'plan')
+      && typeof stored.completed.plan !== 'boolean')) return false
   if (Object.prototype.hasOwnProperty.call(stored, 'editBase') && !isValidStoredEditBase(stored.editBase, jobId)) return false
   const draft = stored.draft
   return isRecord(draft)
@@ -532,9 +559,9 @@ function restoreWizardDraft(jobId = selectedJob.value?.id) {
     }
     applyOperationDraft(stored.draft)
     restoreEditBase(stored, jobId)
-    documentCategory.value = stored.documentCategory
     completedSteps.context = stored.completed?.context === true
     completedSteps.standard = stored.completed?.standard === true
+    completedSteps.plan = stored.completed?.plan === true
     restoredWizardStep.value = stored.step
     return true
   } catch {
@@ -550,11 +577,17 @@ function guardedWizardStep(requested) {
     if (!completedSteps.context) return 'context'
     if (!completedSteps.standard) return 'standard'
   }
+  if (normalized === 'review') {
+    if (!completedSteps.context) return 'context'
+    if (!completedSteps.standard) return 'standard'
+    if (!completedSteps.plan) return 'plan'
+  }
   return normalized
 }
 
-async function focusCurrentStep() {
+async function focusCurrentStep({ resetScroll = false } = {}) {
   await nextTick()
+  if (resetScroll && workbenchMain.value) workbenchMain.value.scrollTop = 0
   stepHeading.value?.focus?.()
 }
 
@@ -573,9 +606,11 @@ function resolveWizardStep({ replaceInvalid = true } = {}) {
   if (invalidStep) {
     wizardError.value = '步骤参数无效，已安全返回第一步。'
   } else if (hasExplicitStep && guarded !== requested) {
-    wizardError.value = requested === 'plan'
-      ? '请先完成前置步骤，再进入执行方案。'
-      : '请先完成职位与账号确认，再进入招聘标准。'
+    wizardError.value = requested === 'review'
+      ? '请先完成职位、招聘标准和执行方案，再进入执行前检查。'
+      : (requested === 'plan'
+          ? '请先完成前置步骤，再进入执行方案。'
+          : '请先完成职位与账号确认，再进入招聘标准。')
   }
   currentStep.value = guarded
   const jobId = selectedJob.value?.id
@@ -628,6 +663,13 @@ function completeStandardStep() {
   navigateWizardStep('plan')
 }
 
+function completePlanStep() {
+  wizardError.value = ''
+  completedSteps.plan = true
+  persistWizardDraft()
+  navigateWizardStep('review')
+}
+
 function previousStep() {
   const index = WIZARD_STEPS.indexOf(currentStep.value)
   if (index > 0) navigateWizardStep(WIZARD_STEPS[index - 1])
@@ -637,6 +679,14 @@ function markStandardDirty() {
   if (!wizardReady.value || wizardHydrating.value) return
   ensureEditBase()
   completedSteps.standard = false
+  completedSteps.plan = false
+  persistWizardDraft()
+}
+
+function markPlanDirty() {
+  if (!wizardReady.value || wizardHydrating.value || currentStep.value !== 'plan') return
+  ensureEditBase()
+  completedSteps.plan = false
   persistWizardDraft()
 }
 
@@ -696,7 +746,7 @@ function routeQueryValue(value) {
 
 function busyNavigationLock() {
   if (activeExecutionSnapshot) {
-    return { jobId: String(activeExecutionSnapshot.job.id), step: 'plan' }
+    return { jobId: String(activeExecutionSnapshot.job.id), step: 'review' }
   }
   return activeUploadLock
 }
@@ -843,7 +893,8 @@ function applyServerPlan(plan, jobId, { hydrateDraft = false } = {}) {
     if (revisionDraft) applyOperationDraft(revisionDraft)
     completedSteps.context = true
     completedSteps.standard = true
-    restoredWizardStep.value = 'plan'
+    completedSteps.plan = true
+    restoredWizardStep.value = 'review'
   }
   updatePlanVersionNotice(plan)
   return true
@@ -875,6 +926,7 @@ function enterPlanEdit() {
   captureEditBase(currentPlan.value)
   completedSteps.context = true
   completedSteps.standard = false
+  completedSteps.plan = false
   submitError.value = ''
   planActionError.value = ''
   persistWizardDraft()
@@ -1038,7 +1090,7 @@ async function handleDocumentFiles(files) {
       item.status = 'uploading'
       const body = new FormData()
       body.append('job', String(jobId))
-      body.append('category', documentCategory.value)
+      body.append('category', JOB_DOCUMENT_CATEGORY)
       body.append('title', item.name.replace(/\.(doc|docx|xlsx)$/i, ''))
       body.append('file', item.file)
       try {
@@ -1170,6 +1222,10 @@ async function startExecution({ busyAction = '' } = {}) {
   }
 }
 
+watch(currentStep, (step, previousStep) => {
+  if (step !== previousStep) focusCurrentStep({ resetScroll: true })
+}, { flush: 'sync' })
+
 watch(
   () => selectedJob.value?.id,
   (jobId, previousJobId) => {
@@ -1227,15 +1283,16 @@ watch([coreText, bonusText], () => {
 }, { flush: 'sync' })
 
 watch(
-  [schemeKind, workflowChoice, interval, source, keyword, targetResumeCount, maxScanCount, documentCategory, selectedAccountId],
+  [schemeKind, workflowChoice, interval, source, keyword, targetResumeCount, maxScanCount, selectedAccountId],
   () => {
     if (currentStep.value === 'standard' || currentStep.value === 'plan') ensureEditBase()
+    markPlanDirty()
     persistWizardDraft()
   },
 )
 
 watch(
-  () => [completedSteps.context, completedSteps.standard, currentStep.value],
+  () => [completedSteps.context, completedSteps.standard, completedSteps.plan, currentStep.value],
   () => persistWizardDraft(),
 )
 
@@ -1265,62 +1322,80 @@ onUnmounted(() => {
 
 <template>
   <div class="page-stack recruitment-workbench">
-    <header class="page-hero page-hero--compact workbench-hero">
-      <div>
-        <span class="eyebrow">Recruitment Workbench</span>
-        <h2>招聘作业台</h2>
-        <p>按步骤确认职位、补充岗位依据并设置执行方案，最后统一检查后发起自动化。</p>
+    <section v-if="loading" class="workbench-card workbench-card--loading" aria-live="polite">
+      <aside class="workbench-sidebar" aria-hidden="true">
+        <header class="workbench-sidebar__intro">
+          <strong>招聘准备</strong>
+          <p>依次完成四个步骤，建立一次清晰可控的招聘作业。</p>
+        </header>
+      </aside>
+      <div class="workbench-workspace">
+        <header class="workbench-task-header">
+          <div>
+            <h2>正在准备招聘作业</h2>
+          </div>
+          <p>正在读取职位、账号与运行条件。</p>
+        </header>
+        <div class="workbench-loading">
+          <span></span><span></span><span></span>
+          <p>正在读取职位、账号与运行条件…</p>
+        </div>
       </div>
-      <span :class="['workbench-runtime', { 'is-ready': runtimeReady }]">
-        <i></i>{{ runtimeReady ? '自动化服务已就绪' : '自动化服务待检查' }}
-      </span>
-    </header>
-
-    <p v-if="loadError" class="workbench-error" role="alert">{{ loadError }}</p>
-
-    <section v-if="loading" class="panel workbench-loading" aria-live="polite">
-      <span></span><span></span><span></span>
-      <p>正在读取职位、账号与运行条件…</p>
     </section>
 
-    <template v-else>
-      <nav class="workbench-wizard" aria-label="招聘作业步骤">
-        <button
-          v-for="step in wizardSteps"
-          :key="step.key"
-          :class="['workbench-wizard__step', { 'is-current': currentStep === step.key, 'is-complete': completedSteps[step.key] }]"
-          :data-test="`wizard-step-${step.key}`"
-          type="button"
-          :disabled="!step.reachable || uploading || submitting"
-          :aria-current="currentStep === step.key ? 'step' : undefined"
-          @click="navigateWizardStep(step.key)"
-        >
-          <span>{{ step.number }}</span>
-          <strong>{{ step.label }}</strong>
-          <small v-if="completedSteps[step.key]">已完成</small>
-          <small v-else-if="currentStep === step.key">进行中</small>
-          <small v-else>{{ step.reachable ? '可查看' : '完成上一步后开放' }}</small>
-        </button>
-      </nav>
+    <section v-else class="workbench-card" data-test="workbench-card">
+      <aside class="workbench-sidebar">
+        <header class="workbench-sidebar__intro">
+          <strong>招聘准备</strong>
+          <p>依次确认职位、标准、方案与执行条件。</p>
+        </header>
+        <nav class="workbench-wizard" aria-label="招聘作业步骤">
+          <button
+            v-for="step in wizardSteps"
+            :key="step.key"
+            :class="['workbench-wizard__step', { 'is-current': currentStep === step.key, 'is-complete': completedSteps[step.key] }]"
+            :data-test="`wizard-step-${step.key}`"
+            type="button"
+            :disabled="!step.reachable || uploading || submitting"
+            :aria-current="currentStep === step.key ? 'step' : undefined"
+            @click="navigateWizardStep(step.key)"
+          >
+            <span>{{ step.number }}</span>
+            <strong>{{ step.label }}</strong>
+            <small v-if="currentStep === step.key">进行中</small>
+            <small v-else-if="completedSteps[step.key]">已完成</small>
+            <small v-else>{{ step.reachable ? '可查看' : '完成上一步后开放' }}</small>
+          </button>
+        </nav>
+      </aside>
 
-      <p v-if="routeJobError" class="workbench-error" role="alert">{{ routeJobError }}</p>
-      <p v-if="wizardError" class="workbench-error" role="alert">{{ wizardError }}</p>
-      <p v-if="storageNotice" class="workbench-storage-notice" role="status">
-        <AppIcon name="alert-circle" :size="16" /> {{ storageNotice }}
-      </p>
+      <div class="workbench-workspace">
+        <header class="workbench-task-header">
+          <div class="workbench-task-header__title">
+            <h2 id="workbench-current-title" ref="stepHeading" tabindex="-1">{{ currentStepCopy.title }}</h2>
+            <span :class="['workbench-runtime', { 'is-ready': runtimeReady }]">
+              <i></i>{{ runtimeReady ? '自动化服务已就绪' : '自动化服务待检查' }}
+            </span>
+          </div>
+          <p>{{ currentStepCopy.description }}</p>
+        </header>
 
-      <div :class="['workbench-layout', { 'workbench-layout--single': currentStep !== 'plan' }]">
-        <main class="panel workbench-main">
+        <div class="workbench-notices">
+          <p v-if="loadError" class="workbench-error" role="alert">{{ loadError }}</p>
+          <p v-if="routeJobError" class="workbench-error" role="alert">{{ routeJobError }}</p>
+          <p v-if="wizardError" class="workbench-error" role="alert">{{ wizardError }}</p>
+          <p v-if="storageNotice" class="workbench-storage-notice" role="status">
+            <AppIcon name="alert-circle" :size="16" /> {{ storageNotice }}
+          </p>
+        </div>
+
+        <main ref="workbenchMain" class="workbench-main">
           <section
             v-if="currentStep === 'context'"
             class="workbench-section workbench-section--context"
             data-test="workbench-step-context"
-            aria-labelledby="workbench-context-title"
+            aria-labelledby="workbench-current-title"
           >
-            <header class="workbench-section-heading">
-              <div><span>STEP 01</span><h3 id="workbench-context-title" ref="stepHeading" tabindex="-1">选择本次作业</h3></div>
-              <p>职位与 BOSS 账号必须属于同一授权范围。</p>
-            </header>
             <div class="workbench-context-grid">
               <label>
                 <span>在招职位</span>
@@ -1341,7 +1416,7 @@ onUnmounted(() => {
                     {{ account.name }} · {{ account.login_status_label || accountReadinessMessage(account) }}
                   </option>
                 </select>
-                <small v-if="selectedAccount">账号环境：{{ selectedAccount.browser_type === 'edge' ? 'Edge' : 'Chrome' }} · CDP {{ selectedAccount.cdp_port }}</small>
+                <small v-if="selectedAccount">{{ accountReadinessMessage(selectedAccount) }} · 与所选职位绑定</small>
                 <small v-else>没有可用账号时，请先在管理后台添加并登录。</small>
               </label>
             </div>
@@ -1353,7 +1428,7 @@ onUnmounted(() => {
             <footer class="workbench-step-actions workbench-step-actions--forward">
               <span>确认职位与执行账号后，进入岗位依据和招聘要求。</span>
               <button
-                class="secondary-button workbench-next"
+                class="primary-button workbench-next"
                 data-test="complete-context-step"
                 type="button"
                 :disabled="!contextStepComplete || uploading || submitting"
@@ -1368,26 +1443,13 @@ onUnmounted(() => {
             v-else-if="currentStep === 'standard'"
             class="workbench-section"
             data-test="workbench-step-standard"
-            aria-labelledby="workbench-standard-title"
+            aria-labelledby="workbench-current-title"
           >
-            <header class="workbench-section-heading">
-              <div><span>STEP 02</span><h3 id="workbench-standard-title" ref="stepHeading" tabindex="-1">招聘标准</h3></div>
-              <p>画像与需求文件将归档到当前职位；文字要求同时用于主动寻访。</p>
-            </header>
-
             <div class="workbench-upload-kind">
               <div>
-                <strong>岗位依据文件</strong>
-                <small>文件会归档到“{{ selectedJob?.title }}”，并作为下一阶段标准提取与简历评分的依据。</small>
+                <strong>岗位参考资料</strong>
+                <small>资料会归档到“{{ selectedJob?.title }}”，用于生成岗位标准和简历评分依据。</small>
               </div>
-              <label>
-                <span>本批文件用途</span>
-                <select v-model="documentCategory" data-test="document-category" :disabled="uploading || submitting">
-                  <option value="persona">候选人画像</option>
-                  <option value="requirement">招聘需求</option>
-                  <option value="other">其他标准</option>
-                </select>
-              </label>
             </div>
 
             <label
@@ -1408,16 +1470,16 @@ onUnmounted(() => {
                 {{ uploading ? `正在上传 ${uploadProgress.completed}/${uploadProgress.total}` : '拖入文件，或点击选择' }}
               </strong>
               <small>支持 DOC、DOCX、XLSX，可一次选择多个；单文件最大 25MB</small>
-                <input
-                  ref="fileInput"
-                  data-test="workbench-file-input"
-                  type="file"
-                  accept=".doc,.docx,.xlsx"
-                  multiple
-                  hidden
-                  :disabled="!selectedJob || uploading || submitting"
-                  @change="selectDocuments"
-                />
+              <input
+                ref="fileInput"
+                data-test="workbench-file-input"
+                type="file"
+                accept=".doc,.docx,.xlsx"
+                multiple
+                hidden
+                :disabled="!selectedJob || uploading || submitting"
+                @change="selectDocuments"
+              />
             </label>
 
             <ul v-if="uploadQueue.length" class="workbench-upload-queue" aria-live="polite" aria-label="文件上传状态">
@@ -1446,18 +1508,18 @@ onUnmounted(() => {
                   <span><strong>{{ document.title }}</strong><small>{{ document.category_label }} · V{{ document.current_version.version }}</small></span>
                 </a>
               </template>
-              <p v-else>尚未上传岗位依据；不影响本次自动化，后续生成评分标准时需要补充。</p>
+              <p v-else>尚未上传岗位参考资料；不影响本次自动化，生成评分标准前可继续补充。</p>
             </div>
 
             <div class="workbench-requirements">
               <label>
                 <span>核心要求 <em>主动寻访必填，每行一项</em></span>
-                <textarea v-model="coreText" data-test="core-requirements" rows="5" maxlength="2000" placeholder="例如：\n3 年以上 Python 开发经验\n熟悉 Django 与关系型数据库"></textarea>
+                <textarea v-model="coreText" data-test="core-requirements" rows="5" maxlength="2000" :placeholder="'例如：\n3 年以上 Python 开发经验\n熟悉 Django 与关系型数据库'"></textarea>
                 <small>已识别 {{ coreItems.length }}/10 项；每项最多 200 字。</small>
               </label>
               <label>
                 <span>加分项 <em>选填，每行一项</em></span>
-                <textarea v-model="bonusText" data-test="bonus-requirements" rows="5" maxlength="2000" placeholder="例如：\n有 AI 应用落地经验\n做过复杂后台系统"></textarea>
+                <textarea v-model="bonusText" data-test="bonus-requirements" rows="5" maxlength="2000" :placeholder="'例如：\n有 AI 应用落地经验\n做过复杂后台系统'"></textarea>
                 <small>已识别 {{ bonusItems.length }}/10 项。</small>
               </label>
             </div>
@@ -1468,7 +1530,7 @@ onUnmounted(() => {
               </button>
               <span>文件可稍后补充；确认文字要求后进入执行方案。</span>
               <button
-                class="secondary-button workbench-next"
+                class="primary-button workbench-next"
                 data-test="complete-standard-step"
                 type="button"
                 :disabled="uploading || submitting"
@@ -1480,16 +1542,11 @@ onUnmounted(() => {
           </section>
 
           <section
-            v-else
+            v-else-if="currentStep === 'plan'"
             class="workbench-section"
             data-test="workbench-step-plan"
-            aria-labelledby="workbench-scheme-title"
+            aria-labelledby="workbench-current-title"
           >
-            <header class="workbench-section-heading">
-              <div><span>STEP 03</span><h3 id="workbench-scheme-title" ref="stepHeading" tabindex="-1">执行方案</h3></div>
-              <p>选择一个业务目标，再设置本次运行参数。</p>
-            </header>
-
             <fieldset class="workbench-schemes">
               <legend class="sr-only">选择执行方案</legend>
               <label :class="{ 'is-selected': schemeKind === 'passive_resume' }">
@@ -1559,98 +1616,133 @@ onUnmounted(() => {
               </label>
             </div>
 
-            <footer class="workbench-step-actions workbench-step-actions--previous-only">
+            <footer class="workbench-step-actions">
               <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="submitting" @click="previousStep">
                 上一步
               </button>
-              <span>回到招聘标准不会提交任务；正式执行只会由右侧按钮触发。</span>
+              <span>下一步只进入检查页，不会创建任务或调用执行接口。</span>
+              <button
+                class="primary-button workbench-next"
+                data-test="complete-plan-step"
+                type="button"
+                :disabled="submitting"
+                @click="completePlanStep"
+              >
+                下一步：执行前检查 <AppIcon name="arrow-right" :size="16" />
+              </button>
             </footer>
           </section>
-        </main>
 
-        <aside v-if="currentStep === 'plan'" class="panel workbench-review" aria-labelledby="workbench-review-title">
-          <header class="workbench-section-heading">
-            <div><span>FINAL CHECK</span><h3 id="workbench-review-title">执行前检查</h3></div>
-          </header>
-          <ol class="workbench-checks">
-            <li v-for="item in checks" :id="`precheck-${item.key}`" :key="item.key" :class="{ 'is-ready': item.ok }" :data-test="`precheck-${item.key}`">
-              <i><AppIcon :name="item.ok ? 'check-circle' : 'alert-circle'" :size="17" /></i>
-              <span><strong>{{ item.label }}</strong><small>{{ item.detail }}</small></span>
-              <router-link v-if="item.link" :to="item.link">处理</router-link>
-            </li>
-          </ol>
-
-          <div class="workbench-summary">
-            <span>本次作业</span>
-            <strong>{{ selectedJob?.title || '尚未选择职位' }}</strong>
-            <small>{{ selectedAccount?.name || '尚未选择账号' }} · {{ schemeKind === 'passive_resume' ? '被动咨询' : `主动寻访 ${targetResumeCount} 份` }}</small>
-          </div>
-
-          <p v-if="submitError" class="workbench-inline-error" role="alert">{{ submitError }}</p>
-          <div v-if="planVersionNotice" class="workbench-version-notice" data-test="plan-version-notice" role="status">
-            <p>{{ planVersionNotice }}</p>
-            <button data-test="rebase-edit-draft" type="button" :disabled="submitting || Boolean(planAction)" @click="rebaseEditDraft">
-              以最新版本继续编辑
-            </button>
-          </div>
-          <p v-if="planLoading" class="workbench-submit-hint" data-test="plan-loading" aria-live="polite">正在同步任务状态…</p>
-          <p v-else-if="planError && !currentPlan" class="workbench-inline-error" role="alert">{{ planError }}</p>
-          <button
-            v-if="!currentPlan && !planLoading"
-            class="primary-button workbench-start"
-            data-test="start-execution"
-            type="button"
-            :disabled="!canSubmit"
-            :aria-describedby="firstBlockingCheck ? `precheck-${firstBlockingCheck.key}` : undefined"
-            @click="startExecution"
+          <section
+            v-else
+            class="workbench-section workbench-review"
+            data-test="workbench-step-review"
+            aria-labelledby="workbench-current-title"
           >
-            <AppIcon name="arrow-right" :size="17" />
-            {{ submitting ? submitStage : '开始执行' }}
-          </button>
-          <small v-if="!currentPlan && !planLoading" class="workbench-submit-hint">
-            {{ firstBlockingCheck ? `请先处理：${firstBlockingCheck.label}` : '点击后将以一个原子命令创建方案版本并开启任务。' }}
-          </small>
+              <div class="workbench-summary">
+                <span>本次作业</span>
+                <strong>{{ selectedJob?.title || '尚未选择职位' }}</strong>
+                <small>{{ selectedAccount?.name || '尚未选择账号' }} · {{ schemeKind === 'passive_resume' ? '被动咨询' : `主动寻访 ${targetResumeCount} 份` }}</small>
+              </div>
 
-          <RecruitmentOperationControl
-            v-if="currentPlan"
-            :plan="currentPlan"
-            :busy="planAction || (submitting ? 'restart' : '')"
-            :error="planActionError || planError"
-            :results-to="resultsLink"
-            :restart-disabled="!canSubmit"
-            :disabled-reason="!canSubmit && !submitting ? startDisabledReason : ''"
-            @resume="resumePlan"
-            @stop="stopPlan"
-            @stop-modify="stopAndModifyPlan"
-            @modify="enterPlanEdit"
-            @restart="startExecution({ busyAction: 'restart' })"
-          />
+              <ol class="workbench-checks">
+                <li v-for="item in checks" :id="`precheck-${item.key}`" :key="item.key" :class="{ 'is-ready': item.ok }" :data-test="`precheck-${item.key}`">
+                  <i><AppIcon :name="item.ok ? 'check-circle' : 'alert-circle'" :size="17" /></i>
+                  <span><strong>{{ item.label }}</strong><small>{{ item.detail }}</small></span>
+                  <router-link v-if="item.link" :to="item.link">处理</router-link>
+                </li>
+              </ol>
 
-          <p class="workbench-safety"><AppIcon name="shield" :size="15" /> 外发、身份复核、额度与人工确认继续由服务端安全门控制。</p>
-        </aside>
+              <p v-if="submitError" class="workbench-inline-error" role="alert">{{ submitError }}</p>
+              <div v-if="planVersionNotice" class="workbench-version-notice" data-test="plan-version-notice" role="status">
+                <p>{{ planVersionNotice }}</p>
+                <button data-test="rebase-edit-draft" type="button" :disabled="submitting || Boolean(planAction)" @click="rebaseEditDraft">
+                  以最新版本继续编辑
+                </button>
+              </div>
+              <p v-if="planLoading" class="workbench-submit-hint" data-test="plan-loading" aria-live="polite">正在同步任务状态…</p>
+              <p v-else-if="planError && !currentPlan" class="workbench-inline-error" role="alert">{{ planError }}</p>
+              <button
+                v-if="!currentPlan && !planLoading"
+                class="primary-button workbench-start"
+                data-test="start-execution"
+                type="button"
+                :disabled="!canSubmit"
+                :aria-describedby="firstBlockingCheck ? `precheck-${firstBlockingCheck.key}` : undefined"
+                @click="startExecution"
+              >
+                <AppIcon name="arrow-right" :size="17" />
+                {{ submitting ? submitStage : '开始执行' }}
+              </button>
+              <small v-if="!currentPlan && !planLoading" class="workbench-submit-hint">
+                {{ firstBlockingCheck ? `请先处理：${firstBlockingCheck.label}` : '点击后将以一个原子命令创建方案版本并开启任务。' }}
+              </small>
+
+              <RecruitmentOperationControl
+                v-if="currentPlan"
+                :plan="currentPlan"
+                :busy="planAction || (submitting ? 'restart' : '')"
+                :error="planActionError || planError"
+                :results-to="resultsLink"
+                :restart-disabled="!canSubmit"
+                :disabled-reason="!canSubmit && !submitting ? startDisabledReason : ''"
+                @resume="resumePlan"
+                @stop="stopPlan"
+                @stop-modify="stopAndModifyPlan"
+                @modify="enterPlanEdit"
+                @restart="startExecution({ busyAction: 'restart' })"
+              />
+
+              <p class="workbench-safety"><AppIcon name="shield" :size="15" /> 外发、身份复核、额度与人工确认继续由服务端安全门控制。</p>
+              <footer class="workbench-step-actions workbench-review-actions">
+                <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="submitting || Boolean(planAction)" @click="previousStep">
+                  上一步
+                </button>
+                <span>返回执行方案只修改前端草稿，不会停止或启动任务。</span>
+              </footer>
+          </section>
+        </main>
       </div>
-    </template>
+    </section>
   </div>
 </template>
 
 <style scoped>
 .recruitment-workbench {
+  --wb-color-stage: #00bfc1;
   --wb-color-canvas: #f3f6f8;
   --wb-color-surface: #ffffff;
+  --wb-color-sidebar: #e8f8f8;
+  --wb-color-sidebar-active: #ffffff;
+  --wb-color-section-soft: #f2fbfb;
   --wb-color-ink: #0f172a;
   --wb-color-secondary: #334155;
   --wb-color-muted: #64748b;
   --wb-color-line: #e2e8f0;
-  --wb-color-primary: #0f9f8f;
-  --wb-color-primary-dark: #087f73;
+  --wb-color-line-strong: #b8c8d8;
+  --wb-color-primary: #00aeb1;
+  --wb-color-primary-dark: #007f82;
+  --wb-color-primary-soft: #ddf7f7;
+  --wb-color-primary-soft-hover: #edfafa;
+  --wb-color-success-border: #ccebe6;
+  --wb-color-success-soft: #f7fcfb;
   --wb-color-warning: #d97706;
+  --wb-color-warning-border: #f1d7a8;
+  --wb-color-warning-control-border: #d5a14a;
+  --wb-color-warning-ink: #8a5208;
+  --wb-color-warning-control-ink: #714207;
+  --wb-color-warning-soft: #fffbeb;
   --wb-color-danger: #dc4a4a;
+  --wb-color-danger-border: #f2caca;
+  --wb-color-danger-soft: #fffafa;
+  --wb-color-transparent: transparent;
   --wb-font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --wb-font-size-meta: 10px;
-  --wb-font-size-small: 11px;
-  --wb-font-size-control: 12px;
-  --wb-font-size-body: 13px;
-  --wb-font-size-section: 17px;
+  --wb-font-size-meta: 12px;
+  --wb-font-size-small: 12px;
+  --wb-font-size-control: 14px;
+  --wb-font-size-body: 14px;
+  --wb-font-size-section: 26px;
+  --wb-font-size-title: 18px;
   --wb-font-weight-medium: 500;
   --wb-font-weight-semibold: 600;
   --wb-font-weight-bold: 700;
@@ -1658,21 +1750,50 @@ onUnmounted(() => {
   --wb-line-height-compact: 1.45;
   --wb-line-height-body: 1.6;
   --wb-letter-spacing-kicker: .14em;
+  --wb-letter-spacing-title: -.02em;
+  --wb-letter-spacing-heading: -.025em;
+  --wb-heading-line-height: 1.24;
   --wb-space-1: 4px;
   --wb-space-2: 8px;
   --wb-space-3: 12px;
   --wb-space-4: 16px;
   --wb-space-5: 22px;
   --wb-space-6: 28px;
+  --wb-space-7: 34px;
+  --wb-stage-pad-top: 28px;
+  --wb-stage-pad-inline: 34px;
+  --wb-stage-pad-bottom: 42px;
+  --wb-stage-margin-top: -28px;
+  --wb-stage-margin-inline: -34px;
+  --wb-stage-margin-bottom: -42px;
+  --wb-stage-gap: 16px;
+  --wb-content-max-width: 880px;
+  --wb-card-max-width: 880px;
+  --wb-card-min-height: 570px;
+  --wb-card-height: 570px;
+  --wb-sidebar-width: 230px;
+  --wb-workspace-padding-block: 28px;
+  --wb-workspace-padding-inline: 30px;
+  --wb-form-max-width: 520px;
+  --wb-topbar-height: 64px;
   --wb-radius-control: 9px;
   --wb-radius-panel: 15px;
+  --wb-radius-card: 32px;
   --wb-radius-status: 6px;
+  --wb-radius-icon: 14px;
   --wb-radius-pill: 999px;
   --wb-border-width: 1px;
   --wb-focus-width: 2px;
-  --wb-control-min-height: 42px;
+  --wb-control-min-height: 50px;
   --wb-status-dot-size: 8px;
+  --wb-step-number-size: 40px;
+  --wb-step-min-height: 64px;
+  --wb-mobile-step-number-size: 34px;
+  --wb-mobile-step-min-height: 58px;
+  --wb-radio-size: 18px;
+  --wb-scheme-label-end-padding: 48px;
   --wb-upload-icon-size: 34px;
+  --wb-drop-icon-size: 48px;
   --wb-check-icon-column: 20px;
   --wb-aside-min-width: 304px;
   --wb-aside-max-width: 320px;
@@ -1681,12 +1802,33 @@ onUnmounted(() => {
   --wb-loading-line-height: 14px;
   --wb-copy-max-width: 520px;
   --wb-passive-max-width: 420px;
-  --wb-textarea-min-height: 116px;
+  --wb-context-field-max-width: 400px;
+  --wb-textarea-min-height: 118px;
+  --wb-drop-zone-min-height: 164px;
+  --wb-context-min-height: 100%;
+  --wb-scheme-min-height: 116px;
+  --wb-start-min-height: 52px;
+  --wb-review-title-size: 26px;
+  --wb-review-copy-max-width: 220px;
+  --wb-mobile-section-title-size: 26px;
+  --wb-drop-zone-mobile-min-height: 160px;
   --wb-document-min-width: 180px;
-  --wb-shadow-panel: 0 1px 2px rgba(15, 23, 42, .025);
+  --wb-shadow-panel: 0 20px 60px rgba(4, 75, 78, .20);
   --wb-transition: 180ms ease;
+  --wb-disabled-opacity: .62;
+  --wb-soft-disabled-opacity: .72;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: var(--wb-stage-gap);
+  width: calc(100% + var(--wb-stage-pad-inline) + var(--wb-stage-pad-inline));
   min-width: 0;
-  max-width: 100%;
+  max-width: none;
+  min-height: calc(100vh - var(--wb-topbar-height));
+  margin: var(--wb-stage-margin-top) var(--wb-stage-margin-inline) var(--wb-stage-margin-bottom);
+  padding: var(--wb-stage-pad-top) var(--wb-stage-pad-inline) var(--wb-stage-pad-bottom);
+  overflow-x: clip;
+  background: var(--wb-color-stage);
   container-name: workbench-page;
   container-type: inline-size;
   font-family: var(--wb-font-family);
@@ -1697,8 +1839,29 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
+.recruitment-workbench > * {
+  width: 100%;
+  max-width: var(--wb-content-max-width);
+  min-width: 0;
+}
+
 .workbench-hero {
   align-items: center;
+}
+
+.workbench-hero .eyebrow {
+  display: none;
+}
+
+.workbench-hero h2 {
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-title);
+  font-weight: var(--wb-font-weight-bold);
+}
+
+.workbench-hero p {
+  color: var(--wb-color-secondary);
+  font-size: var(--wb-font-size-body);
 }
 
 .workbench-runtime {
@@ -1708,7 +1871,7 @@ onUnmounted(() => {
   padding: 0;
   border: 0;
   color: var(--wb-color-warning);
-  background: transparent;
+  background: var(--wb-color-transparent);
   font-size: var(--wb-font-size-control);
   font-weight: var(--wb-font-weight-bold);
 }
@@ -1723,7 +1886,7 @@ onUnmounted(() => {
 
 .workbench-runtime.is-ready {
   color: var(--wb-color-primary-dark);
-  background: transparent;
+  background: var(--wb-color-transparent);
 }
 
 .workbench-runtime.is-ready i {
@@ -1748,10 +1911,10 @@ onUnmounted(() => {
   gap: var(--wb-space-2);
   margin: 0;
   padding: var(--wb-space-3);
-  border: var(--wb-border-width) solid #f1d7a8;
+  border: var(--wb-border-width) solid var(--wb-color-warning-border);
   border-radius: var(--wb-radius-control);
-  color: #8a5208;
-  background: #fffbeb;
+  color: var(--wb-color-warning-ink);
+  background: var(--wb-color-warning-soft);
   font-size: var(--wb-font-size-control);
   line-height: var(--wb-line-height-compact);
 }
@@ -1767,7 +1930,7 @@ onUnmounted(() => {
   align-content: center;
   gap: var(--wb-space-2);
   color: var(--wb-color-muted);
-  box-shadow: var(--wb-shadow-panel);
+  box-shadow: none;
 }
 
 .workbench-loading > span {
@@ -1788,12 +1951,12 @@ onUnmounted(() => {
 .workbench-wizard {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--wb-space-2);
   min-width: 0;
-  overflow: hidden;
-  border: var(--wb-border-width) solid var(--wb-color-line);
-  border-radius: var(--wb-radius-panel);
-  background: var(--wb-color-surface);
-  box-shadow: var(--wb-shadow-panel);
+  overflow: visible;
+  border: 0;
+  background: var(--wb-color-transparent);
+  box-shadow: none;
 }
 
 .workbench-wizard__step {
@@ -1803,28 +1966,25 @@ onUnmounted(() => {
   column-gap: var(--wb-space-3);
   align-items: center;
   min-width: 0;
-  padding: var(--wb-space-4) var(--wb-space-5);
-  border: 0;
-  border-right: var(--wb-border-width) solid var(--wb-color-line);
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-transparent);
+  border-radius: var(--wb-radius-control);
   color: var(--wb-color-muted);
-  background: transparent;
+  background: var(--wb-color-transparent);
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-
-.workbench-wizard__step:last-child {
-  border-right: 0;
+  transition: border-color var(--wb-transition), background-color var(--wb-transition);
 }
 
 .workbench-wizard__step::after {
   position: absolute;
-  right: var(--wb-space-5);
+  right: var(--wb-space-3);
   bottom: 0;
-  left: var(--wb-space-5);
+  left: var(--wb-space-3);
   height: var(--wb-focus-width);
   border-radius: var(--wb-radius-pill);
-  background: transparent;
+  background: var(--wb-color-transparent);
   content: '';
 }
 
@@ -1832,8 +1992,8 @@ onUnmounted(() => {
   grid-row: 1 / span 2;
   display: grid;
   place-items: center;
-  width: var(--wb-upload-icon-size);
-  height: var(--wb-upload-icon-size);
+  width: var(--wb-step-number-size);
+  height: var(--wb-step-number-size);
   border: var(--wb-border-width) solid var(--wb-color-line);
   border-radius: var(--wb-radius-pill);
   color: var(--wb-color-muted);
@@ -1858,29 +2018,35 @@ onUnmounted(() => {
 }
 
 .workbench-wizard__step:hover:not(:disabled) {
-  background: #f8fafc;
+  background: var(--wb-color-primary-soft-hover);
 }
 
 .workbench-wizard__step:focus-visible {
   z-index: 1;
   outline: var(--wb-focus-width) solid var(--wb-color-primary);
-  outline-offset: calc(var(--wb-focus-width) * -1);
+  outline-offset: var(--wb-border-width);
 }
 
 .workbench-wizard__step.is-current {
   color: var(--wb-color-primary-dark);
-  background: #f7fcfb;
+  border-color: var(--wb-color-primary);
+  background: var(--wb-color-surface);
 }
 
 .workbench-wizard__step.is-current::after {
   background: var(--wb-color-primary);
 }
 
-.workbench-wizard__step.is-current > span,
+.workbench-wizard__step.is-current > span {
+  border-color: var(--wb-color-primary);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-primary);
+}
+
 .workbench-wizard__step.is-complete > span {
-  border-color: #bce8e2;
+  border-color: var(--wb-color-success-border);
   color: var(--wb-color-primary-dark);
-  background: #e9f8f5;
+  background: var(--wb-color-primary-soft);
 }
 
 .workbench-wizard__step.is-current strong,
@@ -1890,7 +2056,7 @@ onUnmounted(() => {
 
 .workbench-wizard__step:disabled {
   cursor: not-allowed;
-  opacity: .62;
+  opacity: var(--wb-disabled-opacity);
 }
 
 .workbench-layout {
@@ -1905,19 +2071,25 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.workbench-layout--context {
+  justify-self: center;
+  max-width: var(--wb-context-panel-max-width);
+}
+
 .workbench-main {
   display: block;
   min-width: 0;
   padding: 0;
   overflow: hidden;
+  border: var(--wb-border-width) solid var(--wb-color-line);
   border-radius: var(--wb-radius-panel);
   background: var(--wb-color-surface);
-  box-shadow: var(--wb-shadow-panel);
+  box-shadow: none;
 }
 
 .workbench-section {
   min-width: 0;
-  padding: var(--wb-space-5);
+  padding: var(--wb-space-4) var(--wb-space-5);
 }
 
 .workbench-section + .workbench-section {
@@ -1929,7 +2101,7 @@ onUnmounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--wb-space-4);
-  margin-bottom: var(--wb-space-4);
+  margin-bottom: var(--wb-space-3);
 }
 
 .workbench-section-heading div > span {
@@ -1941,10 +2113,18 @@ onUnmounted(() => {
 }
 
 .workbench-section-heading h3 {
+  display: inline-block;
   margin: var(--wb-space-1) 0 0;
+  padding: 0 var(--wb-space-1);
+  border-radius: var(--wb-radius-status);
   color: var(--wb-color-ink);
   font-size: var(--wb-font-size-section);
   font-weight: var(--wb-font-weight-bold);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-section-heading h3:focus {
+  outline: none;
 }
 
 .workbench-section-heading p {
@@ -1963,6 +2143,11 @@ onUnmounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--wb-space-4);
   min-width: 0;
+}
+
+.workbench-context-grid {
+  grid-template-columns: repeat(2, minmax(0, var(--wb-context-field-max-width)));
+  justify-content: space-between;
 }
 
 .workbench-context-grid label,
@@ -2017,8 +2202,8 @@ onUnmounted(() => {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: var(--wb-space-4);
   align-items: center;
-  margin-top: var(--wb-space-6);
-  padding-top: var(--wb-space-4);
+  margin-top: var(--wb-space-5);
+  padding-top: var(--wb-space-3);
   border-top: var(--wb-border-width) solid var(--wb-color-line);
 }
 
@@ -2032,7 +2217,7 @@ onUnmounted(() => {
 
 .workbench-step-actions > span {
   color: var(--wb-color-muted);
-  font-size: var(--wb-font-size-small);
+  font-size: var(--wb-font-size-control);
   line-height: var(--wb-line-height-compact);
 }
 
@@ -2113,25 +2298,21 @@ onUnmounted(() => {
   place-items: center;
   align-content: center;
   gap: var(--wb-space-2);
-  min-height: 224px;
-  padding: var(--wb-space-6);
-  border: var(--wb-border-width) dashed #b8c8d8;
+  min-height: var(--wb-drop-zone-min-height);
+  padding: var(--wb-space-5);
+  border: var(--wb-border-width) dashed var(--wb-color-line-strong);
   border-radius: var(--wb-radius-control);
   color: var(--wb-color-secondary);
-  background: #fbfdfe;
+  background: var(--wb-color-canvas);
   text-align: center;
   cursor: pointer;
-  transition: border-color var(--wb-transition), background-color var(--wb-transition), transform var(--wb-transition);
+  transition: border-color var(--wb-transition), background-color var(--wb-transition);
 }
 
 .workbench-drop-zone:hover,
 .workbench-drop-zone.is-dragging {
   border-color: var(--wb-color-primary);
-  background: #f2fbf9;
-}
-
-.workbench-drop-zone.is-dragging {
-  transform: translateY(-1px);
+  background: var(--wb-color-primary-soft-hover);
 }
 
 .workbench-drop-zone.is-uploading {
@@ -2140,7 +2321,7 @@ onUnmounted(() => {
 
 .workbench-drop-zone[aria-disabled='true'] {
   cursor: not-allowed;
-  opacity: .72;
+  opacity: var(--wb-soft-disabled-opacity);
 }
 
 .workbench-drop-zone:focus-visible,
@@ -2152,12 +2333,12 @@ onUnmounted(() => {
 .workbench-drop-zone__icon {
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: var(--wb-drop-icon-size);
+  height: var(--wb-drop-icon-size);
   margin-bottom: var(--wb-space-1);
-  border-radius: 14px;
+  border-radius: var(--wb-radius-icon);
   color: var(--wb-color-primary-dark);
-  background: #def5f1;
+  background: var(--wb-color-primary-soft);
 }
 
 .workbench-drop-zone > strong {
@@ -2213,15 +2394,15 @@ onUnmounted(() => {
 }
 
 .workbench-upload-queue .is-succeeded {
-  border-color: #ccebe6;
+  border-color: var(--wb-color-success-border);
   color: var(--wb-color-primary-dark);
-  background: #f7fcfb;
+  background: var(--wb-color-success-soft);
 }
 
 .workbench-upload-queue .is-failed {
-  border-color: #f2caca;
+  border-color: var(--wb-color-danger-border);
   color: var(--wb-color-danger);
-  background: #fffafa;
+  background: var(--wb-color-danger-soft);
 }
 
 .workbench-empty-actions {
@@ -2262,7 +2443,7 @@ onUnmounted(() => {
   padding: var(--wb-space-1) var(--wb-space-2);
   border-left: var(--wb-focus-width) solid var(--wb-color-line);
   color: var(--wb-color-secondary);
-  background: transparent;
+  background: var(--wb-color-transparent);
   text-decoration: none;
 }
 
@@ -2285,7 +2466,7 @@ onUnmounted(() => {
 .workbench-requirements label > span em {
   margin-left: var(--wb-space-1);
   color: var(--wb-color-muted);
-  font-size: var(--wb-font-size-meta);
+  font-size: var(--wb-font-size-small);
   font-style: normal;
   font-weight: var(--wb-font-weight-medium);
 }
@@ -2312,7 +2493,7 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: var(--wb-space-3);
   min-width: 0;
-  padding: var(--wb-space-4);
+  padding: var(--wb-space-4) var(--wb-scheme-label-end-padding) var(--wb-space-4) var(--wb-space-4);
   border: var(--wb-border-width) solid var(--wb-color-line);
   border-radius: var(--wb-radius-control);
   background: var(--wb-color-surface);
@@ -2322,6 +2503,7 @@ onUnmounted(() => {
 
 .workbench-schemes > label:hover {
   border-color: var(--wb-color-primary);
+  background: var(--wb-color-primary-soft-hover);
 }
 
 .workbench-schemes > label:focus-within {
@@ -2330,14 +2512,26 @@ onUnmounted(() => {
 
 .workbench-schemes > label.is-selected {
   border-color: var(--wb-color-primary);
-  background: var(--wb-color-surface);
+  background: var(--wb-color-primary-soft);
   box-shadow: none;
 }
 
 .workbench-schemes input {
   position: absolute;
-  opacity: 0;
-  pointer-events: none;
+  top: var(--wb-space-4);
+  right: var(--wb-space-4);
+  width: var(--wb-radio-size);
+  height: var(--wb-radio-size);
+  margin: 0;
+  opacity: 1;
+  accent-color: var(--wb-color-primary);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.workbench-schemes input:focus {
+  outline: none;
+  box-shadow: none;
 }
 
 .workbench-schemes label > i {
@@ -2347,7 +2541,7 @@ onUnmounted(() => {
   height: var(--wb-upload-icon-size);
   flex: 0 0 var(--wb-upload-icon-size);
   color: var(--wb-color-primary-dark);
-  background: transparent;
+  background: var(--wb-color-transparent);
 }
 
 .workbench-schemes label > span {
@@ -2379,7 +2573,7 @@ onUnmounted(() => {
   margin-top: var(--wb-space-4);
   padding: var(--wb-space-4) 0 0;
   border-top: var(--wb-border-width) solid var(--wb-color-line);
-  background: transparent;
+  background: var(--wb-color-transparent);
 }
 
 .workbench-settings--passive {
@@ -2394,7 +2588,7 @@ onUnmounted(() => {
   margin-top: var(--wb-space-4);
   padding-top: var(--wb-space-4);
   border-top: var(--wb-border-width) solid var(--wb-color-line);
-  background: transparent;
+  background: var(--wb-color-transparent);
 }
 
 .workbench-workflow-choice label {
@@ -2428,9 +2622,10 @@ onUnmounted(() => {
   flex-direction: column;
   min-width: 0;
   padding: var(--wb-space-4);
+  border: var(--wb-border-width) solid var(--wb-color-line);
   border-radius: var(--wb-radius-panel);
   background: var(--wb-color-surface);
-  box-shadow: var(--wb-shadow-panel);
+  box-shadow: none;
 }
 
 .workbench-review .workbench-section-heading {
@@ -2454,7 +2649,7 @@ onUnmounted(() => {
   margin: 0;
   padding: var(--wb-space-3) 0 var(--wb-space-4);
   border-bottom: var(--wb-border-width) solid var(--wb-color-line);
-  background: transparent;
+  background: var(--wb-color-transparent);
 }
 
 .workbench-summary span,
@@ -2515,7 +2710,7 @@ onUnmounted(() => {
 
 .workbench-checks small {
   color: var(--wb-color-muted);
-  font-size: var(--wb-font-size-meta);
+  font-size: var(--wb-font-size-small);
   line-height: var(--wb-line-height-compact);
 }
 
@@ -2530,7 +2725,7 @@ onUnmounted(() => {
 
 .workbench-checks a {
   color: var(--wb-color-primary-dark);
-  font-size: var(--wb-font-size-meta);
+  font-size: var(--wb-font-size-small);
   font-weight: var(--wb-font-weight-bold);
   text-decoration: underline;
   text-underline-offset: var(--wb-space-1);
@@ -2547,11 +2742,11 @@ onUnmounted(() => {
   gap: var(--wb-space-2);
   margin-bottom: var(--wb-space-2);
   padding: var(--wb-space-3);
-  border: var(--wb-border-width) solid #f1d7a8;
+  border: var(--wb-border-width) solid var(--wb-color-warning-border);
   border-radius: var(--wb-radius-control);
-  color: #8a5208;
-  background: #fffbeb;
-  font-size: var(--wb-font-size-meta);
+  color: var(--wb-color-warning-ink);
+  background: var(--wb-color-warning-soft);
+  font-size: var(--wb-font-size-small);
   line-height: var(--wb-line-height-compact);
 }
 
@@ -2563,10 +2758,10 @@ onUnmounted(() => {
   justify-self: start;
   min-height: 32px;
   padding: 0 var(--wb-space-3);
-  border: var(--wb-border-width) solid #d5a14a;
+  border: var(--wb-border-width) solid var(--wb-color-warning-control-border);
   border-radius: var(--wb-radius-control);
-  color: #714207;
-  background: #fff;
+  color: var(--wb-color-warning-control-ink);
+  background: var(--wb-color-surface);
   font: inherit;
   font-weight: var(--wb-font-weight-semibold);
 }
@@ -2606,7 +2801,7 @@ onUnmounted(() => {
   display: block;
   margin-top: var(--wb-space-2);
   color: var(--wb-color-muted);
-  font-size: var(--wb-font-size-meta);
+  font-size: var(--wb-font-size-small);
   line-height: var(--wb-line-height-compact);
   text-align: left;
 }
@@ -2631,7 +2826,7 @@ onUnmounted(() => {
 
 .workbench-receipt span,
 .workbench-receipt small {
-  font-size: var(--wb-font-size-meta);
+  font-size: var(--wb-font-size-small);
 }
 
 .workbench-receipt strong {
@@ -2650,8 +2845,8 @@ onUnmounted(() => {
   padding: 0;
   border: 0;
   color: var(--wb-color-muted);
-  background: transparent;
-  font-size: var(--wb-font-size-meta);
+  background: var(--wb-color-transparent);
+  font-size: var(--wb-font-size-small);
   font-weight: var(--wb-font-weight-semibold);
   text-decoration: underline;
   text-underline-offset: var(--wb-space-1);
@@ -2666,7 +2861,7 @@ onUnmounted(() => {
   padding-top: var(--wb-space-3);
   border-top: var(--wb-border-width) solid var(--wb-color-line);
   color: var(--wb-color-muted);
-  font-size: var(--wb-font-size-meta);
+  font-size: var(--wb-font-size-small);
   line-height: var(--wb-line-height-compact);
 }
 
@@ -2682,7 +2877,7 @@ onUnmounted(() => {
   border: 0;
 }
 
-@media (max-width: 1700px) {
+@container workbench-page (max-width: 840px) {
   .workbench-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2694,45 +2889,9 @@ onUnmounted(() => {
     max-width: 100%;
   }
 
-  .workbench-checks {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    column-gap: var(--wb-space-5);
-  }
-
-  .workbench-checks li:nth-last-child(-n + 3) {
-    border-bottom: 0;
-  }
-}
-
-@container workbench-page (max-width: 1320px) {
-  .workbench-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .workbench-review {
-    position: static;
-    order: 0;
-    width: 100%;
-    max-width: 100%;
-  }
-
-  .workbench-checks {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    column-gap: var(--wb-space-5);
-  }
-
-  .workbench-checks li {
-    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
-  }
-
-  .workbench-checks li:nth-last-child(-n + 3) {
-    border-bottom: 0;
-  }
-}
-
-@container workbench-page (max-width: 900px) {
   .workbench-checks {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--wb-space-5);
   }
 
   .workbench-checks li {
@@ -2759,8 +2918,20 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1050px) {
+  .workbench-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-review {
+    position: static;
+    order: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
   .workbench-checks {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--wb-space-5);
   }
 
   .workbench-checks li {
@@ -2769,6 +2940,28 @@ onUnmounted(() => {
 
   .workbench-checks li:nth-last-child(-n + 2) {
     border-bottom: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .recruitment-workbench {
+    --wb-stage-pad-top: 22px;
+    --wb-stage-pad-inline: 20px;
+    --wb-stage-pad-bottom: 34px;
+    --wb-stage-margin-top: -22px;
+    --wb-stage-margin-inline: -20px;
+    --wb-stage-margin-bottom: -34px;
+  }
+}
+
+@media (max-width: 680px) {
+  .recruitment-workbench {
+    --wb-stage-pad-top: 18px;
+    --wb-stage-pad-inline: 13px;
+    --wb-stage-pad-bottom: 28px;
+    --wb-stage-margin-top: -18px;
+    --wb-stage-margin-inline: -13px;
+    --wb-stage-margin-bottom: -28px;
   }
 }
 
@@ -2790,19 +2983,6 @@ onUnmounted(() => {
   .workbench-section,
   .workbench-review {
     padding: var(--wb-space-4);
-  }
-
-  .workbench-wizard {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .workbench-wizard__step {
-    border-right: 0;
-    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
-  }
-
-  .workbench-wizard__step:last-child {
-    border-bottom: 0;
   }
 
   .workbench-context-grid,
@@ -2837,7 +3017,7 @@ onUnmounted(() => {
   }
 
   .workbench-drop-zone {
-    min-height: 190px;
+    min-height: var(--wb-drop-zone-mobile-min-height);
     padding: var(--wb-space-5);
   }
 
@@ -2863,6 +3043,1073 @@ onUnmounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .workbench-schemes > label {
     transition: none;
+  }
+}
+
+/* 参考图分栏主卡：最新 sprint contract 的页面级覆盖。 */
+.recruitment-workbench {
+  place-items: center;
+  align-content: center;
+  gap: 0;
+}
+
+.recruitment-workbench > .workbench-card {
+  width: min(100%, var(--wb-card-max-width));
+  max-width: var(--wb-card-max-width);
+}
+
+.workbench-card {
+  display: grid;
+  grid-template-columns: var(--wb-sidebar-width) minmax(0, 1fr);
+  min-width: 0;
+  min-height: var(--wb-card-min-height);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--wb-radius-card);
+  background: var(--wb-color-surface);
+  box-shadow: var(--wb-shadow-panel);
+}
+
+.workbench-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--wb-space-7) var(--wb-space-6);
+  background: var(--wb-color-sidebar);
+}
+
+.workbench-sidebar__intro {
+  display: grid;
+  gap: var(--wb-space-2);
+}
+
+.workbench-sidebar__intro > span {
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-meta);
+  font-weight: var(--wb-font-weight-heavy);
+  letter-spacing: var(--wb-letter-spacing-kicker);
+}
+
+.workbench-sidebar__intro > strong {
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-title);
+  font-weight: var(--wb-font-weight-bold);
+  letter-spacing: var(--wb-letter-spacing-title);
+}
+
+.workbench-sidebar__intro > p {
+  margin: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-body);
+}
+
+.workbench-wizard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--wb-space-2);
+  margin-top: var(--wb-space-7);
+}
+
+.workbench-wizard__step {
+  grid-template-columns: var(--wb-step-number-size) minmax(0, 1fr);
+  column-gap: var(--wb-space-3);
+  min-height: var(--wb-step-min-height);
+  padding: var(--wb-space-3);
+  border-color: var(--wb-color-transparent);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-transparent);
+}
+
+.workbench-wizard__step::after {
+  display: none;
+}
+
+.workbench-wizard__step > span {
+  width: var(--wb-step-number-size);
+  height: var(--wb-step-number-size);
+  border-color: var(--wb-color-line-strong);
+  color: var(--wb-color-muted);
+  background: var(--wb-color-transparent);
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-wizard__step strong {
+  color: var(--wb-color-secondary);
+  font-size: var(--wb-font-size-body);
+  white-space: normal;
+}
+
+.workbench-wizard__step small {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  white-space: normal;
+}
+
+.workbench-wizard__step:hover:not(:disabled) {
+  background: var(--wb-color-primary-soft-hover);
+}
+
+.workbench-wizard__step.is-current {
+  border-color: var(--wb-color-transparent);
+  background: var(--wb-color-sidebar-active);
+}
+
+.workbench-wizard__step.is-current > span {
+  border-color: var(--wb-color-primary);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-primary);
+}
+
+.workbench-wizard__step.is-complete > span {
+  border-color: var(--wb-color-primary);
+  color: var(--wb-color-primary-dark);
+  background: var(--wb-color-primary-soft);
+}
+
+.workbench-wizard__step:focus-visible {
+  outline-color: var(--wb-color-primary);
+  outline-offset: var(--wb-space-1);
+}
+
+.workbench-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--wb-workspace-padding-block) var(--wb-workspace-padding-inline);
+  background: var(--wb-color-surface);
+}
+
+.workbench-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--wb-space-4);
+  padding-bottom: var(--wb-space-5);
+  border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+}
+
+.workbench-hero > div {
+  display: grid;
+  gap: var(--wb-space-1);
+  min-width: 0;
+}
+
+.workbench-hero .eyebrow {
+  display: block;
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-meta);
+  font-weight: var(--wb-font-weight-heavy);
+  letter-spacing: var(--wb-letter-spacing-kicker);
+}
+
+.workbench-hero h2 {
+  margin: 0;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-title);
+  font-weight: var(--wb-font-weight-bold);
+  letter-spacing: var(--wb-letter-spacing-title);
+}
+
+.workbench-hero p {
+  max-width: var(--wb-copy-max-width);
+  margin: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-body);
+}
+
+.workbench-runtime {
+  flex: 0 0 auto;
+  min-height: var(--wb-space-6);
+  color: var(--wb-color-warning);
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-runtime.is-ready {
+  color: var(--wb-color-primary-dark);
+}
+
+.workbench-notices {
+  display: grid;
+  gap: var(--wb-space-2);
+  width: min(100%, var(--wb-form-max-width));
+  margin-top: var(--wb-space-4);
+}
+
+.workbench-notices:empty {
+  display: none;
+}
+
+.workbench-error,
+.workbench-inline-error,
+.workbench-storage-notice {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-loading {
+  display: grid;
+  place-items: start stretch;
+  align-content: center;
+  flex: 1;
+  min-height: 0;
+  padding: var(--wb-space-6) 0;
+  border: 0;
+  background: var(--wb-color-transparent);
+  box-shadow: none;
+}
+
+.workbench-loading > span {
+  background: var(--wb-color-canvas);
+}
+
+.workbench-main {
+  display: block;
+  width: min(100%, var(--wb-form-max-width));
+  min-width: 0;
+  margin-top: var(--wb-space-6);
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: var(--wb-color-transparent);
+  box-shadow: none;
+}
+
+.workbench-section {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+}
+
+.workbench-section--context {
+  display: flex;
+  flex-direction: column;
+  min-height: var(--wb-context-min-height);
+}
+
+.workbench-section-heading {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: var(--wb-space-2);
+  margin-bottom: var(--wb-space-6);
+}
+
+.workbench-section-heading div > span,
+.workbench-review__heading div > span {
+  display: block;
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-meta);
+  font-weight: var(--wb-font-weight-heavy);
+  letter-spacing: var(--wb-letter-spacing-kicker);
+}
+
+.workbench-section-heading h3 {
+  display: block;
+  margin: var(--wb-space-1) 0 0;
+  padding: 0;
+  border-radius: 0;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-section);
+  font-weight: var(--wb-font-weight-bold);
+  line-height: var(--wb-heading-line-height);
+  letter-spacing: var(--wb-letter-spacing-heading);
+}
+
+.workbench-section-heading p {
+  max-width: var(--wb-copy-max-width);
+  margin: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-body);
+  line-height: var(--wb-line-height-body);
+  text-align: left;
+}
+
+.workbench-context-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--wb-space-5);
+  width: min(100%, var(--wb-form-max-width));
+}
+
+.workbench-context-grid label,
+.workbench-requirements label,
+.workbench-settings label,
+.workbench-workflow-choice label {
+  gap: var(--wb-space-2);
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-context-grid select,
+.workbench-requirements textarea,
+.workbench-settings select,
+.workbench-settings input,
+.workbench-workflow-choice select {
+  min-height: var(--wb-control-min-height);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-color: var(--wb-color-line);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-ink);
+  background: var(--wb-color-surface);
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-context-grid small,
+.workbench-requirements small,
+.workbench-settings small,
+.workbench-workflow-choice small {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-empty-actions {
+  margin-top: var(--wb-space-4);
+}
+
+.workbench-empty-actions a,
+.workbench-receipt a {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-step-actions {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--wb-space-4);
+  margin-top: var(--wb-space-6);
+  padding-top: var(--wb-space-4);
+}
+
+.workbench-section--context .workbench-step-actions {
+  margin-top: auto;
+}
+
+.workbench-step-actions--forward {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.workbench-step-actions--previous-only {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workbench-step-actions > span {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-step-actions .secondary-button,
+.recruitment-workbench .workbench-step-actions .workbench-next {
+  min-height: var(--wb-control-min-height);
+  padding-inline: var(--wb-space-5);
+  border-radius: var(--wb-radius-control);
+  font-size: var(--wb-font-size-body);
+}
+
+.recruitment-workbench .workbench-step-actions .workbench-next {
+  border-color: var(--wb-color-primary);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-primary);
+  box-shadow: none;
+}
+
+.recruitment-workbench .workbench-step-actions .workbench-next:hover:not(:disabled) {
+  border-color: var(--wb-color-primary-dark);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-primary-dark);
+  transform: none;
+}
+
+.workbench-upload-kind {
+  display: block;
+  width: min(100%, var(--wb-form-max-width));
+  margin-bottom: var(--wb-space-3);
+}
+
+.workbench-upload-kind > div {
+  gap: var(--wb-space-2);
+}
+
+.workbench-upload-kind > div strong {
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-upload-kind > div small {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-drop-zone {
+  width: min(100%, var(--wb-form-max-width));
+  min-height: var(--wb-drop-zone-min-height);
+  padding: var(--wb-space-5);
+  border-color: var(--wb-color-line-strong);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-section-soft);
+}
+
+.workbench-drop-zone > strong {
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-drop-zone > small {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-upload-queue,
+.workbench-documents,
+.workbench-requirements {
+  width: min(100%, var(--wb-form-max-width));
+}
+
+.workbench-upload-queue {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workbench-documents {
+  margin-block: var(--wb-space-3) var(--wb-space-5);
+}
+
+.workbench-documents > p,
+.workbench-documents a strong,
+.workbench-documents a small {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-requirements {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--wb-space-4);
+}
+
+.workbench-requirements textarea {
+  min-height: var(--wb-textarea-min-height);
+}
+
+.workbench-schemes {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--wb-space-3);
+}
+
+.workbench-schemes > label {
+  min-height: var(--wb-scheme-min-height);
+  padding: var(--wb-space-4) var(--wb-scheme-label-end-padding) var(--wb-space-4) var(--wb-space-4);
+  border-radius: var(--wb-radius-control);
+}
+
+.workbench-schemes strong {
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-schemes em {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-settings,
+.workbench-workflow-choice {
+  margin-top: var(--wb-space-5);
+  padding-top: var(--wb-space-5);
+}
+
+.workbench-settings {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--wb-space-4);
+}
+
+.workbench-settings--passive {
+  grid-template-columns: minmax(0, var(--wb-passive-max-width));
+}
+
+.workbench-workflow-choice a {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-review {
+  position: static;
+  display: block;
+  width: 100%;
+  max-width: none;
+  margin-top: var(--wb-space-6);
+  padding: var(--wb-space-5);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-panel);
+  background: var(--wb-color-section-soft);
+  box-shadow: none;
+}
+
+.workbench-review__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--wb-space-4);
+  margin-bottom: var(--wb-space-4);
+}
+
+.workbench-review__heading h3 {
+  margin: var(--wb-space-1) 0 0;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-review-title-size);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-review__heading p {
+  max-width: var(--wb-review-copy-max-width);
+  margin: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+  text-align: right;
+}
+
+.workbench-summary {
+  display: grid;
+  gap: var(--wb-space-1);
+  margin: 0;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface);
+}
+
+.workbench-summary span,
+.workbench-summary small,
+.workbench-summary strong {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-summary strong {
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--wb-space-4);
+  margin: var(--wb-space-3) 0 0;
+  padding: 0;
+}
+
+.workbench-checks li,
+.workbench-checks li:nth-last-child(-n + 2) {
+  padding: var(--wb-space-3) 0;
+  border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+}
+
+.workbench-checks strong,
+.workbench-checks small,
+.workbench-checks a {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-review > .workbench-inline-error,
+.workbench-version-notice {
+  margin-top: var(--wb-space-3);
+  margin-bottom: 0;
+}
+
+.workbench-version-notice {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-start {
+  display: inline-flex;
+  width: 100%;
+  min-height: var(--wb-start-min-height);
+  margin-top: var(--wb-space-4);
+  border-color: var(--wb-color-primary);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-primary);
+  font-size: var(--wb-font-size-body);
+  box-shadow: none;
+}
+
+.recruitment-workbench .workbench-start:hover:not(:disabled) {
+  border-color: var(--wb-color-primary-dark);
+  background: var(--wb-color-primary-dark);
+}
+
+.workbench-start:disabled {
+  border-color: var(--wb-color-line);
+  color: var(--wb-color-muted);
+  background: var(--wb-color-canvas);
+}
+
+.workbench-submit-hint,
+.workbench-safety {
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-safety {
+  margin-top: var(--wb-space-4);
+}
+
+@media (max-width: 720px) {
+  .recruitment-workbench {
+    align-content: start;
+  }
+
+  .workbench-card {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+    border-radius: var(--wb-space-6);
+  }
+
+  .workbench-sidebar {
+    padding: var(--wb-space-5);
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-sidebar__intro {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: var(--wb-space-3);
+  }
+
+  .workbench-sidebar__intro > span {
+    grid-column: 1 / -1;
+  }
+
+  .workbench-sidebar__intro > p {
+    text-align: right;
+  }
+
+  .workbench-wizard {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--wb-space-2);
+    margin-top: var(--wb-space-4);
+  }
+
+  .workbench-wizard__step {
+    grid-template-columns: var(--wb-mobile-step-number-size) minmax(0, 1fr);
+    column-gap: var(--wb-space-2);
+    min-height: var(--wb-mobile-step-min-height);
+    padding: var(--wb-space-2);
+  }
+
+  .workbench-wizard__step > span {
+    width: var(--wb-mobile-step-number-size);
+    height: var(--wb-mobile-step-number-size);
+  }
+
+  .workbench-wizard__step strong,
+  .workbench-wizard__step small {
+    font-size: var(--wb-font-size-small);
+  }
+
+  .workbench-workspace {
+    padding: var(--wb-space-5);
+  }
+
+  .workbench-hero {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-bottom: var(--wb-space-4);
+  }
+
+  .workbench-main {
+    margin-top: var(--wb-space-5);
+  }
+
+  .workbench-section--context {
+    min-height: 0;
+  }
+
+  .workbench-section-heading {
+    margin-bottom: var(--wb-space-5);
+  }
+
+  .workbench-section-heading h3 {
+    font-size: var(--wb-mobile-section-title-size);
+  }
+
+  .workbench-requirements,
+  .workbench-settings,
+  .workbench-schemes,
+  .workbench-upload-queue,
+  .workbench-step-actions,
+  .workbench-step-actions--forward,
+  .workbench-step-actions--previous-only,
+  .workbench-checks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-step-actions {
+    gap: var(--wb-space-3);
+  }
+
+  .workbench-step-actions > span,
+  .workbench-step-actions--previous-only > span {
+    text-align: left;
+  }
+
+  .workbench-step-actions button {
+    width: 100%;
+  }
+
+  .workbench-workflow-choice,
+  .workbench-review__heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workbench-review__heading p {
+    max-width: none;
+    text-align: left;
+  }
+
+  .workbench-review {
+    padding: var(--wb-space-4);
+  }
+
+  .workbench-checks li,
+  .workbench-checks li:nth-last-child(-n + 2) {
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-checks li:last-child {
+    border-bottom: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .workbench-sidebar__intro > p,
+  .workbench-wizard__step small {
+    display: none;
+  }
+
+  .workbench-sidebar__intro {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-wizard__step {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    text-align: center;
+  }
+
+  .workbench-wizard__step > span {
+    grid-row: auto;
+  }
+
+  .workbench-wizard__step strong {
+    text-align: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench-wizard__step,
+  .workbench-drop-zone,
+  .workbench-schemes > label {
+    transition: none;
+  }
+}
+
+/* Reference Round 2: stable four-step card and a single task title. */
+.recruitment-workbench > .workbench-card {
+  height: var(--wb-card-height);
+  min-height: var(--wb-card-height);
+  max-height: var(--wb-card-height);
+}
+
+.workbench-sidebar {
+  min-height: 0;
+  padding: var(--wb-space-6) var(--wb-space-5);
+  overflow: hidden;
+}
+
+.workbench-sidebar__intro {
+  gap: var(--wb-space-2);
+}
+
+.workbench-sidebar__intro > strong {
+  font-size: var(--wb-font-size-title);
+}
+
+.workbench-wizard {
+  gap: var(--wb-space-1);
+  margin-top: var(--wb-space-5);
+}
+
+.workbench-wizard__step {
+  min-height: var(--wb-step-min-height);
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+
+.workbench-wizard__step.is-current.is-complete > span {
+  border-color: var(--wb-color-primary);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-primary);
+}
+
+.workbench-workspace {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workbench-task-header {
+  display: grid;
+  gap: var(--wb-space-1);
+  width: min(100%, var(--wb-form-max-width));
+  flex: 0 0 auto;
+  padding-bottom: var(--wb-space-4);
+  border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+}
+
+.workbench-task-header__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-4);
+  min-width: 0;
+}
+
+.workbench-task-header h2 {
+  margin: 0;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-section);
+  font-weight: var(--wb-font-weight-bold);
+  line-height: var(--wb-heading-line-height);
+  letter-spacing: var(--wb-letter-spacing-heading);
+}
+
+.workbench-task-header h2:focus {
+  outline: none;
+}
+
+.workbench-task-header p {
+  margin: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-body);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-task-header .workbench-runtime {
+  flex: 0 0 auto;
+  min-height: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  font-weight: var(--wb-font-weight-medium);
+  letter-spacing: 0;
+}
+
+.workbench-task-header .workbench-runtime.is-ready {
+  color: var(--wb-color-muted);
+}
+
+.workbench-notices {
+  flex: 0 0 auto;
+  margin-top: var(--wb-space-3);
+}
+
+.workbench-main {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  flex: 1 1 auto;
+  margin-top: var(--wb-space-5);
+  padding-right: var(--wb-space-2);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.workbench-section {
+  width: min(100%, var(--wb-form-max-width));
+}
+
+.workbench-section--context {
+  height: 100%;
+  min-height: 100%;
+}
+
+.workbench-section--context .workbench-step-actions--forward {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workbench-section--context .workbench-next {
+  justify-content: center;
+  width: 100%;
+}
+
+.workbench-step-actions .secondary-button,
+.recruitment-workbench .workbench-step-actions .workbench-next {
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-drop-zone:focus-visible,
+.workbench-drop-zone:focus-within {
+  padding: calc(var(--wb-space-5) - var(--wb-border-width));
+  border-width: var(--wb-focus-width);
+  border-style: solid;
+  border-color: var(--wb-color-primary);
+  outline: none;
+  box-shadow: none;
+}
+
+.workbench-review {
+  position: static;
+  display: block;
+  width: min(100%, var(--wb-form-max-width));
+  max-width: var(--wb-form-max-width);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--wb-color-transparent);
+  box-shadow: none;
+}
+
+.workbench-review .workbench-summary {
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-color: var(--wb-color-line);
+  background: var(--wb-color-section-soft);
+}
+
+.workbench-review .workbench-checks {
+  margin-top: var(--wb-space-3);
+}
+
+.workbench-review-actions {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workbench-review-actions > span {
+  text-align: right;
+}
+
+@media (max-width: 900px) {
+  .recruitment-workbench {
+    place-items: start center;
+    align-content: start;
+  }
+
+  .recruitment-workbench > .workbench-card {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .workbench-sidebar {
+    padding: var(--wb-space-5) var(--wb-space-6);
+    overflow: visible;
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-sidebar__intro {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: var(--wb-space-4);
+  }
+
+  .workbench-sidebar__intro > p {
+    text-align: right;
+  }
+
+  .workbench-wizard {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--wb-space-2);
+    margin-top: var(--wb-space-4);
+  }
+
+  .workbench-wizard__step {
+    grid-template-columns: var(--wb-mobile-step-number-size) minmax(0, 1fr);
+    column-gap: var(--wb-space-2);
+    min-height: var(--wb-mobile-step-min-height);
+    padding: var(--wb-space-2);
+  }
+
+  .workbench-wizard__step > span {
+    width: var(--wb-mobile-step-number-size);
+    height: var(--wb-mobile-step-number-size);
+  }
+
+  .workbench-workspace {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .workbench-main {
+    overflow: visible;
+    scrollbar-gutter: auto;
+  }
+
+  .workbench-section--context {
+    height: auto;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .workbench-sidebar {
+    padding: var(--wb-space-5);
+  }
+
+  .workbench-wizard {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workbench-wizard__step {
+    align-content: center;
+    width: 100%;
+    height: var(--wb-mobile-step-min-height);
+    min-height: var(--wb-mobile-step-min-height);
+    max-height: var(--wb-mobile-step-min-height);
+    overflow: hidden;
+  }
+
+  .workbench-task-header__title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--wb-space-2);
+  }
+
+  .workbench-task-header h2 {
+    font-size: var(--wb-font-size-section);
+  }
+
+  .workbench-section,
+  .workbench-review {
+    width: 100%;
+    max-width: none;
+  }
+
+  .workbench-review .workbench-summary {
+    padding: var(--wb-space-2) var(--wb-space-3);
+  }
+
+  .workbench-review .workbench-checks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 var(--wb-space-3);
+    margin-top: var(--wb-space-2);
+  }
+
+  .workbench-review .workbench-checks li {
+    padding: var(--wb-space-2) 0;
+  }
+
+  .workbench-review .workbench-checks li:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .workbench-review-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-review-actions > span {
+    text-align: left;
+  }
+}
+
+@media (max-width: 520px) {
+  .workbench-review .workbench-checks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-review .workbench-checks li:nth-last-child(-n + 2) {
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-review .workbench-checks li:last-child {
+    border-bottom: 0;
   }
 }
 </style>
