@@ -1237,29 +1237,29 @@ watch(
   --results-color-sage: #739b7a;
   --results-color-sage-soft: #edf5ed;
   --results-color-stage-muted: #94a3b8;
-  --results-space-1: 4px;
-  --results-space-2: 8px;
-  --results-space-3: 12px;
-  --results-space-4: 16px;
-  --results-space-5: 22px;
-  --results-space-6: 28px;
-  --results-space-7: 34px;
-  --results-radius-control: 9px;
-  --results-radius-panel: 15px;
+  --results-space-1: clamp(.25rem, .2rem + .09cqi, .375rem);
+  --results-space-2: clamp(.5rem, .25rem + .3cqi, .75rem);
+  --results-space-3: clamp(.75rem, .4rem + .42cqi, 1rem);
+  --results-space-4: clamp(1rem, .55rem + .55cqi, 1.375rem);
+  --results-space-5: clamp(1.375rem, .75rem + .75cqi, 1.875rem);
+  --results-space-6: clamp(1.75rem, 1rem + .9cqi, 2.375rem);
+  --results-space-7: clamp(2.125rem, 1.25rem + 1.05cqi, 2.875rem);
+  --results-radius-control: clamp(.5625rem, .48rem + .06cqi, .75rem);
+  --results-radius-panel: clamp(.9375rem, .78rem + .12cqi, 1.25rem);
   --results-radius-status: 999px;
   --results-border-width: 1px;
   --results-active-border-width: 2px;
-  --results-control-height: 38px;
-  --results-compact-control-height: 34px;
-  --results-touch-target: 44px;
-  --results-row-min-height: 64px;
-  --results-font-meta: 10px;
-  --results-font-detail: 11px;
-  --results-font-control: 12px;
-  --results-font-body: 13px;
-  --results-font-title: 15px;
-  --results-font-metric: 26px;
-  --results-font-campaign-metric: 20px;
+  --results-control-height: clamp(2.375rem, 1.25rem + 1.35cqi, 3.25rem);
+  --results-compact-control-height: clamp(2.125rem, 1.25rem + 1.15cqi, 3rem);
+  --results-touch-target: clamp(2.75rem, 1.5rem + 1.35cqi, 3.5rem);
+  --results-row-min-height: clamp(4rem, 2.25rem + 2.1cqi, 5.25rem);
+  --results-font-meta: clamp(.625rem, .12rem + .52cqi, .9375rem);
+  --results-font-detail: clamp(.6875rem, .15rem + .62cqi, 1.0625rem);
+  --results-font-control: clamp(.75rem, .15rem + .65cqi, 1.125rem);
+  --results-font-body: clamp(.8125rem, .2rem + .65cqi, 1.125rem);
+  --results-font-title: clamp(.9375rem, .25rem + .75cqi, 1.375rem);
+  --results-font-metric: clamp(1.625rem, 1rem + .8cqi, 2.25rem);
+  --results-font-campaign-metric: clamp(1.25rem, .55rem + .75cqi, 1.875rem);
   --results-weight-regular: 400;
   --results-weight-medium: 600;
   --results-weight-bold: 700;
@@ -1271,21 +1271,21 @@ watch(
   --results-shadow-panel: 0 1px 2px rgba(15, 23, 42, .025);
   --results-transition: 180ms ease;
   --results-disabled-opacity: .55;
-  --results-filter-job-min: 230px;
-  --results-filter-run-min: 210px;
-  --results-filter-status-min: 170px;
-  --results-empty-copy-max: 420px;
-  --results-avatar-size: 32px;
-  --results-candidate-name-min: 150px;
-  --results-candidate-stage-min: 90px;
-  --results-candidate-resume-min: 110px;
-  --results-candidate-score-min: 155px;
-  --results-action-column: 24px;
-  --results-stage-label-width: 90px;
-  --results-stage-count-width: 30px;
-  --results-stage-card-min: 130px;
-  --results-progress-height: 9px;
-  --results-stage-progress-height: 11px;
+  --results-filter-job-min: 14.375rem;
+  --results-filter-run-min: 13.125rem;
+  --results-filter-status-min: 10.625rem;
+  --results-empty-copy-max: 26.25rem;
+  --results-avatar-size: clamp(2rem, 1rem + 1.15cqi, 2.75rem);
+  --results-candidate-name-min: 9.375rem;
+  --results-candidate-stage-min: 5.625rem;
+  --results-candidate-resume-min: 6.875rem;
+  --results-candidate-score-min: 9.6875rem;
+  --results-action-column: 1.5rem;
+  --results-stage-label-width: 5.625rem;
+  --results-stage-count-width: 1.875rem;
+  --results-stage-card-min: 8.125rem;
+  --results-progress-height: clamp(.5625rem, .35rem + .35cqi, .875rem);
+  --results-stage-progress-height: clamp(.6875rem, .4rem + .4cqi, 1rem);
   --results-attention-columns: minmax(150px, 1.1fr) 90px minmax(130px, .9fr) minmax(210px, 1.45fr) 105px 72px 164px;
   --results-status-marker-width: 4px;
   --results-node-marker-size: 6px;
@@ -1293,7 +1293,7 @@ watch(
   --results-skeleton-background: var(--results-color-surface-muted);
   --results-skeleton-opacity: .6;
   --results-skeleton-duration: 1.2s;
-  gap: var(--results-space-5);
+  gap: clamp(1.375rem, 1.1rem + .22vw, 1.75rem);
   container-name: results-center;
   container-type: inline-size;
   width: 100%;
@@ -1311,6 +1311,14 @@ watch(
 
 .results-hero {
   align-items: center;
+}
+
+.results-hero h2 {
+  font-size: clamp(1.6875rem, .8rem + 1cqi, 2.5rem);
+}
+
+.results-hero p {
+  font-size: var(--results-font-body);
 }
 
 .results-refresh {
@@ -2042,15 +2050,15 @@ watch(
 .stage-progress-list {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 24px;
-  padding: 14px var(--results-space-5) 44px;
+  gap: var(--results-space-5);
+  padding: var(--results-space-3) var(--results-space-5) var(--results-space-7);
 }
 
 .stage-progress-list article {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
-  gap: 7px 8px;
+  gap: var(--results-space-1) var(--results-space-2);
   min-width: 0;
 }
 
@@ -2100,8 +2108,8 @@ watch(
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, .72fr)) minmax(220px, 1.35fr) minmax(170px, 1fr);
   align-items: center;
-  gap: 24px;
-  padding: 4px var(--results-space-5) 22px;
+  gap: var(--results-space-5);
+  padding: var(--results-space-1) var(--results-space-5) var(--results-space-5);
 }
 
 .pipeline-summary article {

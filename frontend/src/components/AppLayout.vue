@@ -126,7 +126,10 @@ function closeAccountModelSettings() {
       </header>
       <section
         class="page-container"
-        :class="{ 'page-container--workbench': route.name === 'recruitment-workbench' }"
+        :class="{
+          'page-container--workbench': route.name === 'recruitment-workbench',
+          'page-container--results': route.name === 'recruitment-results',
+        }"
       >
         <router-view />
       </section>

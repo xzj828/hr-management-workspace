@@ -76,6 +76,7 @@ describe('AppLayout navigation hierarchy', () => {
     const links = wrapper.findAllComponents(RouterLink).map((link) => link.props('to'))
 
     expect(wrapper.get('.page-container').classes()).not.toContain('page-container--workbench')
+    expect(wrapper.get('.page-container').classes()).toContain('page-container--results')
     expect(links).toContainEqual({ name: 'recruitment-dashboard' })
     expect(links).toContainEqual({ name: 'recruitment-workbench', query: { job: '12' } })
     expect(links).toContainEqual({ name: 'recruitment-results', query: { job: '12' } })
