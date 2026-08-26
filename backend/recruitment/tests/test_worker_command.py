@@ -13,10 +13,11 @@ from recruitment.management.commands.run_rpa_worker import (
     WorkerEngine,
     WorkerHeartbeat,
     execute_check_status,
+    execute_sync_positions,
     execute_sync_conversations,
     run_worker_loop,
 )
-from recruitment.rpa.cli import CliAccountConfig
+from recruitment.rpa.cli import BossCliError, CliAccountConfig
 from recruitment.rpa.status import BossBrowserStatus, classify_boss_pages
 from recruitment.rpa.status import inspect_boss_status
 
@@ -96,6 +97,21 @@ class WorkerEngineTests(SimpleTestCase):
         self.assertEqual(runner.calls, 0)
         self.assertTrue(outcome["result"]["checkpoint_stopped"])
         self.assertEqual(outcome["result"]["conversations"], [])
+
+    @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
+    def test_position_sync_falls_back_to_browser_when_cli_navigation_fails(self, inventory):
+        expected = [{"external_id": "derived-1", "title": "前置部署工程师", "status": "open", "raw": "前置部署工程师"}]
+        inventory.return_value.positions.return_value = expected
+
+        class Runner:
+            def positions(self, account):
+                raise BossCliError("无法进入职位管理")
+
+        account = CliAccountConfig("edge.exe", "C:/profiles/a", 53470)
+        outcome = execute_sync_positions({}, account, Runner())
+
+        self.assertEqual(outcome["result"]["positions"], expected)
+        inventory.assert_called_once_with(53470)
 
     @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
     def test_conversation_sync_returns_every_chat_message(self, inventory):

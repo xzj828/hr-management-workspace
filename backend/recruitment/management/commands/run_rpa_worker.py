@@ -199,7 +199,12 @@ def execute_check_status(task, account, runner):
 
 
 def execute_sync_positions(task, account, runner):
-    rows = runner.positions(account)
+    try:
+        rows = runner.positions(account)
+    except BossCliError:
+        rows = []
+    if not rows:
+        rows = BrowserInventory(account.cdp_port).positions()
     return {"status": "succeeded", "result": {"positions": rows}}
 
 
