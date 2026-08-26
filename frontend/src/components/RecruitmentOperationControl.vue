@@ -39,8 +39,8 @@ const stateLabel = computed(() => ({
 }[state.value] || '状态同步中'))
 const stateHint = computed(() => ({
   starting: '服务端正在创建本轮运行，请稍候。',
-  running: '当前版本正在执行；停止后才会启用修改后的方案。',
-  waiting_human: '自动化已停在人工节点，仍可停止本次任务。',
+  running: '当前版本正在执行；停止会取消尚未开始的待确认、打招呼和求简历任务。',
+  waiting_human: '自动化正在等待人工确认；停止会取消尚未开始的确认与发送任务。',
   paused: '不会领取新的执行步骤；继续后沿用当前版本。',
   stopping: '停止指令已生效；已进入浏览器的单个动作会安全收尾，但不会再开始下一项。',
   stopped: '当前任务不会再产生新的自动化动作。',

@@ -972,7 +972,11 @@ describe('RecruitmentWorkbenchView', () => {
       if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [passive] })
       if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [approval] })
       if (path === 'recruitment/automation-approvals/approval-1/approve/' && options?.method === 'POST') {
-        return Promise.resolve({ ...approval, status: 'approved', batch: { total_items: 1 } })
+        return Promise.resolve({
+          ...approval,
+          status: 'approved',
+          batch: { id: 'batch-1', total_items: 1, steps: [{ id: 1, status: 'pending' }] },
+        })
       }
       return baseApi(path)
     })
@@ -991,8 +995,40 @@ describe('RecruitmentWorkbenchView', () => {
       method: 'POST',
       body: '{}',
     })
+    expect(wrapper.text()).toContain('发送批次已创建')
     expect(wrapper.text()).toContain('Worker 将先发送话术，再点击“求简历”')
     expect(wrapper.find('[data-test="resume-approval-approval-1"]').exists()).toBe(false)
+  })
+
+  it('does not claim a resume request was queued when approval returns no communication batch', async () => {
+    const passive = planFixture({
+      kind: 'passive_resume',
+      revisionId: 451,
+      controlGeneration: 8,
+    })
+    const approval = {
+      id: 'approval-without-batch',
+      action: 'request_resume',
+      status: 'draft',
+      automation_plan_revision: 451,
+      automation_generation: 8,
+      payload: { message: '您好，请发送简历', items: [{ name: '耿柔', job_title: '前置部署工程师' }] },
+    }
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [passive] })
+      if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [approval] })
+      if (path === 'recruitment/automation-approvals/approval-without-batch/approve/' && options?.method === 'POST') {
+        return Promise.resolve({ ...approval, status: 'approved' })
+      }
+      return baseApi(path)
+    })
+
+    ;({ wrapper } = await mountView({ job: '51' }))
+    await wrapper.get('[data-test="approve-resume-approval-without-batch"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('服务端尚未创建可执行发送步骤')
+    expect(wrapper.text()).not.toContain('发送批次已创建')
   })
 
   it('stops before editing and preserves the current per-job draft on step two', async () => {

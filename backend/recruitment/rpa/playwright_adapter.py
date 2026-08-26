@@ -1,5 +1,6 @@
 import hashlib
 from pathlib import Path
+import re
 import uuid
 
 from playwright.sync_api import Error as PlaywrightError
@@ -106,7 +107,88 @@ class BrowserInventory:
         except PlaywrightError as exc:
             raise BrowserConnectionError(f"无法读取 BOSS 职位列表：{exc}") from exc
 
-    def conversation_rows(self):
+    @staticmethod
+    def _conversation_job_title(value):
+        return re.split(r"\s+_\s+", " ".join(str(value or "").split()), maxsplit=1)[0].strip()
+
+    def _select_conversation_scope(self, page, *, job_title, unread):
+        expected_job = self._conversation_job_title(job_title)
+        if not expected_job or len(expected_job) > 120:
+            raise BrowserConnectionError("BOSS 沟通职位筛选值无效")
+
+        label = page.locator(".chat-top-job .chat-select-job")
+        if label.count() != 1:
+            raise BrowserConnectionError("未找到 BOSS 沟通职位筛选器")
+        current_job = self._conversation_job_title(label.inner_text())
+        if current_job != expected_job:
+            label.click()
+            page.wait_for_function(
+                "() => document.querySelectorAll('.chat-top-job .ui-dropmenu-list li').length > 0",
+                timeout=10_000,
+            )
+            options = page.locator(".chat-top-job .ui-dropmenu-list li")
+            matches = [
+                options.nth(index)
+                for index in range(options.count())
+                if self._conversation_job_title(options.nth(index).inner_text()) == expected_job
+            ]
+            if len(matches) != 1:
+                raise BrowserConnectionError("BOSS 沟通职位无法精确唯一匹配")
+            matches[0].click()
+            page.wait_for_function(
+                r"""expected => {
+                  const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+                  const title = norm(document.querySelector('.chat-top-job .chat-select-job')?.textContent)
+                    .split(/\s+_\s+/, 1)[0].trim();
+                  return title === expected;
+                }""",
+                arg=expected_job,
+                timeout=15_000,
+            )
+
+        filter_label = "未读" if unread else "全部"
+        tabs = page.locator(".chat-message-filter-left span")
+        matches = [
+            tabs.nth(index)
+            for index in range(tabs.count())
+            if " ".join(tabs.nth(index).inner_text().split()) == filter_label
+        ]
+        if len(matches) != 1:
+            raise BrowserConnectionError(f"未找到 BOSS 沟通“{filter_label}”筛选")
+        selected_class = str(matches[0].get_attribute("class") or "").split()
+        if not ({"active", "selected", "current", "checked"} & set(selected_class)):
+            matches[0].click()
+        # BOSS updates the label before its conversation request settles.  A
+        # short floor prevents accepting the previous job's rows as an empty
+        # result while still allowing a legitimate zero-unread scope.
+        page.wait_for_timeout(750)
+        page.wait_for_function(
+            r"""scope => {
+              const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+              const tabs = Array.from(document.querySelectorAll('.chat-message-filter-left span'));
+              const tab = tabs.find(item => norm(item.textContent) === scope.filter);
+              if (!tab || !/(active|selected|current|checked)/.test(String(tab.className || ''))) return false;
+              const rows = Array.from(document.querySelectorAll('.geek-item'));
+              if (!rows.length) {
+                const key = `${scope.job}:${scope.filter}`;
+                const now = Date.now();
+                const previous = window.__ximingConversationEmptyScope;
+                if (previous?.key === key && now - previous.since >= 1000) return true;
+                window.__ximingConversationEmptyScope = { key, since: now };
+                return false;
+              }
+              window.__ximingConversationEmptyScope = null;
+              return rows.every(row => {
+                const job = norm(row.querySelector('.source-job')?.textContent);
+                const badge = norm(row.querySelector('.badge-count')?.textContent).replace(/\D/g, '');
+                return job === scope.job && (!scope.unread || Number.parseInt(badge || '0', 10) > 0);
+              });
+            }""",
+            arg={"job": expected_job, "filter": filter_label, "unread": bool(unread)},
+            timeout=18_000,
+        )
+
+    def conversation_rows(self, *, job_title="", unread=None):
         try:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.connect_over_cdp(self.endpoint)
@@ -119,6 +201,8 @@ class BrowserInventory:
                 page = pages[-1]
                 if not str(page.url).startswith("https://www.zhipin.com/web/chat/index"):
                     raise BrowserConnectionError("当前不在 BOSS 沟通列表页")
+                if str(job_title or "").strip():
+                    self._select_conversation_scope(page, job_title=job_title, unread=bool(unread))
                 rows = page.locator(".geek-item").evaluate_all(
                     r"""items => items.map((el, index) => {
                       const norm = (value) => (value || '').replace(/\s+/g, ' ').trim();

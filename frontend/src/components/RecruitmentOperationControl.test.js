@@ -30,6 +30,7 @@ describe('RecruitmentOperationControl', () => {
 
     expect(wrapper.attributes('aria-live')).toBe('polite')
     expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
+    expect(wrapper.text()).toContain('停止会取消尚未开始的待确认、打招呼和求简历任务')
     await wrapper.get('[data-test="stop-operation"]').trigger('click')
     await wrapper.get('[data-test="stop-and-modify-operation"]').trigger('click')
 

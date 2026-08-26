@@ -987,7 +987,7 @@ class RejectionNoticeWorkerTests(SimpleTestCase):
             def __init__(self):
                 self.calls = []
 
-            def conversations(self, account):
+            def conversations(self, account, **kwargs):
                 return "1. 候选人｜测试工程师｜external_id:stable-1"
 
             def send_text(self, account, name, message):
@@ -1013,10 +1013,10 @@ class RejectionNoticeWorkerTests(SimpleTestCase):
             def __init__(self):
                 self.sent = []
 
-            def conversations(self, account):
+            def conversations(self, account, **kwargs):
                 return "1. 候选人｜测试工程师｜external_id:stable-1"
 
-            def send_text_by_external_id(self, account, external_id, message):
+            def send_text_by_external_id(self, account, external_id, message, **kwargs):
                 self.sent.append((external_id, message))
                 raise RuntimeError("response lost after platform accepted message")
 
@@ -1042,10 +1042,10 @@ class RejectionNoticeWorkerTests(SimpleTestCase):
             def __init__(self, receipt):
                 self.receipt = receipt
 
-            def conversations(self, account):
+            def conversations(self, account, **kwargs):
                 return "1. 候选人｜测试工程师｜external_id:stable-1"
 
-            def send_text_by_external_id(self, account, external_id, message):
+            def send_text_by_external_id(self, account, external_id, message, **kwargs):
                 return self.receipt
 
         for receipt in [False, None, {"sent": False}, {"sent": True}, {
@@ -1069,10 +1069,10 @@ class RejectionNoticeWorkerTests(SimpleTestCase):
 
     def test_explicit_atomic_adapter_receipt_is_succeeded(self):
         class ReceiptRunner:
-            def conversations(self, account):
+            def conversations(self, account, **kwargs):
                 return "1. 候选人｜测试工程师｜external_id:stable-1"
 
-            def send_text_by_external_id(self, account, external_id, message):
+            def send_text_by_external_id(self, account, external_id, message, **kwargs):
                 return {
                     "sent": True,
                     "verified": True,
@@ -1101,7 +1101,7 @@ class RejectionNoticeWorkerTests(SimpleTestCase):
     )
     def test_worker_engine_never_persists_raw_rejection_exception(self, _status, _managed, _lock):
         class FailingRunner:
-            def conversations(self, account):
+            def conversations(self, account, **kwargs):
                 raise RuntimeError("RAW_EXCEPTION_SECRET candidate=stable-1")
 
         class RecordingApi:

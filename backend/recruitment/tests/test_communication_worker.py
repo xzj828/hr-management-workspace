@@ -18,8 +18,8 @@ class FakeRunner:
     def request_resume(self, account, name, *, message="", first_contact=False):
         self.calls.append(("request_resume", name, message, first_contact))
 
-    def conversations(self, account):
-        self.calls.append(("conversations",))
+    def conversations(self, account, *, job_title=""):
+        self.calls.append(("conversations", job_title))
         return "1. 林然｜产品经理｜external_id:boss-1｜未读 1"
 
     def send_text(self, account, name, message):
@@ -76,7 +76,7 @@ class CommunicationWorkerTests(SimpleTestCase):
 
     def test_request_resume_stops_when_refreshed_conversation_name_is_ambiguous(self):
         runner = FakeRunner()
-        runner.conversations = lambda account: "1. 林然｜产品经理\n2. 林然｜测试工程师"
+        runner.conversations = lambda account, **kwargs: "1. 林然｜产品经理\n2. 林然｜测试工程师"
 
         outcome = execute_request_resume({"request_payload": {
             "target": {"name": "林然", "external_id": "boss-1"},
@@ -89,7 +89,7 @@ class CommunicationWorkerTests(SimpleTestCase):
 
     def test_request_resume_wrong_external_id_probe_never_calls_action(self):
         runner = FakeRunner()
-        runner.conversations = lambda account: "1. 林然｜产品经理｜external_id:boss-other"
+        runner.conversations = lambda account, **kwargs: "1. 林然｜产品经理｜external_id:boss-other"
 
         outcome = execute_request_resume({"request_payload": {
             "target": {"name": "林然", "external_id": "boss-1"},
@@ -102,7 +102,7 @@ class CommunicationWorkerTests(SimpleTestCase):
 
     def test_request_resume_name_only_probe_never_calls_action(self):
         runner = FakeRunner()
-        runner.conversations = lambda account: "1. 林然｜产品经理"
+        runner.conversations = lambda account, **kwargs: "1. 林然｜产品经理"
 
         outcome = execute_request_resume({"request_payload": {
             "target": {"name": "林然", "external_id": "boss-1"},
@@ -116,27 +116,27 @@ class CommunicationWorkerTests(SimpleTestCase):
     def test_request_resume_uses_stable_adapter_for_first_contact(self):
         runner = FakeRunner()
 
-        def stable_action(account, external_id, *, message="", first_contact=False):
-            runner.calls.append(("request_resume_stable", external_id, message, first_contact))
+        def stable_action(account, external_id, *, message="", first_contact=False, job_title=""):
+            runner.calls.append(("request_resume_stable", external_id, message, first_contact, job_title))
 
         runner.request_resume_by_external_id = stable_action
 
         outcome = execute_request_resume({"request_payload": {
-            "target": {"name": "林然", "external_id": "boss-1"},
+            "target": {"name": "林然", "external_id": "boss-1", "job_title": "产品经理"},
             "message": "您好，方便发送一份简历吗？",
             "first_contact": True,
         }}, self.account, runner)
 
         self.assertEqual(outcome["status"], "succeeded")
         self.assertIn(
-            ("request_resume_stable", "boss-1", "您好，方便发送一份简历吗？", True),
+            ("request_resume_stable", "boss-1", "您好，方便发送一份简历吗？", True, "产品经理"),
             runner.calls,
         )
 
     def test_request_resume_adapter_exception_is_never_retryable(self):
         runner = FakeRunner()
 
-        def uncertain_action(account, external_id, *, message="", first_contact=False):
+        def uncertain_action(account, external_id, *, message="", first_contact=False, job_title=""):
             raise RuntimeError("connection lost after click")
 
         runner.request_resume_by_external_id = uncertain_action

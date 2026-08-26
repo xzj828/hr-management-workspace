@@ -28,6 +28,16 @@ class PlaywrightAdapterTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             BrowserInventory(9222)
 
+    def test_conversation_job_option_uses_exact_title_before_location_and_salary(self):
+        self.assertEqual(
+            BrowserInventory._conversation_job_title("前置部署工程师 _ 北京 3-6K"),
+            "前置部署工程师",
+        )
+        self.assertNotEqual(
+            BrowserInventory._conversation_job_title("FDE（前置部署工程师）（关闭） _ 北京 3-6K"),
+            "前置部署工程师",
+        )
+
     @patch("recruitment.rpa.playwright_adapter.sync_playwright")
     def test_positions_reads_current_job_card_structure(self, sync_playwright):
         frame = MagicMock()
@@ -82,6 +92,33 @@ class PlaywrightAdapterTests(SimpleTestCase):
 
         self.assertEqual(rows[0]["external_id"], "conversation-101")
         self.assertEqual(BrowserInventory(53470).selected_conversation()["name"], "林然")
+
+    @patch.object(BrowserInventory, "_select_conversation_scope")
+    @patch("recruitment.rpa.playwright_adapter.sync_playwright")
+    def test_conversation_rows_applies_job_before_reading_scoped_rows(self, sync_playwright, select_scope):
+        page = MagicMock()
+        page.url = "https://www.zhipin.com/web/chat/index"
+        page.locator.return_value.evaluate_all.return_value = [{
+            "index": 1,
+            "external_id": "conversation-job-1",
+            "name": "耿柔",
+            "job_title": "前置部署工程师",
+            "preview": "您好",
+            "unread_count": 1,
+            "selected": False,
+        }]
+        browser = MagicMock(contexts=[MagicMock(pages=[page])])
+        playwright = sync_playwright.return_value.__enter__.return_value
+        playwright.chromium.connect_over_cdp.return_value = browser
+
+        rows = BrowserInventory(53470).conversation_rows(job_title="前置部署工程师", unread=True)
+
+        select_scope.assert_called_once_with(
+            page,
+            job_title="前置部署工程师",
+            unread=True,
+        )
+        self.assertEqual(rows[0]["external_id"], "conversation-job-1")
 
     @patch("recruitment.rpa.playwright_adapter.sync_playwright")
     def test_conversation_rows_reject_duplicate_platform_ids(self, sync_playwright):

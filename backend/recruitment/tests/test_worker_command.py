@@ -167,7 +167,8 @@ class WorkerEngineTests(SimpleTestCase):
         inventory.return_value.download_resume_attachments.return_value = []
 
         class Runner:
-            def conversations(self, account, unread=False):
+            def conversations(self, account, unread=False, job_title=""):
+                self.job_title = job_title
                 return "1. 林然｜产品经理｜未读 2"
 
             def open_chat(self, account, name):
@@ -197,8 +198,9 @@ class WorkerEngineTests(SimpleTestCase):
                 self.called_unread = None
                 self.opened = []
 
-            def conversations(self, account, unread=False):
+            def conversations(self, account, unread=False, job_title=""):
                 self.called_unread = unread
+                self.job_title = job_title
                 return (
                     "1. 林然｜产品经理｜已读\n"
                     "2. 周青｜测试工程师｜未读 1\n"
@@ -217,12 +219,47 @@ class WorkerEngineTests(SimpleTestCase):
         )
 
         self.assertTrue(runner.called_unread)
+        self.assertEqual(runner.job_title, "产品经理")
         self.assertEqual(runner.opened, ["陈思"])
         conversations = outcome["result"]["conversations"]
         by_name = {row["name"]: row for row in conversations}
         self.assertIn("messages", by_name["陈思"])
         self.assertEqual(by_name["林然"]["sync_error"], "会话已读，未打开")
         self.assertEqual(by_name["周青"]["sync_error"], "会话岗位与当前选择岗位不一致，未打开")
+
+    @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
+    def test_shared_account_sync_selects_each_frozen_job_before_unread(self, inventory):
+        inventory.return_value.download_resume_attachments.return_value = []
+
+        class Runner:
+            def __init__(self):
+                self.scopes = []
+                self.opened = []
+
+            def conversations(self, account, unread=False, job_title=""):
+                self.scopes.append((job_title, unread))
+                return f"1. {job_title}候选人｜{job_title}｜未读 1"
+
+            def open_chat(self, account, name):
+                self.opened.append(name)
+                return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 2026-08-27 09:00 你好")
+
+        runner = Runner()
+        outcome = execute_sync_conversations(
+            {"request_payload": {"passive_plan_scopes": {
+                "7": {"job_title": "测试工程师"},
+                "8": {"job_title": "前置部署工程师"},
+            }}},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            runner,
+        )
+
+        self.assertEqual(runner.scopes, [
+            ("前置部署工程师", True),
+            ("测试工程师", True),
+        ])
+        self.assertEqual(len(outcome["result"]["conversations"]), 2)
+        self.assertEqual(len(runner.opened), 2)
 
     @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
     def test_bootstrap_backfill_opens_read_conversations_only_for_selected_job(self, inventory):
@@ -233,8 +270,9 @@ class WorkerEngineTests(SimpleTestCase):
                 self.called_unread = None
                 self.opened = []
 
-            def conversations(self, account, unread=False):
+            def conversations(self, account, unread=False, job_title=""):
                 self.called_unread = unread
+                self.job_title = job_title
                 return "1. 林然｜产品经理｜selected:1｜已读\n2. 周青｜测试工程师｜已读"
 
             def open_chat(self, account, name):
@@ -253,6 +291,7 @@ class WorkerEngineTests(SimpleTestCase):
         )
 
         self.assertFalse(runner.called_unread)
+        self.assertEqual(runner.job_title, "产品经理")
         self.assertEqual(runner.opened, ["林然"])
         self.assertEqual(outcome["result"]["conversations"][0]["messages"][0]["content"], "你好")
 
@@ -264,11 +303,11 @@ class WorkerEngineTests(SimpleTestCase):
             def __init__(self):
                 self.stable_ids = []
 
-            def conversations(self, account, unread=False):
+            def conversations(self, account, unread=False, job_title=""):
                 return "1. 同名候选人｜产品经理｜external_id:conversation-safe｜未读 1"
 
-            def open_chat_by_external_id(self, account, external_id):
-                self.stable_ids.append(external_id)
+            def open_chat_by_external_id(self, account, external_id, *, job_title=""):
+                self.stable_ids.append((external_id, job_title))
                 return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 2026-08-26 09:00 你好")
 
             def open_chat(self, account, name):
@@ -281,7 +320,7 @@ class WorkerEngineTests(SimpleTestCase):
             runner,
         )
 
-        self.assertEqual(runner.stable_ids, ["conversation-safe"])
+        self.assertEqual(runner.stable_ids, [("conversation-safe", "产品经理")])
         self.assertEqual(outcome["result"]["conversations"][0]["messages"][0]["content"], "你好")
 
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")

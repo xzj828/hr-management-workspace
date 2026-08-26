@@ -62,6 +62,7 @@ class ConversationCliTests(SimpleTestCase):
         inventory.return_value.selected_conversation.return_value = {
             "external_id": "conversation-101",
             "name": "林然",
+            "job_title": "测试工程师",
             "selected": True,
         }
 
@@ -70,6 +71,7 @@ class ConversationCliTests(SimpleTestCase):
             "conversation-101",
             message="您好，方便发送一份简历吗？",
             first_contact=True,
+            job_title="测试工程师",
         )
 
         commands = [call.args[0][1:] for call in run.call_args_list]
@@ -80,6 +82,10 @@ class ConversationCliTests(SimpleTestCase):
             ["send", "--text", "您好，方便发送一份简历吗？", "--request-resume"],
         )
         self.assertGreaterEqual(inventory.return_value.selected_conversation.call_count, 2)
+        inventory.return_value.conversation_rows.assert_called_once_with(
+            job_title="测试工程师",
+            unread=False,
+        )
 
     @patch("recruitment.rpa.cli.subprocess.run")
     def test_send_text_rejects_line_breaks_before_subprocess(self, run):

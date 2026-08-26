@@ -310,4 +310,6 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - `sync_conversations` Worker 结果中的每行会话必须携带 BOSS 会话 `external_id`、展示名、岗位、消息和附件；`application_id` 即使由 Worker 提供也不可信，服务端必须删除并重新解析。
 - 服务端仅在稳定 ID 存在、岗位属于冻结 `allowed_job_ids` 且标题唯一匹配时创建或复用候选人、平台身份与应聘。兼容旧任务时，可把缺少稳定 ID 的行绑定到账号内既有且全局唯一的应聘，但不得据此创建新候选人或执行外发。
 - 标准工作流首次同步携带 `backfill_conversations=true` 并读取岗位列表，但只打开未读或当前选中行；周期性 `passive_plan_scopes` 同步仍只读取未读。
-- `request_resume_by_external_id` 必须在同一次执行中刷新列表、按 stable ID 唯一解析、以该快照序号打开、复核选中行 stable ID，再发送已批准话术并调用 BOSS 原生“求简历”。
+- Worker 必须先在 BOSS 页面精确选择冻结职位，再切换未读/全部状态；账号共享的多个被动岗位逐岗位读取并按 stable ID 合并，任何职位筛选歧义或跨 scope 重复 stable ID 都失败关闭。
+- `request_resume_by_external_id` 必须在同一次执行中重新应用批准快照的职位 scope、刷新列表、按 stable ID 唯一解析、以该快照序号打开，并复核选中行 stable ID、展示名和职位，再发送已批准话术并调用 BOSS 原生“求简历”。
+- 作业台只有在确认接口返回沟通批次且批次中至少存在一个 `pending` 执行步骤时，才能提示动作已排队；审批提交期间禁止同时停止或重启岗位计划，计划控制期间也禁止提交审批。

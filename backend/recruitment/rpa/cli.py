@@ -433,12 +433,21 @@ class BossCliRunner:
         result = self._run(args, env=self._account_env(account), timeout_seconds=240)
         return parse_candidate_output(result.stdout, source="deep_search") if match else []
 
-    def conversations(self, account, *, unread=False):
-        args = ["list", "--unread"] if unread else ["list"]
+    def conversations(self, account, *, unread=False, job_title=""):
+        job_name = str(job_title or "").strip()
+        if len(job_name) > 120 or "\n" in job_name or "\r" in job_name:
+            raise BossCliError("BOSS 沟通职位筛选值无效")
+        # The fixed CLI can select unread/all but cannot scope by job.  Enter
+        # the all list first, then let the managed Playwright adapter apply the
+        # exact job before the unread filter.
+        args = ["list"] if job_name else (["list", "--unread"] if unread else ["list"])
         self._run(args, env=self._account_env(account), timeout_seconds=120)
         from recruitment.rpa.playwright_adapter import BrowserInventory
 
-        rows = BrowserInventory(account.cdp_port).conversation_rows()
+        rows = BrowserInventory(account.cdp_port).conversation_rows(
+            job_title=job_name,
+            unread=unread,
+        ) if job_name else BrowserInventory(account.cdp_port).conversation_rows()
         lines = []
         for row in rows:
             parts = [
@@ -492,21 +501,24 @@ class BossCliRunner:
             timeout_seconds=120,
         )
 
-    def _assert_selected_conversation(self, account, external_id):
+    def _assert_selected_conversation(self, account, external_id, *, job_title=""):
         from recruitment.rpa.playwright_adapter import BrowserInventory
 
         selected = BrowserInventory(account.cdp_port).selected_conversation()
         if str(selected.get("external_id", "")).strip() != str(external_id).strip():
             raise BossCliError("打开后的 BOSS 会话稳定 ID 与批准目标不一致")
+        expected_job = str(job_title or "").strip()
+        if expected_job and str(selected.get("job_title", "")).strip() != expected_job:
+            raise BossCliError("打开后的 BOSS 会话职位与批准目标不一致")
         return selected
 
-    def open_chat_by_external_id(self, account, external_id):
+    def open_chat_by_external_id(self, account, external_id, *, job_title=""):
         from recruitment.rpa.conversations import parse_conversation_list
 
         normalized = str(external_id or "").strip()
         if not normalized or len(normalized) > 160:
             raise BossCliError("候选人平台稳定 ID 无效")
-        rows = parse_conversation_list(self.conversations(account))
+        rows = parse_conversation_list(self.conversations(account, job_title=job_title))
         matches = [row for row in rows if str(row.get("external_id", "")).strip() == normalized]
         if len(matches) != 1:
             raise BossCliError("无法按平台稳定 ID 唯一定位 BOSS 会话")
@@ -516,14 +528,16 @@ class BossCliRunner:
             env=self._account_env(account),
             timeout_seconds=120,
         )
-        selected = self._assert_selected_conversation(account, normalized)
+        selected = self._assert_selected_conversation(account, normalized, job_title=job_title)
         if str(selected.get("name", "")).strip() != str(row.get("name", "")).strip():
             raise BossCliError("打开后的 BOSS 会话展示身份与刷新快照不一致")
         return result
 
-    def request_resume_by_external_id(self, account, external_id, *, message="", first_contact=False):
-        self.open_chat_by_external_id(account, external_id)
-        self._assert_selected_conversation(account, external_id)
+    def request_resume_by_external_id(
+        self, account, external_id, *, message="", first_contact=False, job_title=""
+    ):
+        self.open_chat_by_external_id(account, external_id, job_title=job_title)
+        self._assert_selected_conversation(account, external_id, job_title=job_title)
         if first_contact:
             normalized = str(message or "").strip()
             if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
@@ -539,12 +553,12 @@ class BossCliRunner:
             timeout_seconds=120,
         )
 
-    def send_text_by_external_id(self, account, external_id, message):
+    def send_text_by_external_id(self, account, external_id, message, *, job_title=""):
         normalized = str(message or "").strip()
         if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
             raise BossCliError("发送内容必须为 1 到 1000 个字符的单行文本")
-        self.open_chat_by_external_id(account, external_id)
-        self._assert_selected_conversation(account, external_id)
+        self.open_chat_by_external_id(account, external_id, job_title=job_title)
+        self._assert_selected_conversation(account, external_id, job_title=job_title)
         return self._run(
             ["send", "--text", normalized], env=self._account_env(account), timeout_seconds=120
         )

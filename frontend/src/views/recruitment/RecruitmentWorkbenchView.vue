@@ -1309,21 +1309,25 @@ async function refreshPendingResumeApprovals(plan = currentPlan.value, jobId = s
 }
 
 async function approveResumeRequest(approval) {
-  if (!approval?.id || approvalActionId.value) return
+  if (!approval?.id || approvalActionId.value || planAction.value || submitting.value) return
   approvalActionId.value = String(approval.id)
   approvalInboxError.value = ''
   approvalNotice.value = ''
   try {
-    await api(`recruitment/automation-approvals/${encodeURIComponent(approval.id)}/approve/`, {
+    const approved = await api(`recruitment/automation-approvals/${encodeURIComponent(approval.id)}/approve/`, {
       method: 'POST',
       body: '{}',
     })
+    const executableStep = approved?.batch?.steps?.some((step) => step.status === 'pending')
+    if (!approved?.batch?.id || !executableStep) {
+      throw new Error('服务端尚未创建可执行发送步骤，请勿停止任务并刷新后重试')
+    }
     const candidate = approvalCandidate(approval)
     pendingResumeApprovals.value = pendingResumeApprovals.value.filter((item) => String(item.id) !== String(approval.id))
-    approvalNotice.value = `${candidate.name || '候选人'}的消息已确认；Worker 将先发送话术，再点击“求简历”。`
+    approvalNotice.value = `${candidate.name || '候选人'}的发送批次已创建；请保持任务运行，Worker 将先发送话术，再点击“求简历”。`
   } catch (error) {
-    approvalInboxError.value = error.message || '确认发送失败，请刷新后重试'
     await refreshPendingResumeApprovals()
+    approvalInboxError.value = error.message || '确认发送失败，请刷新后重试'
   } finally {
     approvalActionId.value = ''
   }
@@ -1807,7 +1811,7 @@ onUnmounted(() => {
               <RecruitmentOperationControl
                 v-if="currentPlan"
                 :plan="currentPlan"
-                :busy="planAction || (submitting ? 'restart' : '')"
+                :busy="planAction || (submitting ? 'restart' : '') || (approvalActionId ? 'approval' : '')"
                 :error="planActionError || planError"
                 :results-to="resultsLink"
                 :restart-disabled="!canSubmit"
@@ -1848,7 +1852,7 @@ onUnmounted(() => {
                   <blockquote>{{ approval.payload?.message }}</blockquote>
                   <button
                     type="button"
-                    :disabled="Boolean(approvalActionId)"
+                    :disabled="Boolean(approvalActionId) || Boolean(planAction) || submitting"
                     :data-test="`approve-resume-${approval.id}`"
                     @click="approveResumeRequest(approval)"
                   >

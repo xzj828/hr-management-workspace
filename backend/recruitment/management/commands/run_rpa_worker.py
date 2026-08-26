@@ -295,11 +295,13 @@ def _verify_conversation_target(*, runner, account, target):
     external_id = str(target.get("external_id", "")).strip()
     if not name or not external_id:
         return None
-    rows = parse_conversation_list(runner.conversations(account))
+    job_title = str(target.get("job_title", "")).strip()
+    rows = parse_conversation_list(runner.conversations(account, job_title=job_title))
     matches = [
         row for row in rows
         if str(row.get("external_id", "")).strip() == external_id
         and str(row.get("name", "")).strip() == name
+        and (not job_title or _normalize_job_title(row.get("job_title", "")) == _normalize_job_title(job_title))
     ]
     if len(matches) != 1:
         return None
@@ -375,6 +377,7 @@ def execute_request_resume(task, account, runner):
             external_id,
             message=str(payload.get("message", "")),
             first_contact=bool(payload.get("first_contact", False)),
+            job_title=str(target.get("job_title", "")).strip(),
         )
     except Exception:
         return {
@@ -409,7 +412,12 @@ def execute_send_interview(task, account, runner):
             "error_code": "stable_identity_action_unavailable",
             "error_message": "当前 BOSS 适配器不能按平台稳定 ID 发送邀约，请由 HR 人工处理",
         }
-    stable_action(account, external_id, message)
+    stable_action(
+        account,
+        external_id,
+        message,
+        job_title=str(target.get("job_title", "")).strip(),
+    )
     return {
         "status": "succeeded",
         "result": {
@@ -452,7 +460,12 @@ def execute_rejection_notice(task, account, runner):
     # platform even when the adapter raises (for example, a lost response).
     # Such an outcome must never be classified as a retryable failure.
     try:
-        receipt = stable_action(account, external_id, message)
+        receipt = stable_action(
+            account,
+            external_id,
+            message,
+            job_title=str(target.get("job_title", "")).strip(),
+        )
     except Exception:
         return {
             "status": "waiting_human",
@@ -512,9 +525,24 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
             "status": "succeeded",
             "result": {"conversations": [], "skipped": 0, "checkpoint_stopped": True},
         }
-    rows = parse_conversation_list(
-        runner.conversations(account, unread=not backfill_conversations)
-    )
+    rows = []
+    seen_external_ids = set()
+    scopes = sorted(expected_job_titles) or [""]
+    for job_title in scopes:
+        raw_rows = parse_conversation_list(
+            runner.conversations(
+                account,
+                unread=not backfill_conversations,
+                **({"job_title": job_title} if job_title else {}),
+            )
+        )
+        for row in raw_rows:
+            external_id = str(row.get("external_id", "")).strip()
+            if external_id and external_id in seen_external_ids:
+                raise BossCliError("同一 BOSS 会话稳定 ID 命中多个职位筛选")
+            if external_id:
+                seen_external_ids.add(external_id)
+            rows.append(row)
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     eligible = []
     skipped = 0
@@ -549,7 +577,11 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
             if external_id:
                 if not callable(stable_open):
                     raise BossCliError("当前 BOSS 适配器不能按平台稳定 ID 打开会话")
-                opened = stable_open(account, external_id)
+                opened = stable_open(
+                    account,
+                    external_id,
+                    job_title=str(row.get("job_title", "")).strip(),
+                )
             else:
                 opened = runner.open_chat(account, row["name"])
             row["messages"] = parse_chat_messages(opened.stdout)
