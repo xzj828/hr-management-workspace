@@ -61,9 +61,18 @@ def _passive_graph(config):
 
 
 def _active_graph(config):
+    candidate_filters = (
+        config.get("candidate_filters")
+        if isinstance(config.get("candidate_filters"), dict)
+        else {}
+    )
     search_config = {
         "source": str(config.get("source", "search")),
         "keyword": str(config.get("keyword", ""))[:120],
+        "candidate_filters": {
+            **candidate_filters,
+            "talent_keywords": list(candidate_filters.get("talent_keywords") or []),
+        },
         "core": list(config.get("core") or []),
         "bonus": list(config.get("bonus") or []),
         "target_resume_count": int(config.get("target_resume_count", 1)),

@@ -58,14 +58,14 @@ class AutomationPlanApiTests(APITestCase):
 
     def _start(
         self, *, request_id=None, expected=None, kind="active_resume_search", job=None,
-        workflow_version=None,
+        workflow_version=None, config=None,
     ):
         job = job or self.job
         payload = {
             "job": job.pk,
             "kind": kind,
             "request_id": str(request_id or uuid.uuid4()),
-            "config": (
+            "config": config if config is not None else (
                 {
                     "source": "search",
                     "keyword": "SaaS",
@@ -127,6 +127,52 @@ class AutomationPlanApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 409, response.data)
         self.assertEqual(RecruitmentAutomationPlan.objects.get(job=self.job).revisions.count(), 1)
+
+    def test_active_candidate_filters_are_normalized_and_frozen_through_campaign_approval(self):
+        response = self._start(config={
+            "source": "search",
+            "keyword": "SaaS",
+            "target_resume_count": 2,
+            "max_scan_count": 10,
+            "core": ["B 端产品"],
+            "bonus": [],
+            "candidate_filters": {
+                "age_min": 24,
+                "age_max": 35,
+                "activity": "today",
+                "gender": "female",
+                "school": "unknown-school",
+                "talent_keywords": ["data_analysis", "new_media", "data_analysis", "unknown"],
+            },
+        })
+
+        self.assertEqual(response.status_code, 201, response.data)
+        filters = response.data["current_revision"]["config"]["candidate_filters"]
+        self.assertEqual(filters["age_min"], 24)
+        self.assertEqual(filters["age_max"], 35)
+        self.assertEqual(filters["activity"], "today")
+        self.assertEqual(filters["gender"], "female")
+        self.assertEqual(filters["school"], "any")
+        self.assertEqual(filters["talent_keywords"], ["data_analysis", "new_media"])
+        campaign = SearchCampaign.objects.get(job=self.job)
+        self.assertEqual(campaign.criteria["candidate_filters"], filters)
+        approval = AutomationApproval.objects.get(automation_plan_revision=campaign.automation_plan_revision)
+        self.assertEqual(approval.payload["criteria"]["candidate_filters"], filters)
+
+    def test_active_candidate_filters_reject_incomplete_age_range(self):
+        response = self._start(config={
+            "source": "search",
+            "keyword": "SaaS",
+            "target_resume_count": 2,
+            "max_scan_count": 10,
+            "core": ["B 端产品"],
+            "bonus": [],
+            "candidate_filters": {"age_min": 24, "age_max": None},
+        })
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("年龄范围", str(response.data))
+        self.assertFalse(RecruitmentAutomationPlan.objects.filter(job=self.job).exists())
 
     def test_plan_linked_run_cannot_bypass_plan_control_endpoints(self):
         self._start()

@@ -4,6 +4,10 @@ import AppIcon from '@/components/AppIcon.vue'
 import ModelProfileDrawer from '@/components/ModelProfileDrawer.vue'
 import { useModelCredentialStore } from '@/stores/modelCredential'
 
+const props = defineProps({
+  compact: { type: Boolean, default: false },
+})
+
 const credentials = useModelCredentialStore()
 const root = ref(null)
 const trigger = ref(null)
@@ -104,12 +108,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="model-switcher">
-    <button ref="trigger" class="model-switcher__trigger" type="button" :aria-controls="menuId" :aria-expanded="String(open)" aria-haspopup="dialog" @click.stop="toggle">
-      <AppIcon name="sparkles" :size="17" />
-      <span>切换模型</span>
-      <small>{{ activeLabel }}</small>
-      <AppIcon name="chevron-down" :size="14" />
+  <div ref="root" :class="['model-switcher', { 'model-switcher--compact': compact }]">
+    <button ref="trigger" class="model-switcher__trigger" type="button" :aria-label="compact ? '切换模型' : undefined" :aria-controls="menuId" :aria-expanded="String(open)" aria-haspopup="dialog" @click.stop="toggle">
+      <AppIcon :name="compact ? 'headset' : 'sparkles'" :size="compact ? 15 : 17" />
+      <span v-if="!compact">切换模型</span>
+      <small v-if="!compact">{{ activeLabel }}</small>
+      <AppIcon v-if="!compact" name="chevron-down" :size="14" />
     </button>
     <div v-if="open" :id="menuId" class="model-switcher__menu" role="dialog" aria-label="选择模型">
       <header><div><strong>选择模型</strong><small>只影响之后创建的 AI 任务</small></div><button type="button" aria-label="关闭模型菜单" @click="closeAndFocusTrigger"><AppIcon name="close" :size="15" /></button></header>
@@ -156,6 +160,7 @@ onBeforeUnmount(() => {
 .model-switcher__trigger:focus-visible,.model-switcher__options > button:focus-visible,.model-switcher__menu footer button:focus-visible,.model-switcher__menu header button:focus-visible { outline: 3px solid rgba(15, 159, 143, .22); outline-offset: 2px; }
 .model-switcher__trigger > span { font-size: 12px; font-weight: 800; }
 .model-switcher__trigger > small { max-width: 90px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.model-switcher--compact .model-switcher__trigger { width: 32px; min-height: 32px; justify-content: center; padding: 0; border-radius: 7px; color: #526176; }
 .model-switcher__menu { position: absolute; z-index: 70; top: calc(100% + 9px); right: 0; width: min(360px, calc(100vw - 24px)); overflow: hidden; color: var(--slate); background: #fff; border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 18px 45px rgba(15, 23, 42, .15); }
 .model-switcher__menu > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 15px 16px 12px; border-bottom: 1px solid var(--line); }
 .model-switcher__menu header div { display: grid; gap: 3px; }

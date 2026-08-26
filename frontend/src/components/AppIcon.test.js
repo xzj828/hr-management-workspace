@@ -25,4 +25,12 @@ describe('AppIcon', () => {
   it('does not silently render an unknown name', () => {
     expect(() => mount(AppIcon, { props: { name: 'not-real' } })).toThrow(/Unknown icon/)
   })
+
+  it('keeps the result-center headset and ranking crown as real SVG paths', () => {
+    for (const name of ['headset', 'crown']) {
+      const wrapper = mount(AppIcon, { props: { name } })
+      expect(wrapper.get('svg').attributes('viewBox')).toBe('0 0 24 24')
+      expect(wrapper.get('path').attributes('d')).toBeTruthy()
+    }
+  })
 })

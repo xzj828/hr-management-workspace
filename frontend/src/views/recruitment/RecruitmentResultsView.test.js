@@ -153,10 +153,11 @@ describe('RecruitmentResultsView', () => {
     ]))
     expect(wrapper.get('[data-test="attention-view"]').text()).toContain('候选人希望先了解岗位')
     expect(wrapper.text()).toContain('想先了解一下团队规模和工作方式')
+    expect(wrapper.get('.attention-list__head').text()).toContain('上下文摘要')
 
     await wrapper.get('[data-test="results-tab-tasks"]').trigger('click')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('主动寻访标准方案')
-    expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('3/8 份简历')
+    expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('3/8')
     await wrapper.get('[data-test="tasks-view"] button[aria-expanded="false"]').trigger('click')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('hr-review')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('已进入人工确认节点')
@@ -167,8 +168,11 @@ describe('RecruitmentResultsView', () => {
     expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('AI 建议通过')
 
     await wrapper.get('[data-test="results-tab-pipeline"]').trigger('click')
-    expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('招聘进度')
+    expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('招聘阶段分布')
     expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('沟通')
+    expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('岗位招聘目标2 人')
+    expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('在招中1 人')
+    expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('完成进度0%')
   })
 
   it('keeps successful sections visible and names a partially failed source', async () => {
@@ -465,8 +469,8 @@ describe('RecruitmentResultsView', () => {
     expect(table.text()).toContain('HR 待确认')
     expect(table.text()).toContain('不作为 0 分')
     expect(table.text()).toContain('等待人工介入')
-    expect(wrapper.get('[data-test="candidate-filter-hr_pass"]').text()).toBe('HR 已通过')
-    expect(wrapper.get('[data-test="candidate-filter-hr_fail"]').text()).toBe('HR 未通过')
+    expect(wrapper.get('[data-test="candidate-filter-hr"]').findAll('option').map((option) => option.text())).toEqual(expect.arrayContaining(['已通过', '未通过']))
+    expect(wrapper.get('[data-test="candidate-filter-ai"]').findAll('option').map((option) => option.text())).toContain('建议未通过')
     expect(wrapper.get('[data-test="notification-summary"]').text()).toContain('等待人工 1')
   })
 
@@ -476,10 +480,10 @@ describe('RecruitmentResultsView', () => {
     await flushPromises()
 
     await wrapper.get('tr[data-application-id="11"] input[type="checkbox"]').setValue(true)
-    await wrapper.get('[data-test="candidate-filter-hold"]').trigger('click')
+    await wrapper.get('[data-test="candidate-filter-ai"]').setValue('hold')
     expect(wrapper.get('[data-test="candidate-batch-bar"]').text()).toContain('已选择 1 人')
     expect(wrapper.find('tr[data-application-id="11"]').exists()).toBe(false)
-    await wrapper.get('[data-test="candidate-filter-all"]').trigger('click')
+    await wrapper.get('[data-test="candidate-filter-clear"]').trigger('click')
 
     expect(apiMock.mock.calls.some(([path]) => path.includes('?resume=31'))).toBe(false)
     await wrapper.get('[data-test="view-candidate-11"]').trigger('click')

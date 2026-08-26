@@ -3,7 +3,9 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { useRoute, useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
+import CandidateFilterPanel from '@/components/CandidateFilterPanel.vue'
 import RecruitmentOperationControl from '@/components/RecruitmentOperationControl.vue'
+import { defaultCandidateFilters, normalizeCandidateFilters } from '@/recruitmentCandidateFilters'
 import { useAuthStore } from '@/stores/auth'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
@@ -50,6 +52,7 @@ const bonusText = ref('')
 const interval = ref(2)
 const source = ref('search')
 const keyword = ref('')
+const candidateFilters = ref(defaultCandidateFilters())
 const targetResumeCount = ref(3)
 const maxScanCount = ref(20)
 const submitting = ref(false)
@@ -416,6 +419,7 @@ function operationDraft() {
     interval: Number(interval.value),
     source: source.value,
     keyword: keyword.value,
+    candidateFilters: normalizeCandidateFilters(candidateFilters.value),
     targetResumeCount: Number(targetResumeCount.value),
     maxScanCount: Number(maxScanCount.value),
   }
@@ -485,6 +489,7 @@ function resetWizardFields() {
   interval.value = 2
   source.value = 'search'
   keyword.value = ''
+  candidateFilters.value = defaultCandidateFilters()
   targetResumeCount.value = 3
   maxScanCount.value = 20
   completedSteps.context = false
@@ -542,6 +547,8 @@ function isValidWizardDraft(stored, jobId) {
     && Number.isFinite(draft.interval)
     && ['search', 'recommend', 'deep_search'].includes(draft.source)
     && typeof draft.keyword === 'string'
+    && (!Object.prototype.hasOwnProperty.call(draft, 'candidateFilters')
+      || (draft.candidateFilters && typeof draft.candidateFilters === 'object' && !Array.isArray(draft.candidateFilters)))
     && Number.isFinite(draft.targetResumeCount)
     && Number.isFinite(draft.maxScanCount)
 }
@@ -699,6 +706,7 @@ function applyOperationDraft(draft) {
   interval.value = Number(draft.interval || 2)
   source.value = draft.source || 'search'
   keyword.value = draft.keyword || ''
+  candidateFilters.value = normalizeCandidateFilters(draft.candidateFilters)
   targetResumeCount.value = Number(draft.targetResumeCount || 3)
   maxScanCount.value = Number(draft.maxScanCount || 20)
 }
@@ -877,6 +885,7 @@ function operationDraftFromRevision(plan) {
     interval: Number(config.interval_minutes ?? 2),
     source: config.source || 'search',
     keyword: config.keyword || '',
+    candidateFilters: normalizeCandidateFilters(config.candidate_filters),
     targetResumeCount: Number(config.target_resume_count ?? 3),
     maxScanCount: Number(config.max_scan_count ?? 20),
   }
@@ -1144,6 +1153,7 @@ function createExecutionSnapshot() {
     : {
         source: draft.source,
         keyword: draft.keyword.trim(),
+        candidate_filters: normalizeCandidateFilters(draft.candidateFilters),
         target_resume_count: Number(draft.targetResumeCount),
         max_scan_count: Number(draft.maxScanCount),
         core: requirements.core,
@@ -1283,7 +1293,7 @@ watch([coreText, bonusText], () => {
 }, { flush: 'sync' })
 
 watch(
-  [schemeKind, workflowChoice, interval, source, keyword, targetResumeCount, maxScanCount, selectedAccountId],
+  [schemeKind, workflowChoice, interval, source, keyword, candidateFilters, targetResumeCount, maxScanCount, selectedAccountId],
   () => {
     if (currentStep.value === 'standard' || currentStep.value === 'plan') ensureEditBase()
     markPlanDirty()
@@ -1364,7 +1374,6 @@ onUnmounted(() => {
             <strong>{{ step.label }}</strong>
             <small v-if="currentStep === step.key">进行中</small>
             <small v-else-if="completedSteps[step.key]">已完成</small>
-            <small v-else>{{ step.reachable ? '可查看' : '完成上一步后开放' }}</small>
           </button>
         </nav>
       </aside>
@@ -1373,9 +1382,6 @@ onUnmounted(() => {
         <header class="workbench-task-header">
           <div class="workbench-task-header__title">
             <h2 id="workbench-current-title" ref="stepHeading" tabindex="-1">{{ currentStepCopy.title }}</h2>
-            <span :class="['workbench-runtime', { 'is-ready': runtimeReady }]">
-              <i></i>{{ runtimeReady ? '自动化服务已就绪' : '自动化服务待检查' }}
-            </span>
           </div>
           <p>{{ currentStepCopy.description }}</p>
         </header>
@@ -1406,7 +1412,6 @@ onUnmounted(() => {
                   </option>
                 </select>
                 <small v-if="!context.jobs.length">暂无职位，请先到管理后台同步 BOSS 已发布职位。</small>
-                <small v-else>{{ selectedJob?.jd ? '已归档职位描述，可继续补充画像与要求。' : '职位已同步，可补充岗位依据。' }}</small>
               </label>
               <label>
                 <span>执行账号</span>
@@ -1416,8 +1421,7 @@ onUnmounted(() => {
                     {{ account.name }} · {{ account.login_status_label || accountReadinessMessage(account) }}
                   </option>
                 </select>
-                <small v-if="selectedAccount">{{ accountReadinessMessage(selectedAccount) }} · 与所选职位绑定</small>
-                <small v-else>没有可用账号时，请先在管理后台添加并登录。</small>
+                <small v-if="!accounts.length">暂无可用账号，请先在管理后台添加并登录。</small>
               </label>
             </div>
             <div v-if="!context.jobs.length || !accounts.length" class="workbench-empty-actions">
@@ -1426,7 +1430,6 @@ onUnmounted(() => {
               </router-link>
             </div>
             <footer class="workbench-step-actions workbench-step-actions--forward">
-              <span>确认职位与执行账号后，进入岗位依据和招聘要求。</span>
               <button
                 class="primary-button workbench-next"
                 data-test="complete-context-step"
@@ -1524,11 +1527,10 @@ onUnmounted(() => {
               </label>
             </div>
 
-            <footer class="workbench-step-actions">
+            <footer class="workbench-step-actions workbench-step-actions--split">
               <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="uploading || submitting" @click="previousStep">
                 上一步
               </button>
-              <span>文件可稍后补充；确认文字要求后进入执行方案。</span>
               <button
                 class="primary-button workbench-next"
                 data-test="complete-standard-step"
@@ -1604,6 +1606,7 @@ onUnmounted(() => {
                 <input v-model.trim="keyword" data-test="active-keyword" maxlength="120" placeholder="例如：Python 后端" />
                 <small>{{ source === 'search' ? '常规搜索必填' : '可选，用于缩小候选范围' }}</small>
               </label>
+              <CandidateFilterPanel v-model="candidateFilters" :disabled="submitting" />
               <label>
                 <span>目标简历数</span>
                 <input v-model.number="targetResumeCount" data-test="target-resume-count" type="number" min="1" max="100" />
@@ -1616,11 +1619,10 @@ onUnmounted(() => {
               </label>
             </div>
 
-            <footer class="workbench-step-actions">
+            <footer class="workbench-step-actions workbench-step-actions--split">
               <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="submitting" @click="previousStep">
                 上一步
               </button>
-              <span>下一步只进入检查页，不会创建任务或调用执行接口。</span>
               <button
                 class="primary-button workbench-next"
                 data-test="complete-plan-step"
@@ -1767,14 +1769,14 @@ onUnmounted(() => {
   --wb-stage-margin-inline: -34px;
   --wb-stage-margin-bottom: -42px;
   --wb-stage-gap: 16px;
-  --wb-content-max-width: 880px;
-  --wb-card-max-width: 880px;
-  --wb-card-min-height: 570px;
-  --wb-card-height: 570px;
-  --wb-sidebar-width: 230px;
+  --wb-content-max-width: 960px;
+  --wb-card-max-width: 960px;
+  --wb-card-min-height: 560px;
+  --wb-card-height: 560px;
+  --wb-sidebar-width: 210px;
   --wb-workspace-padding-block: 28px;
   --wb-workspace-padding-inline: 30px;
-  --wb-form-max-width: 520px;
+  --wb-form-max-width: 620px;
   --wb-topbar-height: 64px;
   --wb-radius-control: 9px;
   --wb-radius-panel: 15px;
@@ -1784,7 +1786,7 @@ onUnmounted(() => {
   --wb-radius-pill: 999px;
   --wb-border-width: 1px;
   --wb-focus-width: 2px;
-  --wb-control-min-height: 50px;
+  --wb-control-min-height: 52px;
   --wb-status-dot-size: 8px;
   --wb-step-number-size: 40px;
   --wb-step-min-height: 64px;
@@ -1821,11 +1823,11 @@ onUnmounted(() => {
   justify-items: center;
   align-content: start;
   gap: var(--wb-stage-gap);
-  width: calc(100% + var(--wb-stage-pad-inline) + var(--wb-stage-pad-inline));
+  width: 100%;
   min-width: 0;
   max-width: none;
   min-height: calc(100vh - var(--wb-topbar-height));
-  margin: var(--wb-stage-margin-top) var(--wb-stage-margin-inline) var(--wb-stage-margin-bottom);
+  margin: 0;
   padding: var(--wb-stage-pad-top) var(--wb-stage-pad-inline) var(--wb-stage-pad-bottom);
   overflow-x: clip;
   background: var(--wb-color-stage);
@@ -2209,6 +2211,14 @@ onUnmounted(() => {
 
 .workbench-step-actions--forward {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.workbench-step-actions--split {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workbench-step-actions--split .workbench-next {
+  justify-self: end;
 }
 
 .workbench-step-actions--previous-only {
@@ -2993,6 +3003,7 @@ onUnmounted(() => {
   .workbench-upload-queue,
   .workbench-step-actions,
   .workbench-step-actions--forward,
+  .workbench-step-actions--split,
   .workbench-step-actions--previous-only {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3387,6 +3398,14 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.workbench-step-actions--split {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workbench-step-actions--split .workbench-next {
+  justify-self: end;
+}
+
 .workbench-step-actions--previous-only {
   grid-template-columns: auto minmax(0, 1fr);
 }
@@ -3724,6 +3743,7 @@ onUnmounted(() => {
   .workbench-upload-queue,
   .workbench-step-actions,
   .workbench-step-actions--forward,
+  .workbench-step-actions--split,
   .workbench-step-actions--previous-only,
   .workbench-checks {
     grid-template-columns: minmax(0, 1fr);
@@ -3740,6 +3760,10 @@ onUnmounted(() => {
 
   .workbench-step-actions button {
     width: 100%;
+  }
+
+  .workbench-step-actions--split .workbench-next {
+    justify-self: stretch;
   }
 
   .workbench-workflow-choice,
@@ -3835,6 +3859,14 @@ onUnmounted(() => {
   border-color: var(--wb-color-primary);
   color: var(--wb-color-surface);
   background: var(--wb-color-primary);
+}
+
+.workbench-wizard__step:not(.is-current):not(.is-complete) > span {
+  grid-row: 1;
+}
+
+.workbench-wizard__step:not(.is-current):not(.is-complete) strong {
+  align-self: center;
 }
 
 .workbench-workspace {

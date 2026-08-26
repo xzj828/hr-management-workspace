@@ -38,8 +38,16 @@ const runActionBusy = ref(false)
 const runActionError = ref('')
 const attentionActionId = ref('')
 const attentionActionError = ref('')
-const candidateFilter = ref('all')
+const candidateFilters = reactive({
+  stage: 'all',
+  ai: 'all',
+  resume: 'all',
+  hr: 'all',
+  notification: 'all',
+})
 const selectedApplicationIds = ref([])
+const candidatePage = ref(1)
+const candidatePageSize = ref(10)
 const detailStructure = ref(null)
 const detailAssessment = ref(null)
 const detailAssessments = ref([])
@@ -183,11 +191,21 @@ function matchesLegacyCandidateFilter(row, filter) {
 }
 
 function matchesCandidateFilter(row) {
-  if (candidateFilter.value === 'all') return true
-  if (candidateFilter.value === 'unscored') return row.aiState !== 'scored' || !row.assessment
-  if (candidateFilter.value === 'hr_pending') return !row.hrDecision
-  if (candidateFilter.value === 'hr_pass' || candidateFilter.value === 'hr_fail') return row.hrDecision?.decision === candidateFilter.value.slice(3)
-  return row.assessment?.recommendation === candidateFilter.value
+  if (candidateFilters.stage !== 'all' && row.application?.stage !== candidateFilters.stage) return false
+  if (candidateFilters.ai !== 'all') {
+    if (candidateFilters.ai === 'unscored') {
+      if (row.aiState === 'scored' && row.assessment) return false
+    } else if (row.assessment?.recommendation !== candidateFilters.ai) return false
+  }
+  if (candidateFilters.resume !== 'all') {
+    const resumeState = !row.resume ? 'missing' : row.structure ? 'ready' : 'processing'
+    if (resumeState !== candidateFilters.resume) return false
+  }
+  if (candidateFilters.hr !== 'all') {
+    if (candidateFilters.hr === 'pending' ? Boolean(row.hrDecision) : row.hrDecision?.decision !== candidateFilters.hr) return false
+  }
+  if (candidateFilters.notification !== 'all' && (row.notification?.status || 'not_requested') !== candidateFilters.notification) return false
+  return true
 }
 
 const candidateResults = computed(() => screeningResults.value.flatMap((row) => {
@@ -198,23 +216,68 @@ const candidateResults = computed(() => screeningResults.value.flatMap((row) => 
   return matchesCandidateFilter(row) ? [row] : []
 }))
 
-const candidateFilterOptions = [
-  { value: 'all', label: '全部' },
-  { value: 'hr_pass', label: 'HR 已通过' },
-  { value: 'hr_fail', label: 'HR 未通过' },
-  { value: 'hr_pending', label: 'HR 待确认' },
-  { value: 'advance', label: 'AI 建议通过' },
-  { value: 'review', label: 'AI 建议复核' },
-  { value: 'hold', label: 'AI 建议未通过' },
+const candidatePageCount = computed(() => Math.max(1, Math.ceil(candidateResults.value.length / candidatePageSize.value)))
+const candidatePaginationItems = computed(() => {
+  const total = candidatePageCount.value
+  const current = candidatePage.value
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1)
+  if (current <= 4) return [1, 2, 3, 4, 5, 'ellipsis-end', total]
+  if (current >= total - 3) return [1, 'ellipsis-start', total - 4, total - 3, total - 2, total - 1, total]
+  return [1, 'ellipsis-start', current - 1, current, current + 1, 'ellipsis-end', total]
+})
+const displayedCandidateResults = computed(() => {
+  const start = (candidatePage.value - 1) * candidatePageSize.value
+  return candidateResults.value.slice(start, start + candidatePageSize.value)
+})
+
+const candidateStageOptions = computed(() => [
+  { value: 'all', label: '全部阶段' },
+  ...stageColumns.map((stage) => ({ value: stage.key, label: stage.label })),
+])
+const candidateAiOptions = [
+  { value: 'all', label: '全部建议' },
+  { value: 'advance', label: '建议通过' },
+  { value: 'review', label: '建议复核' },
+  { value: 'hold', label: '建议未通过' },
   { value: 'unscored', label: '未评分 / 处理中' },
 ]
+const candidateResumeOptions = [
+  { value: 'all', label: '全部状态' },
+  { value: 'ready', label: '已解析' },
+  { value: 'processing', label: '处理中' },
+  { value: 'missing', label: '暂无简历' },
+]
+const candidateHrOptions = [
+  { value: 'all', label: '全部结论' },
+  { value: 'pass', label: '已通过' },
+  { value: 'fail', label: '未通过' },
+  { value: 'pending', label: '待确认' },
+]
+const candidateNotificationOptions = [
+  { value: 'all', label: '全部状态' },
+  { value: 'not_requested', label: '未通知' },
+  { value: 'queued', label: '已排队' },
+  { value: 'running', label: '执行中' },
+  { value: 'waiting_human', label: '等待人工' },
+  { value: 'succeeded', label: '已发送' },
+  { value: 'failed', label: '失败' },
+]
+
+function clearCandidateFilters() {
+  Object.assign(candidateFilters, { stage: 'all', ai: 'all', resume: 'all', hr: 'all', notification: 'all' })
+}
+
+watch(
+  () => [candidateFilters.stage, candidateFilters.ai, candidateFilters.resume, candidateFilters.hr, candidateFilters.notification, candidatePageSize.value],
+  () => { candidatePage.value = 1 },
+)
 
 const selectedCandidateRows = computed(() => {
   const selected = new Set(selectedApplicationIds.value.map(String))
   return screeningResults.value.filter((row) => selected.has(String(row.application.id)))
 })
-const allVisibleSelected = computed(() => candidateResults.value.length > 0
-  && candidateResults.value.every((row) => selectedApplicationIds.value.includes(String(row.application.id))))
+const allVisibleSelected = computed(() => displayedCandidateResults.value.length > 0
+  && displayedCandidateResults.value.every((row) => selectedApplicationIds.value.includes(String(row.application.id))))
 const selectedDetailRow = computed(() => {
   const applicationId = String(route.query.application || '')
   if (!applicationId) return null
@@ -226,11 +289,32 @@ const selectedDetailRow = computed(() => {
 
 const activeRun = computed(() => jobRuns.value.find((run) => String(run.id) === runPanelId.value) || null)
 
-const stageProgress = computed(() => stageColumns.map((stage) => ({
-  ...stage,
-  count: screeningApplications.value.filter((application) => application.stage === stage.key).length,
-})))
-const maxStageCount = computed(() => Math.max(1, ...stageProgress.value.map((stage) => stage.count)))
+const stageProgress = computed(() => {
+  const total = screeningApplications.value.length
+  const groups = [
+    { key: 'new', label: '新候选人', stages: ['new'] },
+    { key: 'communicated', label: '已沟通', stages: ['to_screen', 'communicating'] },
+    { key: 'awaiting_interview', label: '待面试', stages: ['interviewing'] },
+    { key: 'interviewed', label: '已面试', stages: ['to_offer'] },
+    { key: 'hired', label: '已录用', stages: ['hired'] },
+    { key: 'closed', label: '已关闭', stages: ['rejected'] },
+  ]
+  return groups.map((stage, index) => {
+    const count = screeningApplications.value.filter((application) => stage.stages.includes(application.stage)).length
+    return {
+      ...stage,
+      count,
+      index,
+      percentage: total ? Math.round(count / total * 100) : 0,
+    }
+  })
+})
+const activePipelineCount = computed(() => screeningApplications.value.filter((application) => !['hired', 'rejected'].includes(application.stage)).length)
+const hiredCount = computed(() => screeningApplications.value.filter((application) => application.stage === 'hired').length)
+const hiringCompletion = computed(() => {
+  const target = Number(currentJob.value?.headcount || 0)
+  return target ? Math.min(100, Math.round(hiredCount.value / target * 100)) : 0
+})
 const openAttentionCount = computed(() => jobAttentions.value.filter((item) => item.status === 'open').length)
 const activeRunCount = computed(() => jobRuns.value.filter((item) => ['queued', 'running', 'waiting_human', 'paused'].includes(item.status)).length)
 const pulledResumeCount = computed(() => jobCampaigns.value.reduce((total, item) => total + Number(item.pulled_resume_count || 0), 0))
@@ -427,7 +511,7 @@ function toggleApplication(applicationId, checked) {
 
 function toggleVisibleCandidates(checked) {
   const next = new Set(selectedApplicationIds.value)
-  for (const row of candidateResults.value) {
+  for (const row of displayedCandidateResults.value) {
     const id = String(row.application.id)
     if (checked) next.add(id)
     else next.delete(id)
@@ -784,7 +868,7 @@ watch(
     requestSequence += 1
     detailSequence += 1
     statusFilter.value = 'all'
-    candidateFilter.value = 'all'
+    clearCandidateFilters()
     selectedApplicationIds.value = []
     decisionDrawerMode.value = ''
     operationNotice.value = null
@@ -809,7 +893,6 @@ watch(
   <div class="page-stack results-center">
     <header class="page-hero page-hero--compact results-hero">
       <div>
-        <span class="eyebrow">Recruitment Results</span>
         <h2>结果中心</h2>
         <p v-if="currentJob">{{ currentJob.title }} · 自动化结果、人工事项和候选人进度集中处理</p>
         <p v-else>选择职位后查看任务运行与业务结果</p>
@@ -881,40 +964,48 @@ watch(
             <button v-for="tab in tabs" :key="tab.key" type="button" role="tab" :aria-selected="activeView === tab.key" :class="{ active: activeView === tab.key }" :data-test="`results-tab-${tab.key}`" @click="activeView = tab.key">{{ tab.label }} <span>{{ tab.count }}</span></button>
           </nav>
 
-        <section v-if="activeView === 'attention'" class="results-panel" data-test="attention-view">
-          <header><div><span class="panel-kicker">HUMAN ATTENTION</span><h3>需要人工</h3><p>系统只提醒，不会替 HR 对候选人意图或风控结果做决定。</p></div><span>{{ filteredAttentions.length }} 项</span></header>
+        <section v-if="activeView === 'attention'" class="results-panel results-panel--attention" data-test="attention-view">
           <p v-if="resources.attentions.error" class="results-inline-error">人工事项加载失败：{{ resources.attentions.error }}</p>
           <p v-if="attentionActionError" class="results-inline-error" data-test="attention-action-error">{{ attentionActionError }}</p>
-          <div v-if="filteredAttentions.length" class="attention-list">
+          <div class="attention-list">
+            <div class="attention-list__head" aria-hidden="true">
+              <span>待处理事项</span><span>类别</span><span>关联账号 / 候选人</span><span>上下文摘要</span><span>创建时间</span><span>状态</span><span>操作</span>
+            </div>
             <article v-for="item in filteredAttentions" :key="item.id" :class="`is-${statusTone(item.status)}`">
-              <i></i><div><span>{{ item.attention_type_label || '人工事项' }} · {{ item.candidate_name || item.account_name || '当前岗位' }}</span><strong>{{ item.title }}</strong><p>{{ detailText(item.detail) }}</p><small>{{ formatDateTime(item.created_at) }} · {{ item.status_label || statusLabel(item.status) }}</small></div>
+              <strong>{{ item.title }}</strong>
+              <span class="attention-type">{{ item.attention_type_label || '人工事项' }}</span>
+              <span class="attention-object">{{ item.candidate_name || item.account_name || '当前岗位' }}</span>
+              <p>{{ detailText(item.detail) }}</p>
+              <time>{{ formatDateTime(item.created_at) }}</time>
+              <span :class="['candidate-status', `is-${statusTone(item.status)}`]">{{ item.status_label || statusLabel(item.status) }}</span>
               <div class="attention-actions">
                 <RouterLink :to="{ name: 'recruitment-candidates', query: { job: currentJobId, application: item.application || undefined } }">查看上下文 <AppIcon name="chevron-right" :size="11" /></RouterLink>
                 <button v-if="item.status === 'open'" type="button" :disabled="Boolean(attentionActionId)" :data-test="`resolve-attention-${item.id}`" @click="resolveAttention(item)">{{ attentionActionId === String(item.id) ? '处理中…' : '标记已处理' }}</button>
               </div>
             </article>
+            <div v-if="!filteredAttentions.length && resources.attentions.loading" class="results-table-empty">正在加载人工事项…</div>
+            <div v-else-if="!filteredAttentions.length" class="results-table-empty"><strong>当前范围没有需要人工处理的事项</strong><span>可切换状态查看已处理记录。</span></div>
+            <footer class="results-table-footer">共 {{ filteredAttentions.length }} 项</footer>
           </div>
-          <div v-else-if="resources.attentions.loading" class="results-local-loading">正在加载人工事项…</div>
-          <div v-else class="results-empty"><AppIcon name="check-circle" :size="24" /><strong>当前范围没有需要人工处理的事项</strong><span>可切换状态查看已处理记录，或前往任务结果查看自动化进度。</span></div>
         </section>
 
         <section v-else-if="activeView === 'tasks'" class="results-task-grid" data-test="tasks-view">
           <article class="results-subpanel">
-            <header><div><span class="panel-kicker">WORKFLOW RUNS</span><h3>自动化运行</h3><p>刷新后从服务端恢复，不依赖本页内存。</p></div><span>{{ filteredRuns.length }} 次</span></header>
+            <header><h3>自动化运行</h3><span>{{ filteredRuns.filter((run) => ['queued', 'running', 'waiting_human', 'paused'].includes(run.status)).length }} 个运行中</span></header>
             <p v-if="resources.runs.error" class="results-inline-error">任务运行加载失败：{{ resources.runs.error }}</p>
             <p v-if="runActionError" class="results-inline-error" data-test="run-action-error">{{ runActionError }}</p>
-            <div v-if="filteredRuns.length" class="run-list">
-              <article v-for="run in filteredRuns" :key="run.id">
-                <div class="run-list__top"><div><strong>{{ run.template_name || '自动化任务' }}</strong><small>#{{ String(run.id).slice(0, 8) }} · {{ run.mode === 'formal' ? '正式运行' : '试运行' }}</small></div><span :class="`is-${statusTone(run.status)}`">{{ statusLabel(run.status) }}</span></div>
-                <div class="results-progress"><i :style="{ width: `${runProgress(run)}%` }"></i></div>
+            <div class="run-list results-data-table">
+              <div class="results-data-table__head"><span>运行名称</span><span>状态</span><span>步骤</span><span>目标候选数</span><span>进度</span><span>开始时间</span><span>操作</span></div>
+              <template v-if="filteredRuns.length">
+              <article v-for="run in filteredRuns" :key="run.id" class="results-data-table__row">
+                <div class="results-table-name"><strong>{{ run.template_name || '自动化任务' }}</strong><small>#{{ String(run.id).slice(0, 8) }}</small></div>
+                <span :class="['candidate-status', `is-${statusTone(run.status)}`]">{{ statusLabel(run.status) }}</span>
+                <span>{{ (run.node_runs || []).filter((node) => node.status === 'succeeded').length }}/{{ (run.node_runs || []).length }}</span>
+                <span>{{ run.target_candidate_count ?? run.target_count ?? '—' }}</span>
+                <div class="results-table-progress"><div class="results-progress"><i :style="{ width: `${runProgress(run)}%` }"></i></div><small>{{ runProgress(run) }}%</small></div>
+                <time>{{ formatDateTime(run.started_at || run.created_at || run.updated_at) }}</time>
+                <span class="run-list__actions"><button type="button" :aria-expanded="expandedRunId === String(run.id)" @click="toggleRunDetail(run.id)">查看运行详情</button><button type="button" :data-test="`manage-run-${run.id}`" @click="openRunPanel(run)">处理运行</button></span>
                 <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
-                <footer>
-                  <small>{{ formatDateTime(run.updated_at) }} · {{ (run.node_runs || []).length }} 个步骤</small>
-                  <span class="run-list__actions">
-                    <button type="button" :aria-expanded="expandedRunId === String(run.id)" @click="toggleRunDetail(run.id)">{{ expandedRunId === String(run.id) ? '收起运行详情' : '查看运行详情' }}</button>
-                    <button type="button" :data-test="`manage-run-${run.id}`" @click="openRunPanel(run)">处理运行</button>
-                  </span>
-                </footer>
                 <section v-if="expandedRunId === String(run.id)" class="run-detail" :aria-label="`${run.template_name || '自动化任务'}运行详情`">
                   <div>
                     <span>节点进度</span>
@@ -939,34 +1030,46 @@ watch(
                   </div>
                 </section>
               </article>
+              </template>
+              <div v-else-if="resources.runs.loading" class="results-table-empty">正在恢复任务运行…</div>
+              <div v-else class="results-table-empty"><strong>当前筛选下没有任务运行</strong><span>返回作业台发起任务后，运行记录会出现在这里。</span></div>
+              <footer class="results-table-footer">共 {{ filteredRuns.length }} 项</footer>
             </div>
-            <div v-else-if="resources.runs.loading" class="results-local-loading">正在恢复任务运行…</div>
-            <div v-else class="results-empty results-empty--compact"><AppIcon name="workflow" :size="22" /><strong>当前筛选下没有任务运行</strong><span>返回作业台发起任务后，运行记录会出现在这里。</span></div>
           </article>
 
           <article class="results-subpanel">
-            <header><div><span class="panel-kicker">SEARCH OUTCOMES</span><h3>主动寻访结果</h3><p>按目标简历数追踪扫描和拉取进度。</p></div><span>{{ filteredCampaigns.length }} 个方案</span></header>
+            <header><h3>主动寻访结果</h3><span>{{ filteredCampaigns.filter((campaign) => ['queued', 'running', 'waiting_human', 'paused'].includes(campaign.status)).length }} 个运行中，{{ filteredCampaigns.filter((campaign) => campaign.status === 'succeeded').length }} 个已完成</span></header>
             <p v-if="resources.campaigns.error" class="results-inline-error">主动寻访加载失败：{{ resources.campaigns.error }}</p>
-            <div v-if="filteredCampaigns.length" class="campaign-list">
-              <article v-for="campaign in filteredCampaigns" :key="campaign.id">
-                <header><div><strong>{{ campaign.name }}</strong><small>{{ campaign.source === 'recommend' ? '推荐人才' : campaign.source === 'deep_search' ? '深度搜索' : '关键词搜索' }}</small></div><span :class="`is-${statusTone(campaign.status)}`">{{ statusLabel(campaign.status) }}</span></header>
-                <div class="campaign-numbers"><span><b>{{ campaign.pulled_resume_count }}</b>/{{ campaign.target_resume_count }} 份简历</span><small>已扫描 {{ campaign.scanned_count }}/{{ campaign.max_scan_count }} 人</small></div>
-                <div class="results-progress"><i :style="{ width: `${campaignProgress(campaign)}%` }"></i></div>
-                <p v-if="campaign.error_message || campaign.stop_reason" :class="{ 'run-error': campaign.error_message }">{{ campaign.error_message || `停止原因：${campaign.stop_reason}` }}</p>
-              </article>
+            <div class="campaign-list results-data-table">
+              <div class="results-data-table__head results-data-table__head--campaign"><span>运行名称</span><span>状态</span><span>已获取 / 目标</span><span>回复率</span><span>开始时间</span><span>操作</span></div>
+              <template v-if="filteredCampaigns.length">
+                <article v-for="campaign in filteredCampaigns" :key="campaign.id" class="results-data-table__row results-data-table__row--campaign">
+                  <div class="results-table-name"><strong>{{ campaign.name }}</strong><small>{{ campaign.source === 'recommend' ? '推荐人才' : campaign.source === 'deep_search' ? '深度搜索' : '关键词搜索' }}</small></div>
+                  <span :class="['candidate-status', `is-${statusTone(campaign.status)}`]">{{ statusLabel(campaign.status) }}</span>
+                  <span>{{ campaign.pulled_resume_count }}/{{ campaign.target_resume_count }}</span>
+                  <div class="results-table-progress"><div class="results-progress"><i :style="{ width: `${campaignProgress(campaign)}%` }"></i></div><small>{{ campaignProgress(campaign) }}%</small></div>
+                  <time>{{ formatDateTime(campaign.started_at || campaign.created_at || campaign.updated_at) }}</time>
+                  <RouterLink :to="{ name: 'recruitment-workbench', query: { job: currentJobId, campaign: campaign.id } }">查看运行并处理</RouterLink>
+                  <p v-if="campaign.error_message || campaign.stop_reason" :class="{ 'run-error': campaign.error_message }">{{ campaign.error_message || `停止原因：${campaign.stop_reason}` }}</p>
+                </article>
+              </template>
+              <div v-else-if="resources.campaigns.loading" class="results-table-empty">正在加载主动寻访结果…</div>
+              <div v-else class="results-table-empty"><strong>当前筛选下没有主动寻访</strong><span>被动消息方案仍可只产生任务运行和人工事项。</span></div>
+              <footer class="results-table-footer">共 {{ filteredCampaigns.length }} 项</footer>
             </div>
-            <div v-else-if="resources.campaigns.loading" class="results-local-loading">正在加载主动寻访结果…</div>
-            <div v-else class="results-empty results-empty--compact"><AppIcon name="search" :size="22" /><strong>当前筛选下没有主动寻访</strong><span>被动消息方案仍可只产生任务运行和人工事项。</span></div>
           </article>
         </section>
 
-        <section v-else-if="activeView === 'candidates'" class="results-panel" data-test="candidates-view">
-          <header><div><span class="panel-kicker">CANDIDATE RANKING</span><h3>候选排名与初筛</h3><p>当前排名由服务端按当前简历与当前岗位标准计算；AI 建议、HR 结论、招聘阶段和通知状态彼此独立。</p></div><span>{{ screeningMeta.standard ? `岗位标准 V${screeningMeta.standard.version}` : '尚无已发布岗位标准' }}</span></header>
+        <section v-else-if="activeView === 'candidates'" class="results-panel results-panel--candidates" data-test="candidates-view">
           <p v-if="resources.screening.error" class="results-inline-error">候选排名加载失败：{{ resources.screening.error }}</p>
 
           <div class="candidate-filter-bar" aria-label="候选人筛选">
-            <button v-for="filter in candidateFilterOptions" :key="filter.value" type="button" :class="{ active: candidateFilter === filter.value }" :aria-pressed="candidateFilter === filter.value" :data-test="`candidate-filter-${filter.value}`" @click="candidateFilter = filter.value">{{ filter.label }}</button>
-            <span>{{ candidateResults.length }} / {{ screeningResults.length }} 人</span>
+            <label><span>招聘阶段</span><select v-model="candidateFilters.stage" data-test="candidate-filter-stage"><option v-for="option in candidateStageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label><span>AI 初筛建议</span><select v-model="candidateFilters.ai" data-test="candidate-filter-ai"><option v-for="option in candidateAiOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label><span>简历状态</span><select v-model="candidateFilters.resume" data-test="candidate-filter-resume"><option v-for="option in candidateResumeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label><span>HR 结论</span><select v-model="candidateFilters.hr" data-test="candidate-filter-hr"><option v-for="option in candidateHrOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label><span>通知状态</span><select v-model="candidateFilters.notification" data-test="candidate-filter-notification"><option v-for="option in candidateNotificationOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <button type="button" data-test="candidate-filter-clear" @click="clearCandidateFilters">清除筛选</button>
           </div>
 
           <section v-if="hasNotificationActivity" class="notification-summary" aria-label="未通过通知执行汇总" data-test="notification-summary">
@@ -987,26 +1090,26 @@ watch(
               <caption class="sr-only">{{ currentJob.title }}候选排名，AI 建议、HR 结论、招聘阶段与通知状态分列展示</caption>
               <thead>
                 <tr>
-                  <th scope="col" class="candidate-select-cell"><label><span class="sr-only">选择当前筛选的全部候选人</span><input type="checkbox" :checked="allVisibleSelected" :aria-label="`选择当前筛选的 ${candidateResults.length} 位候选人`" data-test="select-visible-candidates" @change="toggleVisibleCandidates($event.target.checked)" /></label></th>
+                  <th scope="col" class="candidate-select-cell"><label><span class="sr-only">选择当前页的全部候选人</span><input type="checkbox" :checked="allVisibleSelected" :aria-label="`选择当前页的 ${displayedCandidateResults.length} 位候选人`" data-test="select-visible-candidates" @change="toggleVisibleCandidates($event.target.checked)" /></label></th>
                   <th scope="col" aria-sort="descending">排名</th>
                   <th scope="col">候选人</th>
                   <th scope="col">招聘阶段</th>
                   <th scope="col">AI 初筛建议</th>
-                  <th scope="col">得分 / 置信度</th>
+                  <th scope="col">得分</th>
                   <th scope="col">简历状态</th>
                   <th scope="col">HR 结论</th>
                   <th scope="col">通知状态</th>
-                  <th scope="col"><span class="sr-only">操作</span></th>
+                  <th scope="col">操作</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in candidateResults" :key="row.application.id" :data-application-id="row.application.id" :class="{ 'is-selected': isApplicationSelected(row.application.id) }">
+                <tr v-for="row in displayedCandidateResults" :key="row.application.id" :data-application-id="row.application.id" :class="{ 'is-selected': isApplicationSelected(row.application.id) }">
                   <td class="candidate-select-cell"><label><span class="sr-only">选择候选人 {{ row.candidate?.name || '未命名候选人' }}</span><input type="checkbox" :checked="isApplicationSelected(row.application.id)" :aria-label="`选择候选人 ${row.candidate?.name || '未命名候选人'}`" @change="toggleApplication(row.application.id, $event.target.checked)" /></label></td>
-                  <td data-label="排名"><strong class="candidate-rank">{{ row.rank ?? '—' }}</strong></td>
+                  <td data-label="排名"><strong :class="['candidate-rank', row.rank && row.rank <= 3 ? `is-top-${row.rank}` : '']"><AppIcon v-if="row.rank && row.rank <= 3" name="crown" :size="13" />{{ row.rank ?? '—' }}</strong></td>
                   <td data-label="候选人"><button class="candidate-name-button" type="button" :disabled="!row.resume" :aria-label="row.resume ? `查看 ${row.candidate?.name || '候选人'} 的简历与分析报告` : `${row.candidate?.name || '候选人'} 暂无简历`" @click="openCandidateDetail(row, $event)"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong><small>{{ row.candidate?.current_title || '当前岗位未填写' }} · {{ row.candidate?.current_city || '城市未填写' }}</small></button></td>
                   <td data-label="招聘阶段"><span class="candidate-status is-neutral">{{ row.application.stage_label || statusLabel(row.application.stage) }}</span></td>
                   <td data-label="AI 初筛建议"><span :class="['candidate-status', `is-${aiRecommendationTone(row)}`]">{{ aiRecommendationLabel(row) }}</span></td>
-                  <td data-label="得分 / 置信度"><div class="candidate-score" :class="{ 'has-score': row.assessment }"><strong>{{ scoreText(row.assessment) }}</strong><small v-if="row.assessment">置信度 {{ Math.round(Number(row.assessment.confidence || 0) * 100) }}%</small><small v-else>不作为 0 分</small></div></td>
+                  <td data-label="得分"><div class="candidate-score" :class="{ 'has-score': row.assessment }" :title="row.assessment ? `置信度 ${Math.round(Number(row.assessment.confidence || 0) * 100)}%` : '尚未评分，不作为 0 分'"><strong>{{ scoreText(row.assessment) }}</strong><small class="sr-only">{{ row.assessment ? `置信度 ${Math.round(Number(row.assessment.confidence || 0) * 100)}%` : '不作为 0 分' }}</small></div></td>
                   <td data-label="简历状态"><div class="candidate-resume"><strong>{{ row.resume?.original_name || '暂无当前简历' }}</strong><small>{{ resumeStatusLabel(row) }}</small></div></td>
                   <td data-label="HR 结论"><span :class="['candidate-status', row.hrDecision?.decision === 'pass' ? 'is-success' : row.hrDecision?.decision === 'fail' ? 'is-danger' : 'is-neutral']" :title="row.hrDecision?.reason || ''">{{ hrDecisionLabel(row.hrDecision) }}</span></td>
                   <td data-label="通知状态"><div class="candidate-notification"><span :class="['candidate-status', `is-${notificationTone(row.notification)}`]">{{ notificationLabel(row.notification) }}</span><small v-if="row.notification?.error_message">{{ row.notification.error_message }}</small></div></td>
@@ -1014,10 +1117,15 @@ watch(
                 </tr>
               </tbody>
             </table>
+            <footer class="candidate-table-footer">
+              <span>共 {{ candidateResults.length }} 项</span>
+              <div><button type="button" :disabled="candidatePage === 1" aria-label="上一页" @click="candidatePage -= 1">‹</button><template v-for="item in candidatePaginationItems" :key="item"><span v-if="String(item).startsWith('ellipsis')">…</span><button v-else type="button" :class="{ active: candidatePage === item }" @click="candidatePage = item">{{ item }}</button></template><button type="button" :disabled="candidatePage === candidatePageCount" aria-label="下一页" @click="candidatePage += 1">›</button></div>
+              <label><span class="sr-only">每页显示数量</span><select v-model.number="candidatePageSize"><option :value="10">10 条/页</option><option :value="20">20 条/页</option><option :value="50">50 条/页</option></select></label>
+            </footer>
           </div>
           <div v-else-if="resources.screening.loading" class="results-local-loading">正在加载候选排名…</div>
           <div v-else-if="resources.screening.error" class="results-empty"><AppIcon name="alert-circle" :size="25" /><strong>候选排名暂时无法加载</strong><span>其他任务结果仍可查看；重试不会使用旧岗位数据覆盖当前页面。</span><button class="secondary-button" type="button" @click="loadResults()">重试候选排名</button></div>
-          <div v-else-if="screeningResults.length" class="results-empty"><AppIcon name="filter" :size="25" /><strong>当前筛选下没有候选人</strong><span>可切换到“全部”查看完整排名；筛选不会清除已选择的人。</span><button class="secondary-button" type="button" @click="candidateFilter = 'all'">查看全部</button></div>
+          <div v-else-if="screeningResults.length" class="results-empty"><AppIcon name="filter" :size="25" /><strong>当前筛选下没有候选人</strong><span>可清除筛选查看完整排名；筛选不会清除已选择的人。</span><button class="secondary-button" type="button" @click="clearCandidateFilters">查看全部</button></div>
           <div v-else class="results-empty"><AppIcon name="users" :size="25" /><strong>该岗位还没有候选人结果</strong><span>返回作业台执行寻访，或在候选人页面导入已确认的人选。</span><RouterLink class="primary-button" to="/recruitment/workbench">返回招聘作业台</RouterLink></div>
 
           <div v-if="selectedCandidateRows.length" class="candidate-batch-bar" role="region" aria-label="候选人批量操作" data-test="candidate-batch-bar">
@@ -1027,12 +1135,27 @@ watch(
           </div>
         </section>
 
-        <section v-else class="results-panel" data-test="pipeline-view">
-          <header><div><span class="panel-kicker">HIRING PROGRESS</span><h3>招聘进度</h3><p>{{ screeningResults.length }} 位候选人 · 招聘目标 {{ currentJob.headcount || '未设置' }} 人</p></div><RouterLink :to="{ name: 'recruitment-pipeline', query: { job: currentJobId } }">进入招聘流程</RouterLink></header>
+        <section v-else class="results-panel results-panel--pipeline" data-test="pipeline-view">
           <p v-if="resources.screening.error" class="results-inline-error">招聘进度加载失败：{{ resources.screening.error }}</p>
-          <div v-if="screeningResults.length" class="stage-progress-list">
-            <article v-for="stage in stageProgress" :key="stage.key"><span>{{ stage.label }}</span><div><i :style="{ width: `${stage.count / maxStageCount * 100}%` }"></i></div><strong>{{ stage.count }}</strong></article>
-          </div>
+          <template v-if="screeningResults.length">
+            <h3 class="pipeline-section-title">招聘阶段分布</h3>
+            <div class="stage-progress-list" aria-label="候选人阶段分布">
+              <article v-for="stage in stageProgress" :key="stage.key" :class="`stage-tone-${stage.index % 5}`">
+                <span>{{ stage.label }}</span>
+                <strong>{{ stage.count }}</strong>
+                <div><i :style="{ width: `${stage.percentage}%` }"></i></div>
+                <small>{{ stage.percentage }}%</small>
+              </article>
+            </div>
+            <h3 class="pipeline-section-title pipeline-section-title--summary">招聘目标概览</h3>
+            <div class="pipeline-summary" aria-label="招聘目标概览">
+              <article><span>岗位招聘目标</span><strong>{{ currentJob.headcount || '—' }}<small v-if="currentJob.headcount"> 人</small></strong></article>
+              <article><span>已录用</span><strong>{{ hiredCount }}<small> 人</small></strong></article>
+              <article><span>在招中</span><strong>{{ activePipelineCount }}<small> 人</small></strong></article>
+              <article class="pipeline-summary__completion"><span>完成进度</span><strong>{{ currentJob.headcount ? `${hiringCompletion}%` : '未设置' }}</strong><div><i :style="{ width: `${hiringCompletion}%` }"></i></div></article>
+              <RouterLink class="pipeline-entry" :to="{ name: 'recruitment-pipeline', query: { job: currentJobId } }">进入招聘流程</RouterLink>
+            </div>
+          </template>
           <div v-else-if="resources.screening.loading" class="results-local-loading">正在加载招聘进度…</div>
           <div v-else-if="resources.screening.error" class="results-empty"><AppIcon name="alert-circle" :size="25" /><strong>招聘进度暂时无法加载</strong><span>候选排名恢复后，阶段统计会同步更新。</span></div>
           <div v-else class="results-empty"><AppIcon name="workflow" :size="25" /><strong>还没有可展示的招聘进度</strong><span>候选人进入当前岗位后，系统会按阶段汇总在这里。</span></div>
@@ -1093,22 +1216,27 @@ watch(
   --results-color-line-soft: var(--results-color-line);
   --results-color-surface: #ffffff;
   --results-color-canvas: #f3f6f8;
-  --results-color-surface-soft: var(--results-color-canvas);
-  --results-color-surface-muted: var(--results-color-canvas);
+  --results-color-surface-soft: #f8faf9;
+  --results-color-surface-muted: #f1f5f9;
   --results-color-brand: #0f9f8f;
   --results-color-brand-dark: #087f73;
-  --results-color-brand-soft: var(--results-color-canvas);
+  --results-color-brand-soft: #eaf8f6;
   --results-color-brand-control: var(--results-color-surface);
-  --results-color-brand-line: var(--results-color-line);
+  --results-color-brand-line: #9bd3cc;
   --results-color-warning: #d97706;
-  --results-color-warning-text: var(--results-color-warning);
-  --results-color-warning-soft: var(--results-color-canvas);
-  --results-color-warning-line: var(--results-color-warning);
+  --results-color-warning-text: #9a5b08;
+  --results-color-warning-soft: #fff7e3;
+  --results-color-warning-line: #f1dfb1;
   --results-color-danger: #dc4a4a;
-  --results-color-danger-text: var(--results-color-danger);
-  --results-color-danger-soft: var(--results-color-canvas);
-  --results-color-active: var(--results-color-brand-dark);
-  --results-color-active-soft: var(--results-color-canvas);
+  --results-color-danger-text: #b42332;
+  --results-color-danger-soft: #fff0f2;
+  --results-color-active: #155e75;
+  --results-color-active-soft: #ecf8fc;
+  --results-color-info: #6f91b5;
+  --results-color-info-soft: #edf4fb;
+  --results-color-sage: #739b7a;
+  --results-color-sage-soft: #edf5ed;
+  --results-color-stage-muted: #94a3b8;
   --results-space-1: 4px;
   --results-space-2: 8px;
   --results-space-3: 12px;
@@ -1122,12 +1250,15 @@ watch(
   --results-border-width: 1px;
   --results-active-border-width: 2px;
   --results-control-height: 38px;
+  --results-compact-control-height: 34px;
+  --results-touch-target: 44px;
+  --results-row-min-height: 64px;
   --results-font-meta: 10px;
   --results-font-detail: 11px;
   --results-font-control: 12px;
   --results-font-body: 13px;
   --results-font-title: 15px;
-  --results-font-metric: 29px;
+  --results-font-metric: 26px;
   --results-font-campaign-metric: 20px;
   --results-weight-regular: 400;
   --results-weight-medium: 600;
@@ -1152,8 +1283,10 @@ watch(
   --results-action-column: 24px;
   --results-stage-label-width: 90px;
   --results-stage-count-width: 30px;
-  --results-progress-height: 5px;
-  --results-stage-progress-height: 8px;
+  --results-stage-card-min: 130px;
+  --results-progress-height: 9px;
+  --results-stage-progress-height: 11px;
+  --results-attention-columns: minmax(150px, 1.1fr) 90px minmax(130px, .9fr) minmax(210px, 1.45fr) 105px 72px 164px;
   --results-status-marker-width: 4px;
   --results-node-marker-size: 6px;
   --results-skeleton-height: 76px;
@@ -1250,8 +1383,8 @@ watch(
 .results-context {
   display: grid;
   grid-template-columns: minmax(var(--results-filter-job-min), 1.2fr) minmax(var(--results-filter-run-min), 1fr) minmax(var(--results-filter-status-min), .65fr);
-  gap: var(--results-space-4);
-  padding: var(--results-space-4) var(--results-space-5);
+  gap: var(--results-space-3);
+  padding: var(--results-space-3) var(--results-space-4);
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
 }
 
@@ -1271,8 +1404,7 @@ watch(
 }
 
 .results-context small {
-  color: var(--results-color-muted);
-  font-size: var(--results-font-detail);
+  display: none;
 }
 
 .results-context select {
@@ -1339,12 +1471,11 @@ watch(
   align-content: start;
   gap: var(--results-space-1);
   min-width: 0;
-  padding: var(--results-space-4) var(--results-space-5);
+  padding: var(--results-space-3) var(--results-space-4);
   border-left: var(--results-border-width) solid var(--results-color-line-soft);
 }
 
 .results-kpis article:first-child {
-  background: var(--results-color-brand-soft);
   border-left: 0;
 }
 
@@ -1437,18 +1568,18 @@ watch(
 .results-tabs {
   display: flex;
   min-width: 0;
-  padding: 0 var(--results-space-5);
+  padding: 0 var(--results-space-4);
   border-bottom: var(--results-border-width) solid var(--results-color-line);
 }
 
 .results-tabs button {
   position: relative;
   display: flex;
-  flex: 1;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   gap: var(--results-space-2);
-  min-width: 0;
+  min-width: 145px;
   padding: var(--results-space-3) var(--results-space-4);
   color: var(--results-color-muted);
   background: transparent;
@@ -1515,13 +1646,13 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: var(--results-space-4);
-  padding: var(--results-space-4) var(--results-space-5);
+  padding: var(--results-space-4);
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
 }
 
 .results-panel > header h3,
 .results-subpanel > header h3 {
-  margin: var(--results-space-1) 0;
+  margin: 0 0 var(--results-space-1);
   color: var(--results-color-ink);
   font-size: var(--results-font-title);
 }
@@ -1573,13 +1704,26 @@ watch(
   display: grid;
 }
 
+.attention-list__head,
 .attention-list > article {
   display: grid;
-  grid-template-columns: var(--results-status-marker-width) minmax(0, 1fr) auto;
+  grid-template-columns: var(--results-attention-columns);
   gap: var(--results-space-3);
   align-items: center;
   min-width: 0;
-  padding: var(--results-space-4) var(--results-space-5);
+  padding: var(--results-space-3) var(--results-space-4);
+}
+
+.attention-list__head {
+  color: var(--results-color-muted);
+  background: var(--results-color-surface-soft);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-heavy);
+}
+
+.attention-list > article {
+  min-height: var(--results-row-min-height);
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
 }
 
@@ -1590,52 +1734,41 @@ watch(
   border-bottom: 0;
 }
 
-.attention-list i {
-  align-self: stretch;
-  background: var(--results-color-faint);
-  border-radius: var(--results-radius-status);
-}
-
-.attention-list .is-warning i {
-  background: var(--results-color-warning);
-}
-
-.attention-list .is-danger i {
-  background: var(--results-color-danger);
-}
-
-.attention-list .is-success i {
-  background: var(--results-color-brand);
-}
-
-.attention-list article > div {
-  display: grid;
-  gap: var(--results-space-1);
-  min-width: 0;
-}
-
-.attention-list span,
-.attention-list small {
+.attention-type,
+.attention-object,
+.attention-list time {
+  overflow: hidden;
   color: var(--results-color-muted);
   font-size: var(--results-font-detail);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.attention-list strong {
+.attention-list article > strong {
+  overflow: hidden;
   color: var(--results-color-ink);
-  font-size: var(--results-font-body);
+  font-size: var(--results-font-control);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.attention-list p {
+.attention-list article > p {
+  display: -webkit-box;
+  overflow: hidden;
   margin: 0;
   color: var(--results-color-copy);
-  font-size: var(--results-font-control);
+  font-size: var(--results-font-detail);
   line-height: var(--results-leading-body);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .attention-actions {
-  display: grid;
-  justify-items: end;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: var(--results-space-2);
+  min-width: 0;
 }
 
 .attention-list a,
@@ -1651,13 +1784,16 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: var(--results-space-1);
+  white-space: nowrap;
 }
 
 .attention-actions button {
-  padding: var(--results-space-2) var(--results-space-3);
-  background: var(--results-color-brand-control);
-  border: var(--results-border-width) solid var(--results-color-brand-line);
-  border-radius: var(--results-radius-control);
+  min-height: 24px;
+  padding: 0;
+  color: var(--results-color-brand-dark);
+  background: transparent;
+  border: 0;
+  white-space: nowrap;
 }
 
 .attention-actions button:disabled,
@@ -1669,7 +1805,7 @@ watch(
   display: grid;
   justify-items: center;
   gap: var(--results-space-2);
-  padding: var(--results-space-7) var(--results-space-5);
+  padding: var(--results-space-6) var(--results-space-5);
   color: var(--results-color-faint);
   text-align: center;
 }
@@ -1905,23 +2041,28 @@ watch(
 
 .stage-progress-list {
   display: grid;
-  gap: var(--results-space-3);
-  padding: var(--results-space-5);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 24px;
+  padding: 14px var(--results-space-5) 44px;
 }
 
 .stage-progress-list article {
   display: grid;
-  grid-template-columns: var(--results-stage-label-width) minmax(0, 1fr) var(--results-stage-count-width);
-  align-items: center;
-  gap: var(--results-space-3);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 7px 8px;
+  min-width: 0;
 }
 
 .stage-progress-list span {
+  grid-column: 1 / -1;
   color: var(--results-color-copy);
   font-size: var(--results-font-control);
+  font-weight: var(--results-weight-bold);
 }
 
 .stage-progress-list div {
+  grid-column: 1 / -1;
   height: var(--results-stage-progress-height);
   overflow: hidden;
   background: var(--results-color-line-soft);
@@ -1938,8 +2079,97 @@ watch(
 
 .stage-progress-list strong {
   color: var(--results-color-ink);
-  font-size: var(--results-font-control);
+  font-size: var(--results-font-campaign-metric);
+  text-align: left;
+}
+
+.stage-progress-list small {
+  grid-column: 2;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-meta);
   text-align: right;
+}
+
+.stage-progress-list .stage-tone-1 i { background: var(--results-color-info); }
+.stage-progress-list .stage-tone-2 i { background: var(--results-color-sage); }
+.stage-progress-list .stage-tone-3 i { background: var(--results-color-warning); }
+.stage-progress-list .stage-tone-4 i { background: var(--results-color-stage-muted); }
+.stage-progress-list .stage-tone-5 i { background: #cbd5df; }
+
+.pipeline-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, .72fr)) minmax(220px, 1.35fr) minmax(170px, 1fr);
+  align-items: center;
+  gap: 24px;
+  padding: 4px var(--results-space-5) 22px;
+}
+
+.pipeline-summary article {
+  display: grid;
+  align-content: center;
+  gap: var(--results-space-1);
+  min-width: 0;
+}
+
+.pipeline-summary span {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+}
+
+.pipeline-summary strong {
+  color: var(--results-color-ink);
+  font-size: var(--results-font-campaign-metric);
+  font-variant-numeric: tabular-nums;
+}
+
+.pipeline-summary strong small {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-medium);
+}
+
+.pipeline-summary__completion {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.pipeline-summary__completion > div {
+  grid-column: 1 / -1;
+  height: var(--results-progress-height);
+  overflow: hidden;
+  background: var(--results-color-line-soft);
+  border-radius: var(--results-radius-status);
+}
+
+.pipeline-summary__completion > div i {
+  display: block;
+  height: 100%;
+  background: var(--results-color-brand);
+  border-radius: inherit;
+}
+
+.pipeline-section-title {
+  margin: 0;
+  padding: 18px var(--results-space-5) 0;
+  color: var(--results-color-ink);
+  font-size: var(--results-font-control);
+}
+
+.pipeline-section-title--summary {
+  padding-top: 17px;
+  border-top: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.pipeline-entry {
+  justify-self: end;
+  min-width: 142px;
+  padding: 10px 18px;
+  color: #fff;
+  background: var(--results-color-brand);
+  border-radius: 5px;
+  font-size: var(--results-font-control);
+  font-weight: var(--results-weight-heavy);
+  text-align: center;
+  text-decoration: none;
 }
 
 .run-detail {
@@ -2052,7 +2282,7 @@ watch(
 
 .results-operation-notice.is-success {
   color: var(--results-color-brand-dark);
-  background: #eefaf8;
+  background: var(--results-color-brand-soft);
 }
 
 .results-operation-notice > span {
@@ -2071,36 +2301,44 @@ watch(
 .candidate-filter-bar {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
   overflow-x: auto;
-  padding: 12px var(--results-space-5);
+  padding: 13px var(--results-space-5);
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
   scrollbar-width: thin;
 }
 
+.candidate-filter-bar label {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  color: var(--results-color-copy);
+  font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-medium);
+  white-space: nowrap;
+}
+
+.candidate-filter-bar select {
+  min-width: 80px;
+  height: 31px;
+  padding: 0 26px 0 9px;
+  border: var(--results-border-width) solid var(--results-color-line);
+  border-radius: 5px;
+  color: var(--results-color-copy);
+  background: var(--results-color-surface-soft);
+  font: inherit;
+}
+
 .candidate-filter-bar button {
   flex: 0 0 auto;
-  min-height: 34px;
-  padding: 0 11px;
+  min-height: 31px;
+  padding: 0 13px;
   border: 1px solid var(--results-color-line);
-  border-radius: 18px;
-  color: var(--results-color-copy);
+  border-radius: 5px;
+  color: var(--results-color-brand-dark);
   background: var(--results-color-surface);
   font-size: var(--results-font-detail);
-}
-
-.candidate-filter-bar button.active {
-  border-color: #9bd3cc;
-  color: var(--results-color-brand-dark);
-  background: #eefaf8;
-  font-weight: var(--results-weight-heavy);
-}
-
-.candidate-filter-bar > span {
-  margin-left: auto;
-  color: var(--results-color-muted);
-  font-size: var(--results-font-detail);
-  white-space: nowrap;
 }
 
 .notification-summary {
@@ -2109,14 +2347,14 @@ watch(
   gap: 8px;
   flex-wrap: wrap;
   padding: 11px var(--results-space-5);
-  border-bottom: var(--results-border-width) solid #f1dfb1;
-  color: #7c4a09;
-  background: #fffbef;
+  border-bottom: var(--results-border-width) solid var(--results-color-warning-line);
+  color: var(--results-color-warning-text);
+  background: var(--results-color-warning-soft);
   font-size: var(--results-font-detail);
 }
 
 .notification-summary strong {
-  color: #5f3908;
+  color: var(--results-color-warning-text);
 }
 
 .notification-summary span {
@@ -2127,7 +2365,7 @@ watch(
 
 .notification-summary small {
   flex: 1 1 260px;
-  color: #8b642f;
+  color: var(--results-color-warning-text);
   text-align: right;
 }
 
@@ -2135,9 +2373,71 @@ watch(
   overflow-x: auto;
 }
 
+.candidate-table-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 760px;
+  min-height: 48px;
+  padding: 8px var(--results-space-5);
+  color: var(--results-color-muted);
+  background: var(--results-color-surface);
+  border-top: var(--results-border-width) solid var(--results-color-line-soft);
+  font-size: var(--results-font-meta);
+}
+
+.candidate-table-footer > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.candidate-table-footer > div > span {
+  min-width: 22px;
+  color: var(--results-color-muted);
+  text-align: center;
+}
+
+.candidate-table-footer button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  color: var(--results-color-copy);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  font-size: var(--results-font-detail);
+}
+
+.candidate-table-footer button.active {
+  color: #fff;
+  background: var(--results-color-brand);
+  font-weight: var(--results-weight-heavy);
+}
+
+.candidate-table-footer button:disabled {
+  color: var(--results-color-faint);
+}
+
+.candidate-table-footer > label {
+  justify-self: end;
+}
+
+.candidate-table-footer select {
+  height: 30px;
+  padding: 0 25px 0 9px;
+  border: var(--results-border-width) solid var(--results-color-line);
+  border-radius: 5px;
+  color: var(--results-color-copy);
+  background: var(--results-color-surface);
+  font-size: var(--results-font-meta);
+}
+
 .candidate-ranking-table {
   width: 100%;
-  min-width: 1260px;
+  min-width: 0;
+  table-layout: fixed;
   border-collapse: collapse;
   color: var(--results-color-copy);
   font-size: var(--results-font-detail);
@@ -2147,7 +2447,7 @@ watch(
   padding: 11px 10px;
   border-bottom: var(--results-border-width) solid var(--results-color-line);
   color: var(--results-color-muted);
-  background: #f8fafc;
+  background: var(--results-color-surface-soft);
   font-size: 10px;
   font-weight: var(--results-weight-heavy);
   letter-spacing: .04em;
@@ -2156,7 +2456,7 @@ watch(
 }
 
 .candidate-ranking-table td {
-  padding: 13px 10px;
+  padding: 7px 8px;
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
   vertical-align: middle;
 }
@@ -2167,7 +2467,7 @@ watch(
 
 .candidate-ranking-table tbody tr:hover,
 .candidate-ranking-table tbody tr.is-selected {
-  background: #f4fbfa;
+  background: var(--results-color-brand-soft);
 }
 
 .candidate-select-cell {
@@ -2246,18 +2546,18 @@ watch(
   white-space: nowrap;
 }
 
-.candidate-status.is-success { color: #087f73; background: #eaf8f6; }
-.candidate-status.is-warning { color: #9a5b08; background: #fff7e3; }
-.candidate-status.is-danger { color: #b42332; background: #fff0f2; }
-.candidate-status.is-active { color: #155e75; background: #ecf8fc; }
-.candidate-status.is-neutral { color: #526176; background: #f1f5f9; }
+.candidate-status.is-success { color: var(--results-color-brand-dark); background: var(--results-color-brand-soft); }
+.candidate-status.is-warning { color: var(--results-color-warning-text); background: var(--results-color-warning-soft); }
+.candidate-status.is-danger { color: var(--results-color-danger-text); background: var(--results-color-danger-soft); }
+.candidate-status.is-active { color: var(--results-color-active); background: var(--results-color-active-soft); }
+.candidate-status.is-neutral { color: var(--results-color-muted); background: var(--results-color-surface-muted); }
 
 .candidate-notification {
   max-width: 150px;
 }
 
 .candidate-notification small {
-  color: #b42332;
+  color: var(--results-color-danger-text);
   white-space: normal;
 }
 
@@ -2267,11 +2567,11 @@ watch(
 
 .candidate-action-cell button {
   min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--results-color-line);
-  border-radius: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   color: var(--results-color-brand-dark);
-  background: var(--results-color-surface);
+  background: transparent;
   font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
@@ -2293,10 +2593,9 @@ watch(
   align-items: center;
   gap: 18px;
   padding: 13px var(--results-space-5) calc(13px + env(safe-area-inset-bottom));
-  border-top: 1px solid #b8dcd7;
-  background: rgba(247, 253, 252, .97);
-  box-shadow: 0 -8px 22px rgba(15, 23, 42, .08);
-  backdrop-filter: blur(10px);
+  border-top: var(--results-border-width) solid var(--results-color-brand-line);
+  background: var(--results-color-surface);
+  box-shadow: var(--results-shadow-panel);
 }
 
 .candidate-batch-bar > div {
@@ -2328,54 +2627,159 @@ watch(
   min-height: 42px;
 }
 
-/* Container conditions intentionally use literals because custom properties are invalid in query expressions. */
-@container results-center (max-width: 1320px) {
-  .results-context {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-
-  .results-context__job {
-    grid-column: 1 / -1;
-  }
-
-  .results-tabs {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    padding: 0;
-  }
-
-  .results-tabs button:nth-child(odd) {
-    border-right: var(--results-border-width) solid var(--results-color-line-soft);
-  }
-
-  .results-tabs button:nth-child(-n + 2) {
-    border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
-  }
+.candidate-rank {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
+.candidate-rank.is-top-1 { color: #b7791f; }
+.candidate-rank.is-top-2 { color: #718096; }
+.candidate-rank.is-top-3 { color: #b46f3c; }
+
+.candidate-ranking-table th:nth-child(1) { width: 38px; }
+.candidate-ranking-table th:nth-child(2) { width: 46px; }
+.candidate-ranking-table th:nth-child(3) { width: 120px; }
+.candidate-ranking-table th:nth-child(4) { width: 90px; }
+.candidate-ranking-table th:nth-child(5) { width: 105px; }
+.candidate-ranking-table th:nth-child(6) { width: 94px; }
+.candidate-ranking-table th:nth-child(7) { width: 120px; }
+.candidate-ranking-table th:nth-child(8) { width: 92px; }
+.candidate-ranking-table th:nth-child(9) { width: 98px; }
+.candidate-ranking-table th:nth-child(10) { width: 105px; }
+
+.results-subpanel > header {
+  min-height: 54px;
+  padding: 14px 18px;
+}
+
+.results-subpanel > header h3 {
+  margin: 0;
+  color: var(--results-color-brand-dark);
+  font-size: var(--results-font-control);
+}
+
+.results-data-table {
+  display: grid;
+  min-width: 0;
+}
+
+.results-data-table__head,
+.results-data-table__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, .72fr) minmax(0, .48fr) minmax(0, .76fr) minmax(0, .9fr) minmax(0, .9fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 16px;
+}
+
+.results-data-table__head--campaign,
+.results-data-table__row--campaign {
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, .7fr) minmax(0, .9fr) minmax(0, .9fr) minmax(0, 1fr) minmax(0, 1.1fr);
+}
+
+.results-data-table__head {
+  color: var(--results-color-muted);
+  background: var(--results-color-surface-soft);
+  border-top: var(--results-border-width) solid var(--results-color-line-soft);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-heavy);
+}
+
+.results-data-table__row {
+  min-height: 62px;
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+  color: var(--results-color-copy);
+  font-size: var(--results-font-detail);
+}
+
+.results-data-table__row > * {
+  min-width: 0;
+}
+
+.results-table-name {
+  display: grid;
+  gap: 3px;
+}
+
+.results-table-name strong,
+.results-table-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.results-table-name strong {
+  color: var(--results-color-ink);
+  font-size: var(--results-font-detail);
+}
+
+.results-table-name small,
+.results-data-table time,
+.results-table-progress small {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-meta);
+}
+
+.results-table-progress {
+  display: grid;
+  grid-template-columns: minmax(38px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.results-data-table__row .run-list__actions {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+}
+
+.results-data-table__row .run-list__actions button,
+.results-data-table__row > a {
+  padding: 1px 0;
+  color: var(--results-color-brand-dark);
+  background: transparent;
+  border: 0;
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-heavy);
+  text-decoration: none;
+}
+
+.results-data-table__row > .run-error,
+.results-data-table__row > .run-detail {
+  grid-column: 1 / -1;
+}
+
+.results-table-empty {
+  display: grid;
+  grid-column: 1 / -1;
+  justify-items: center;
+  gap: 5px;
+  min-height: 105px;
+  align-content: center;
+  padding: 18px;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  text-align: center;
+}
+
+.results-table-empty strong {
+  color: var(--results-color-slate);
+}
+
+.results-table-footer {
+  min-height: 36px;
+  padding: 10px 16px;
+  color: var(--results-color-muted);
+  background: var(--results-color-surface);
+  border-top: var(--results-border-width) solid var(--results-color-line-soft);
+  font-size: var(--results-font-meta);
+}
+
+/* Container conditions intentionally use literals because custom properties are invalid in query expressions. */
 @container results-center (max-width: 1050px) {
-
-  .results-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .results-kpis article:nth-child(odd) {
-    border-left: 0;
-  }
-
-  .results-kpis article:nth-child(n + 3) {
-    border-top: var(--results-border-width) solid var(--results-color-line-soft);
-  }
-
-  .results-task-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .results-subpanel + .results-subpanel {
-    border-top: var(--results-border-width) solid var(--results-color-line-soft);
-    border-left: 0;
-  }
-
   .candidate-result-list > article {
     grid-template-columns: var(--results-avatar-size) minmax(0, 1fr) auto;
   }
@@ -2397,6 +2801,7 @@ watch(
   .candidate-batch-bar > span {
     display: none;
   }
+
 }
 
 @container results-center (max-width: 720px) {
@@ -2424,6 +2829,12 @@ watch(
     padding: var(--results-space-4);
   }
 
+  .results-context select,
+  .candidate-filter-bar button,
+  .attention-actions button {
+    min-height: var(--results-touch-target);
+  }
+
   .results-context__job {
     grid-column: auto;
   }
@@ -2438,9 +2849,23 @@ watch(
     padding: var(--results-space-3) var(--results-space-4);
   }
 
+  .results-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .results-kpis article:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .results-kpis article:nth-child(n + 3) {
+    border-top: var(--results-border-width) solid var(--results-color-line-soft);
+  }
+
   .results-tabs {
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     overflow-x: visible;
+    padding: 0;
   }
 
   .results-tabs button {
@@ -2460,17 +2885,41 @@ watch(
     justify-content: flex-start;
   }
 
+  .attention-list__head {
+    display: none;
+  }
+
+  .results-task-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .results-subpanel + .results-subpanel {
+    border-top: var(--results-border-width) solid var(--results-color-line-soft);
+    border-left: 0;
+  }
+
   .attention-list > article {
-    grid-template-columns: var(--results-status-marker-width) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     padding-right: var(--results-space-4);
     padding-left: var(--results-space-4);
   }
 
-  .attention-actions {
+  .attention-list article > strong {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .attention-list article > .candidate-status {
+    grid-row: 1;
     grid-column: 2;
-    grid-template-columns: repeat(2, minmax(0, auto));
+  }
+
+  .attention-object,
+  .attention-list article > p,
+  .attention-list article > time,
+  .attention-actions {
+    grid-column: 1 / -1;
     justify-content: start;
-    justify-items: start;
   }
 
   .run-list > article,
@@ -2608,11 +3057,22 @@ watch(
   }
 
   .stage-progress-list {
+    grid-template-columns: minmax(0, 1fr);
     padding: var(--results-space-4);
   }
 
-  .stage-progress-list article {
-    grid-template-columns: minmax(var(--results-stage-count-width), auto) minmax(0, 1fr) var(--results-stage-count-width);
+  .pipeline-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pipeline-summary article,
+  .pipeline-summary article:first-child {
+    border-top: var(--results-border-width) solid var(--results-color-line-soft);
+    border-left: 0;
+  }
+
+  .pipeline-summary__completion {
+    grid-column: auto;
   }
 }
 

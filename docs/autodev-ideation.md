@@ -49,6 +49,7 @@
 | W12 | 招聘记录归档与恢复 | P4 | [x] 管理后台当前/归档、恢复与确认交互完整 | `ArchivableViewSetMixin`, `ArchiveConfirmModal.vue`, `RecruitmentAdminView.vue` |
 | W13 | 候选排名、人工初筛与未通过通知 | W8, W9, P5 | [x] 2026-08-26 完成；AI 建议与 HR 结论分离，通知安全队列已验收 | `services/screening.py`, `RecruitmentResultsView.vue` |
 | W14 | 岗位招聘任务停止、修改与重新开启 | W6–W10, W13, P5 | [x] 2026-08-26 完成；持久化方案、不可变修订、协作式停止与代际隔离已验收 | `services/automation_plans.py`, `RecruitmentOperationControl.vue` |
+| W15 | 主动寻访候选条件 | W7, W14, P5 | [~] 2026-08-26 实现作业台白金展开表单、草稿恢复与不可变条件快照；平台实际筛选受固定 BOSS CLI 能力约束 | `RecruitmentWorkbenchView.vue`, `services/automation_plans.py`, `services/standard_workflows.py` |
 
 ## 未完成或边界功能
 

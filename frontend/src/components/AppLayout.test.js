@@ -57,6 +57,7 @@ describe('AppLayout navigation hierarchy', () => {
     expect(wrapper.text()).not.toContain('Copilot')
     expect(wrapper.find('.topbar h1').exists()).toBe(false)
     expect(wrapper.findComponent({ name: 'RecruitmentJobContext' }).exists()).toBe(false)
+    expect(wrapper.get('.page-container').classes()).toContain('page-container--workbench')
   })
 
   it('keeps the selected job only on job-scoped navigation links', () => {
@@ -74,6 +75,7 @@ describe('AppLayout navigation hierarchy', () => {
     })
     const links = wrapper.findAllComponents(RouterLink).map((link) => link.props('to'))
 
+    expect(wrapper.get('.page-container').classes()).not.toContain('page-container--workbench')
     expect(links).toContainEqual({ name: 'recruitment-dashboard' })
     expect(links).toContainEqual({ name: 'recruitment-workbench', query: { job: '12' } })
     expect(links).toContainEqual({ name: 'recruitment-results', query: { job: '12' } })

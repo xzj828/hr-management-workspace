@@ -79,7 +79,7 @@ function closeAccountModelSettings() {
 </script>
 
 <template>
-  <div class="shell" :class="{ 'shell--collapsed': collapsed }">
+  <div class="shell" :class="{ 'shell--collapsed': collapsed, 'shell--results': route.name === 'recruitment-results' }">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand__mark">XM</div>
@@ -120,11 +120,16 @@ function closeAccountModelSettings() {
           <RecruitmentJobContext
             v-if="currentModule === 'recruitment' && route.meta.recruitmentScope === 'job' && !route.meta.inlineJobContext"
           />
-          <ModelSwitcher v-if="currentModule === 'recruitment'" />
+          <ModelSwitcher v-if="currentModule === 'recruitment'" :compact="route.name === 'recruitment-results'" />
           <UserAccountMenu :user="auth.user" @model-settings="modelSettingsOpen = true" @logout="signOut" />
         </div>
       </header>
-      <section class="page-container"><router-view /></section>
+      <section
+        class="page-container"
+        :class="{ 'page-container--workbench': route.name === 'recruitment-workbench' }"
+      >
+        <router-view />
+      </section>
     </main>
     <ModelProfileDrawer v-if="modelSettingsOpen" @close="closeAccountModelSettings" @saved="closeAccountModelSettings" />
   </div>

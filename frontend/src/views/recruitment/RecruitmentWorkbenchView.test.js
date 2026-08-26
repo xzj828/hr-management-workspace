@@ -177,6 +177,10 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="workbench-step-review"]').exists()).toBe(false)
     expect(router.currentRoute.value.query.step).toBe('context')
+    expect(wrapper.text()).not.toContain('完成上一步后开放')
+    expect(wrapper.text()).not.toContain('已归档职位描述')
+    expect(wrapper.text()).not.toContain('自动化服务已就绪')
+    expect(wrapper.text()).not.toContain('确认职位与执行账号后')
 
     await goToStandard(wrapper)
     expect(wrapper.get('[data-test="wizard-step-standard"]').attributes('aria-current')).toBe('step')
@@ -335,6 +339,9 @@ describe('RecruitmentWorkbenchView', () => {
     await goToPlan(wrapper, { core: '3 年 Python 经验', bonus: 'AI 项目经验' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
+    await wrapper.get('[data-test="candidate-filter-trigger"]').trigger('click')
+    await wrapper.get('[data-test="filter-gender-female"]').trigger('click')
+    await wrapper.get('[data-test="filter-school-211"]').trigger('click')
     await flushPromises()
 
     const key = Object.keys(sessionStorage).find((item) => item.includes('workbench-draft:v1:9:51'))
@@ -347,6 +354,9 @@ describe('RecruitmentWorkbenchView', () => {
     expect(router.currentRoute.value.query.step).toBe('plan')
     expect(wrapper.get('[data-test="scheme-active"]').element.checked).toBe(true)
     expect(wrapper.get('[data-test="active-keyword"]').element.value).toBe('Python 后端')
+    await wrapper.get('[data-test="candidate-filter-trigger"]').trigger('click')
+    expect(wrapper.get('[data-test="filter-gender-female"]').classes()).toContain('is-selected')
+    expect(wrapper.get('[data-test="filter-school-211"]').classes()).toContain('is-selected')
 
     await wrapper.get('[data-test="previous-step"]').trigger('click')
     await flushPromises()
@@ -566,6 +576,9 @@ describe('RecruitmentWorkbenchView', () => {
     await goToPlan(wrapper, { core: '3 年 Python 经验\n熟悉 Django', bonus: 'AI 项目经验\nToB 经验' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
+    await wrapper.get('[data-test="candidate-filter-trigger"]').trigger('click')
+    await wrapper.get('[data-test="filter-activity-today"]').trigger('click')
+    await wrapper.get('[data-test="filter-keyword-data_analysis"]').trigger('click')
     await wrapper.get('[data-test="target-resume-count"]').setValue('5')
     await wrapper.get('[data-test="max-scan-count"]').setValue('30')
     await completePlanAndReview(wrapper)
@@ -583,6 +596,10 @@ describe('RecruitmentWorkbenchView', () => {
       config: {
         source: 'search',
         keyword: 'Python 后端',
+        candidate_filters: {
+          activity: 'today',
+          talent_keywords: ['data_analysis'],
+        },
         target_resume_count: 5,
         max_scan_count: 30,
         core: ['3 年 Python 经验', '熟悉 Django'],

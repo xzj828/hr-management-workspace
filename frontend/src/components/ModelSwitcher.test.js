@@ -37,6 +37,17 @@ describe('ModelSwitcher', () => {
     expect(wrapper.get('[aria-checked="true"]').text()).toContain('当前使用')
   })
 
+  it('uses the compact headset SVG on the result-center shell without removing the menu', async () => {
+    const wrapper = mount(ModelSwitcher, { props: { compact: true }, global: { stubs: { ModelProfileDrawer: true } } })
+    await flushPromises()
+
+    expect(wrapper.get('.model-switcher__trigger').attributes('aria-label')).toBe('切换模型')
+    expect(wrapper.get('.model-switcher__trigger svg').attributes('viewBox')).toBe('0 0 24 24')
+    expect(wrapper.get('.model-switcher__trigger').text()).toBe('')
+    await wrapper.get('.model-switcher__trigger').trigger('click')
+    expect(wrapper.findAll('[role="radio"]')).toHaveLength(2)
+  })
+
   it('switches to another profile and updates the active label', async () => {
     const wrapper = mount(ModelSwitcher, { global: { stubs: { ModelProfileDrawer: true } } })
     await flushPromises()

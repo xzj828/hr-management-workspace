@@ -29,6 +29,7 @@ a { color: inherit; text-decoration: none; }
 @keyframes breathe { 50% { transform: scale(.92); opacity: .7; } }
 
 .shell { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); min-height: 100vh; transition: grid-template-columns .25s ease; }
+.shell--results { --sidebar-width: 230px; }
 .shell--collapsed { --sidebar-width: 82px; }
 .sidebar { position: sticky; top: 0; height: 100vh; z-index: 20; display: flex; flex-direction: column; padding: 22px 14px; overflow: hidden; color: #cbd5e1; background: #101827; border-right: 1px solid rgba(255,255,255,.05); }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 26px; white-space: nowrap; }
@@ -84,6 +85,7 @@ a { color: inherit; text-decoration: none; }
 .job-context-menu-enter-from,.job-context-menu-leave-to { opacity: 0; transform: translateY(-5px); }
 .avatar { width: 34px; height: 34px; display: grid; place-content: center; border-radius: 11px; color: #fff; background: #334155; font-size: 13px; font-weight: 800; }
 .page-container { max-width: 1660px; margin: 0 auto; padding: 28px 34px 42px; }
+.page-container.page-container--workbench { max-width: none; margin: 0; padding: 0; }
 .page-stack { display: grid; gap: 22px; }
 
 .page-hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; }

@@ -292,6 +292,12 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 | 集成 | 方式 | 数据方向 | 安全边界 |
 |---|---|---|---|
 | BOSS CLI | 本机 Node 子进程，固定 JS 入口并以参数列表调用 | 职位/候选/会话读取；确认后的有限写动作 | 不执行 npm `.cmd/.bat/.ps1` shim；`shell=False`；最小环境；隔离资料目录；超时/编码归一化 |
+
+### 主动寻访候选条件快照（2026-08-26）
+
+`RecruitmentAutomationPlanRevision.config` 的主动寻访配置允许 `candidate_filters` 对象，字段固定为年龄区间、活跃度、性别、近期未看过、未与同事交换简历、牛人关键词、院校、专业、跳槽频率、求职状态和学历要求。服务端按白名单规范化枚举、长度和年龄上下界；未知值不能进入不可变修订。
+
+规范化后的 `candidate_filters` 必须原样进入标准工作流搜索节点、`SearchCampaign.criteria` 与 `AutomationApproval.payload`，使草稿恢复、版本冲突、审批摘要和审计链看到同一份确定性搜索条件。当前固定 BOSS CLI 未暴露的筛选能力只保存和传递，不得在结果或日志中宣称已经应用到平台页面；适配器未来支持时从同一快照消费，不另建旁路配置。
 | Chrome/Edge | 独立用户目录 + loopback CDP + Playwright | 人工登录、状态观察、目标核验、PDF | 受管端口/路径；不绕验证；不使用日常资料 |
 | 飞书打卡 Excel | 人工上传 `.xlsx` | 单向导入 | 类型/大小/哈希、原文件留档 |
 | 模型服务 | 仅保存个人兼容 API 配置 | [待确认] 当前无实际调用端点 | Key 加密；不应默认发送候选人/员工敏感数据 |

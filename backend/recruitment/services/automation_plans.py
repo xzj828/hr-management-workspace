@@ -53,6 +53,73 @@ class PlanCommandResult:
     idempotent: bool = False
 
 
+CANDIDATE_FILTER_ENUMS = {
+    "activity": {"any", "just_active", "today", "within_3_days", "this_week", "this_month"},
+    "gender": {"any", "male", "female"},
+    "unseen_period": {"any", "within_14_days"},
+    "colleague_resume_period": {"any", "within_30_days"},
+    "school": {
+        "any", "985", "211", "double_first_class", "overseas", "famous_global",
+        "public_undergraduate",
+    },
+    "major": {
+        "any", "journalism", "e_commerce", "business_admin", "public_admin",
+        "management_science",
+    },
+    "job_stability": {"any", "fewer_than_3_in_5_years", "average_over_1_year"},
+    "job_status": {
+        "any", "left_immediately", "employed_not_considering", "employed_open",
+        "employed_within_month",
+    },
+    "education": {
+        "any", "junior_or_below", "technical", "high_school", "associate", "bachelor",
+        "master", "doctorate",
+    },
+}
+CANDIDATE_TALENT_KEYWORDS = {
+    "data_analysis", "business_negotiation", "office_software", "kol", "new_media",
+    "creator_resources", "business_cooperation", "social_media", "media_buying",
+}
+
+
+def normalize_candidate_filters(value):
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValidationError({"config": "主动寻访条件必须是对象"})
+    age_min = value.get("age_min")
+    age_max = value.get("age_max")
+    if age_min is None and age_max is None:
+        normalized_age_min = None
+        normalized_age_max = None
+    else:
+        try:
+            normalized_age_min = int(age_min)
+            normalized_age_max = int(age_max)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"config": "年龄范围必须同时填写整数最小值和最大值"}) from exc
+        if (
+            normalized_age_min < 18
+            or normalized_age_max > 60
+            or normalized_age_min > normalized_age_max
+        ):
+            raise ValidationError({"config": "年龄范围必须在 18 到 60 岁之间，且最小值不能大于最大值"})
+    normalized = {
+        "age_min": normalized_age_min,
+        "age_max": normalized_age_max,
+    }
+    for key, allowed in CANDIDATE_FILTER_ENUMS.items():
+        selected = str(value.get(key, "any")).strip()
+        normalized[key] = selected if selected in allowed else "any"
+    keywords = value.get("talent_keywords", [])
+    if not isinstance(keywords, list):
+        raise ValidationError({"config": "牛人关键词必须是数组"})
+    normalized["talent_keywords"] = list(dict.fromkeys(
+        str(item).strip() for item in keywords if str(item).strip() in CANDIDATE_TALENT_KEYWORDS
+    ))[:len(CANDIDATE_TALENT_KEYWORDS)]
+    return normalized
+
+
 def _ensure_authorized(account, actor):
     if actor.is_superuser:
         return
@@ -104,6 +171,7 @@ def normalize_plan_config(kind, config):
         **common,
         "source": source,
         "keyword": str(raw.get("keyword", "")).strip()[:120],
+        "candidate_filters": normalize_candidate_filters(raw.get("candidate_filters")),
         "target_resume_count": target,
         "max_scan_count": maximum,
     }

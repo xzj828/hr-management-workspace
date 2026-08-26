@@ -199,6 +199,11 @@ def execute_workflow_node(node):
             config = node.config_snapshot
             criteria = {
                 "keyword": str(config.get("keyword", "")),
+                "candidate_filters": (
+                    config.get("candidate_filters")
+                    if isinstance(config.get("candidate_filters"), dict)
+                    else {}
+                ),
                 "core": config.get("core") if isinstance(config.get("core"), list) else [],
                 "bonus": config.get("bonus") if isinstance(config.get("bonus"), list) else [],
                 "workflow_node_id": node.pk,
