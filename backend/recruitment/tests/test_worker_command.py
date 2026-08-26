@@ -224,6 +224,66 @@ class WorkerEngineTests(SimpleTestCase):
         self.assertEqual(by_name["林然"]["sync_error"], "会话已读，未打开")
         self.assertEqual(by_name["周青"]["sync_error"], "会话岗位与当前选择岗位不一致，未打开")
 
+    @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
+    def test_bootstrap_backfill_opens_read_conversations_only_for_selected_job(self, inventory):
+        inventory.return_value.download_resume_attachments.return_value = []
+
+        class Runner:
+            def __init__(self):
+                self.called_unread = None
+                self.opened = []
+
+            def conversations(self, account, unread=False):
+                self.called_unread = unread
+                return "1. 林然｜产品经理｜selected:1｜已读\n2. 周青｜测试工程师｜已读"
+
+            def open_chat(self, account, name):
+                self.opened.append(name)
+                return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 2026-08-25 09:00 你好")
+
+        runner = Runner()
+        outcome = execute_sync_conversations(
+            {"request_payload": {
+                "job": 7,
+                "job_title": "产品经理",
+                "backfill_conversations": True,
+            }},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            runner,
+        )
+
+        self.assertFalse(runner.called_unread)
+        self.assertEqual(runner.opened, ["林然"])
+        self.assertEqual(outcome["result"]["conversations"][0]["messages"][0]["content"], "你好")
+
+    @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
+    def test_stable_conversation_sync_never_falls_back_to_name_open(self, inventory):
+        inventory.return_value.download_resume_attachments.return_value = []
+
+        class Runner:
+            def __init__(self):
+                self.stable_ids = []
+
+            def conversations(self, account, unread=False):
+                return "1. 同名候选人｜产品经理｜external_id:conversation-safe｜未读 1"
+
+            def open_chat_by_external_id(self, account, external_id):
+                self.stable_ids.append(external_id)
+                return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 2026-08-26 09:00 你好")
+
+            def open_chat(self, account, name):
+                raise AssertionError("稳定身份存在时不得按姓名打开")
+
+        runner = Runner()
+        outcome = execute_sync_conversations(
+            {"request_payload": {"job": 7, "job_title": "产品经理"}},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            runner,
+        )
+
+        self.assertEqual(runner.stable_ids, ["conversation-safe"])
+        self.assertEqual(outcome["result"]["conversations"][0]["messages"][0]["content"], "你好")
+
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_status_observer_checks_all_accounts_outside_task_queue(self, inspect):
         inspect.side_effect = [

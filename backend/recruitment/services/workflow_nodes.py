@@ -139,6 +139,7 @@ def execute_workflow_node(node):
                 "bonus": node.config_snapshot.get("bonus", criteria.get("bonus", [])),
                 "criteria": criteria,
                 "workflow_managed": node.node_type == "sync_messages",
+                "backfill_conversations": node.node_type == "sync_messages",
             }
             task = create_task(
                 account=run.boss_account, action=SOURCE_ACTIONS[node.node_type], actor=run.actor,

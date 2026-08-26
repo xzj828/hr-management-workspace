@@ -10,6 +10,7 @@ from recruitment.models import (
     AutomationApproval,
     AutomationUsage,
     BossAccount,
+    Candidate,
     CandidateDiscovery,
     CandidateExternalIdentity,
     ConversationAction,
@@ -20,6 +21,7 @@ from recruitment.models import (
     JobApplication,
     RecruitmentAuditLog,
     RecruitmentAutomationPlan,
+    RecruitmentJob,
     RpaTask,
     StepExecution,
 )
@@ -611,6 +613,90 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
     return batch
 
 
+def _conversation_job(*, account, job_title, allowed_job_ids):
+    allowed = {int(value) for value in (allowed_job_ids or [])}
+    normalized_title = " ".join(str(job_title or "").split()).strip()
+    if normalized_title:
+        jobs = list(
+            RecruitmentJob.objects.filter(
+                boss_account=account,
+                title=normalized_title,
+                archived_at__isnull=True,
+            )[:2]
+        )
+        if len(jobs) != 1:
+            return None
+        job = jobs[0]
+        return job if allowed_job_ids is None or job.pk in allowed else None
+    if allowed_job_ids is None or len(allowed) != 1:
+        return None
+    return RecruitmentJob.objects.filter(
+        pk=next(iter(allowed)),
+        boss_account=account,
+        archived_at__isnull=True,
+    ).first()
+
+
+def _resolve_conversation_application(*, account, row, actor, allowed_job_ids):
+    name = " ".join(str(row.get("name", "")).split()).strip()[:100]
+    external_id = str(row.get("external_id", "")).strip()[:160]
+    job_title = str(row.get("job_title", "")).strip()
+    if external_id and name:
+        job = _conversation_job(
+            account=account,
+            job_title=job_title,
+            allowed_job_ids=allowed_job_ids,
+        )
+        if job is None:
+            return None, False, False
+        from recruitment.services.discovery import _fingerprint
+
+        fingerprint = _fingerprint(account.pk, {"external_id": external_id})
+        identity = (
+            CandidateExternalIdentity.objects.select_for_update()
+            .select_related("candidate")
+            .filter(boss_account=account, fingerprint=fingerprint)
+            .first()
+        )
+        candidate_created = False
+        if identity is not None:
+            if str(identity.external_id).strip() != external_id:
+                return None, False, False
+            candidate = identity.candidate
+        else:
+            candidate, candidate_created = Candidate.objects.get_or_create(
+                identity_key=f"boss:{account.pk}:{external_id}",
+                defaults={"external_id": external_id[:120], "name": name},
+            )
+            CandidateExternalIdentity.objects.create(
+                boss_account=account,
+                candidate=candidate,
+                external_id=external_id,
+                fingerprint=fingerprint,
+                identity_quality=CandidateDiscovery.IdentityQuality.PLATFORM,
+            )
+        application, application_created = JobApplication.objects.get_or_create(
+            candidate=candidate,
+            job=job,
+            defaults={"source": "boss", "owner": actor},
+        )
+        return application, candidate_created, application_created
+
+    application_queryset = JobApplication.objects.filter(
+        job__boss_account=account,
+        candidate__name=name,
+    )
+    if job_title:
+        application_queryset = application_queryset.filter(job__title=job_title)
+    applications = list(application_queryset.distinct()[:2])
+    if len(applications) != 1:
+        return None, False, False
+    application = applications[0]
+    if allowed_job_ids is not None and application.job_id not in set(allowed_job_ids):
+        return None, False, False
+    return application, False, False
+
+
 @transaction.atomic
 def sync_conversation_states(*, account, rows, actor=None, allowed_job_ids=None):
     if not isinstance(rows, list):
@@ -618,33 +704,34 @@ def sync_conversation_states(*, account, rows, actor=None, allowed_job_ids=None)
     synced = 0
     ambiguous = 0
     replied = 0
+    created_candidates = 0
+    created_applications = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
+        row.pop("application_id", None)
+        if row.get("sync_error"):
+            continue
         name = str(row.get("name", "")).strip()
-        job_title = str(row.get("job_title", "")).strip()
-        application_queryset = JobApplication.objects.filter(
-            job__boss_account=account,
-            candidate__name=name,
+        application, candidate_created, application_created = _resolve_conversation_application(
+            account=account,
+            row=row,
+            actor=actor,
+            allowed_job_ids=allowed_job_ids,
         )
-        if job_title:
-            application_queryset = application_queryset.filter(job__title=job_title)
-        applications = list(
-            application_queryset.values_list("id", flat=True).distinct()[:2]
-        )
-        if len(applications) != 1:
+        if application is None:
             if name:
                 ambiguous += 1
             continue
-        application = JobApplication.objects.get(pk=applications[0])
-        if allowed_job_ids is not None and application.job_id not in allowed_job_ids:
-            continue
+        row["application_id"] = application.pk
+        created_candidates += int(candidate_created)
+        created_applications += int(application_created)
         unread = bool(row.get("unread"))
         ConversationSyncState.objects.update_or_create(
             application=application,
             defaults={
                 "boss_account": account,
-                "cursor": str(row.get("index", ""))[:300],
+                "cursor": str(row.get("external_id") or row.get("index", ""))[:300],
                 "last_message_preview": str(row.get("preview", ""))[:500],
                 "has_candidate_reply": unread,
                 "last_synced_at": timezone.now(),
@@ -654,4 +741,10 @@ def sync_conversation_states(*, account, rows, actor=None, allowed_job_ids=None)
             replied += 1
             advance_for_event(application=application, event="candidate_replied", actor=actor)
         synced += 1
-    return {"synced": synced, "ambiguous": ambiguous, "candidate_replies": replied}
+    return {
+        "synced": synced,
+        "ambiguous": ambiguous,
+        "candidate_replies": replied,
+        "created_candidates": created_candidates,
+        "created_applications": created_applications,
+    }

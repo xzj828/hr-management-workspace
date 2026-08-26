@@ -296,11 +296,14 @@ def _verify_conversation_target(*, runner, account, target):
     if not name or not external_id:
         return None
     rows = parse_conversation_list(runner.conversations(account))
-    same_name = [row for row in rows if str(row.get("name", "")).strip() == name]
-    if len(same_name) != 1:
+    matches = [
+        row for row in rows
+        if str(row.get("external_id", "")).strip() == external_id
+        and str(row.get("name", "")).strip() == name
+    ]
+    if len(matches) != 1:
         return None
-    refreshed = same_name[0]
-    return refreshed if str(refreshed.get("external_id", "")).strip() == external_id else None
+    return matches[0]
 
 
 def execute_greet(task, account, runner):
@@ -366,12 +369,20 @@ def execute_request_resume(task, account, runner):
             "error_code": "stable_identity_action_unavailable",
             "error_message": "当前 BOSS 适配器只能按姓名索要简历，请由 HR 人工处理",
         }
-    stable_action(
-        account,
-        external_id,
-        message=str(payload.get("message", "")),
-        first_contact=bool(payload.get("first_contact", False)),
-    )
+    try:
+        stable_action(
+            account,
+            external_id,
+            message=str(payload.get("message", "")),
+            first_contact=bool(payload.get("first_contact", False)),
+        )
+    except Exception:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "external_result_uncertain",
+            "error_message": "打招呼或求简历可能已执行，请在 BOSS 中人工核查；系统不会自动重试",
+        }
     return {
         "status": "succeeded",
         "result": {
@@ -495,17 +506,22 @@ def _expected_conversation_job_titles(payload):
 def execute_sync_conversations(task, account, runner, checkpoint=None):
     payload = task.get("request_payload") if isinstance(task.get("request_payload"), dict) else {}
     expected_job_titles = _expected_conversation_job_titles(payload)
+    backfill_conversations = payload.get("backfill_conversations") is True
     if checkpoint is not None and not checkpoint("before_list", 0):
         return {
             "status": "succeeded",
             "result": {"conversations": [], "skipped": 0, "checkpoint_stopped": True},
         }
-    rows = parse_conversation_list(runner.conversations(account, unread=True))
+    rows = parse_conversation_list(
+        runner.conversations(account, unread=not backfill_conversations)
+    )
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     eligible = []
     skipped = 0
     for row in rows:
-        if not row.get("unread"):
+        if not row.get("unread") and not (
+            backfill_conversations and row.get("selected")
+        ):
             row["sync_error"] = "会话已读，未打开"
             skipped += 1
             continue
@@ -528,7 +544,14 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
             checkpoint_stopped = True
             break
         try:
-            opened = runner.open_chat(account, row["name"])
+            stable_open = getattr(runner, "open_chat_by_external_id", None)
+            external_id = str(row.get("external_id", "")).strip()
+            if external_id:
+                if not callable(stable_open):
+                    raise BossCliError("当前 BOSS 适配器不能按平台稳定 ID 打开会话")
+                opened = stable_open(account, external_id)
+            else:
+                opened = runner.open_chat(account, row["name"])
             row["messages"] = parse_chat_messages(opened.stdout)
             row["attachments"] = BrowserInventory(account.cdp_port).download_resume_attachments(row["name"], incoming)
         except (BossCliError, BrowserConnectionError) as exc:

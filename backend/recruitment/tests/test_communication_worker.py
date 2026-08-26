@@ -112,3 +112,40 @@ class CommunicationWorkerTests(SimpleTestCase):
 
         self.assertEqual(outcome["status"], "waiting_human")
         self.assertNotIn("request_resume", [call[0] for call in runner.calls])
+
+    def test_request_resume_uses_stable_adapter_for_first_contact(self):
+        runner = FakeRunner()
+
+        def stable_action(account, external_id, *, message="", first_contact=False):
+            runner.calls.append(("request_resume_stable", external_id, message, first_contact))
+
+        runner.request_resume_by_external_id = stable_action
+
+        outcome = execute_request_resume({"request_payload": {
+            "target": {"name": "林然", "external_id": "boss-1"},
+            "message": "您好，方便发送一份简历吗？",
+            "first_contact": True,
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "succeeded")
+        self.assertIn(
+            ("request_resume_stable", "boss-1", "您好，方便发送一份简历吗？", True),
+            runner.calls,
+        )
+
+    def test_request_resume_adapter_exception_is_never_retryable(self):
+        runner = FakeRunner()
+
+        def uncertain_action(account, external_id, *, message="", first_contact=False):
+            raise RuntimeError("connection lost after click")
+
+        runner.request_resume_by_external_id = uncertain_action
+
+        outcome = execute_request_resume({"request_payload": {
+            "target": {"name": "林然", "external_id": "boss-1"},
+            "message": "您好，方便发送一份简历吗？",
+            "first_contact": True,
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertEqual(outcome["error_code"], "external_result_uncertain")

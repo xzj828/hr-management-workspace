@@ -17,6 +17,7 @@ def parse_conversation_list(output):
         external_id = ""
         fingerprint = ""
         job_title = ""
+        selected = False
         for part in parts[1:]:
             if not part:
                 continue
@@ -28,6 +29,8 @@ def parse_conversation_list(output):
                 fingerprint = re.sub(
                     r"^(?:fingerprint|指纹)\s*[:：=]\s*", "", part, flags=re.I
                 ).strip()
+            elif re.match(r"^selected\s*[:：=]\s*1$", part, re.I):
+                selected = True
             elif re.match(r"^消息[:：]", part):
                 preview = " ".join(re.sub(r"^消息[:：]\s*", "", part).split()).strip()
             elif part.startswith("未读") or part.startswith("已读"):
@@ -47,6 +50,8 @@ def parse_conversation_list(output):
             row["fingerprint"] = fingerprint
         if job_title:
             row["job_title"] = job_title
+        if selected:
+            row["selected"] = True
         rows.append(row)
     return rows
 

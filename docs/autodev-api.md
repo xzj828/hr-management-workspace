@@ -298,6 +298,14 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 `RecruitmentAutomationPlanRevision.config` 的主动寻访配置允许 `candidate_filters` 对象，字段固定为年龄区间、活跃度、性别、近期未看过、未与同事交换简历、牛人关键词、院校、专业、跳槽频率、求职状态和学历要求。服务端按白名单规范化枚举、长度和年龄上下界；未知值不能进入不可变修订。
 
 规范化后的 `candidate_filters` 必须原样进入标准工作流搜索节点、`SearchCampaign.criteria` 与 `AutomationApproval.payload`，使草稿恢复、版本冲突、审批摘要和审计链看到同一份确定性搜索条件。当前固定 BOSS CLI 未暴露的筛选能力只保存和传递，不得在结果或日志中宣称已经应用到平台页面；适配器未来支持时从同一快照消费，不另建旁路配置。
+
 | Chrome/Edge | 独立用户目录 + loopback CDP + Playwright | 人工登录、状态观察、目标核验、PDF | 受管端口/路径；不绕验证；不使用日常资料 |
 | 飞书打卡 Excel | 人工上传 `.xlsx` | 单向导入 | 类型/大小/哈希、原文件留档 |
 | 模型服务 | 仅保存个人兼容 API 配置 | [待确认] 当前无实际调用端点 | Key 加密；不应默认发送候选人/员工敏感数据 |
+
+### 被动会话同步回写契约（2026-08-26）
+
+- `sync_conversations` Worker 结果中的每行会话必须携带 BOSS 会话 `external_id`、展示名、岗位、消息和附件；`application_id` 即使由 Worker 提供也不可信，服务端必须删除并重新解析。
+- 服务端仅在稳定 ID 存在、岗位属于冻结 `allowed_job_ids` 且标题唯一匹配时创建或复用候选人、平台身份与应聘。兼容旧任务时，可把缺少稳定 ID 的行绑定到账号内既有且全局唯一的应聘，但不得据此创建新候选人或执行外发。
+- 标准工作流首次同步携带 `backfill_conversations=true` 并读取岗位列表，但只打开未读或当前选中行；周期性 `passive_plan_scopes` 同步仍只读取未读。
+- `request_resume_by_external_id` 必须在同一次执行中刷新列表、按 stable ID 唯一解析、以该快照序号打开、复核选中行 stable ID，再发送已批准话术并调用 BOSS 原生“求简历”。

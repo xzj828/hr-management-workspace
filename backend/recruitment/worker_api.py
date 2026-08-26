@@ -1434,17 +1434,12 @@ def complete_task_view(request, task_id):
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                application_queryset = JobApplication.objects.filter(
+                application = JobApplication.objects.filter(
+                    pk=row.get("application_id"),
                     job__boss_account=task.boss_account,
-                    candidate__name=str(row.get("name", "")).strip(),
-                )
-                row_job_title = str(row.get("job_title", "")).strip()
-                if row_job_title:
-                    application_queryset = application_queryset.filter(job__title=row_job_title)
-                applications = list(application_queryset[:2])
-                if len(applications) != 1:
+                ).first()
+                if application is None:
                     continue
-                application = applications[0]
                 if allowed_job_ids is not None and application.job_id not in allowed_job_ids:
                     continue
                 messages = [dict(item) for item in row.get("messages", []) if isinstance(item, dict)]

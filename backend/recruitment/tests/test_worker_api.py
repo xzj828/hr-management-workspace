@@ -533,6 +533,117 @@ class WorkerApiTests(APITestCase):
         action = ConversationAction.objects.get(approval=approval)
         self.assertEqual(action.target_snapshot["name"], "周青")
 
+    def test_stable_conversation_creates_real_application_and_resume_request_from_zero(self):
+        AccountProfile.objects.create(user=self.hr, role=AccountProfile.Role.HR)
+        self.account.authorized_users.add(self.hr)
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="new-applicant-job",
+            title="前置部署工程师",
+            owner=self.hr,
+        )
+        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+                {
+                    "worker_key": "local-worker",
+                    "status": "succeeded",
+                    "result": {"conversations": [{
+                        "name": "新候选人",
+                        "external_id": "conversation-new-101",
+                        "application_id": 999999,
+                        "job_title": job.title,
+                        "messages": [{
+                            "direction": "candidate",
+                            "content": "您好，我已经投递了这个岗位",
+                            "sent_at": "2026-08-26T09:00:00+08:00",
+                        }],
+                        "attachments": [],
+                    }]},
+                },
+                format="json",
+                **self.token_header,
+            )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        application = JobApplication.objects.get(job=job)
+        identity = CandidateExternalIdentity.objects.get(candidate=application.candidate)
+        self.assertEqual(identity.external_id, "conversation-new-101")
+        self.assertEqual(ConversationMessage.objects.get().content, "您好，我已经投递了这个岗位")
+        approval = AutomationApproval.objects.get(action=AutomationApproval.Action.REQUEST_RESUME)
+        self.assertEqual(approval.payload["items"][0]["external_id"], "conversation-new-101")
+        self.assertTrue(approval.payload["items"][0]["first_contact"])
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.result["sync"]["created_applications"], 1)
+
+    def test_stable_conversation_archives_received_pdf_instead_of_requesting_again(self):
+        AccountProfile.objects.create(user=self.hr, role=AccountProfile.Role.HR)
+        self.account.authorized_users.add(self.hr)
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="received-resume-job",
+            title="前置部署工程师",
+            owner=self.hr,
+        )
+        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        with tempfile.TemporaryDirectory() as media_root:
+            incoming = Path(media_root) / "rpa-incoming"
+            incoming.mkdir()
+            downloaded = incoming / "received-resume.pdf"
+            downloaded.write_bytes(b"%PDF-1.4\nreceived resume")
+            with self.settings(MEDIA_ROOT=media_root), self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(
+                    f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+                    {
+                        "worker_key": "local-worker",
+                        "status": "succeeded",
+                        "result": {"conversations": [{
+                            "name": "已发简历候选人",
+                            "external_id": "conversation-resume-101",
+                            "job_title": job.title,
+                            "messages": [{
+                                "direction": "candidate",
+                                "content": "简历已发，请查收",
+                                "sent_at": "2026-08-26T09:00:00+08:00",
+                            }],
+                            "attachments": [{
+                                "path": str(downloaded),
+                                "filename": "候选人简历.pdf",
+                            }],
+                        }]},
+                    },
+                    format="json",
+                    **self.token_header,
+                )
+
+            self.assertEqual(response.status_code, 200, response.data)
+            application = JobApplication.objects.get(job=job)
+            resume = Resume.objects.get(application=application)
+            self.assertEqual(resume.source, Resume.Source.BOSS)
+            self.assertFalse(downloaded.exists())
+            self.assertFalse(
+                AutomationApproval.objects.filter(action=AutomationApproval.Action.REQUEST_RESUME).exists()
+            )
+            self.task.refresh_from_db()
+            self.assertEqual(self.task.result["sync"]["attachments_archived"], 1)
+
     def test_search_campaign_completion_returns_applications_for_next_workflow_node(self):
         job = RecruitmentJob.objects.create(
             boss_account=self.account, external_id="search-pull-job", title="数据工程师", owner=self.hr,

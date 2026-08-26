@@ -46,6 +46,41 @@ class ConversationCliTests(SimpleTestCase):
             ["send", "--text", "您好，方便发送一份简历吗？", "--request-resume"],
         )
 
+    @patch("recruitment.rpa.playwright_adapter.BrowserInventory")
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_stable_first_contact_refreshes_opens_and_rechecks_platform_id(self, run, inventory):
+        run.return_value = SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")
+        inventory.return_value.conversation_rows.return_value = [{
+            "index": 3,
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+            "preview": "你好",
+            "unread_count": 1,
+            "selected": False,
+        }]
+        inventory.return_value.selected_conversation.return_value = {
+            "external_id": "conversation-101",
+            "name": "林然",
+            "selected": True,
+        }
+
+        self.runner.request_resume_by_external_id(
+            self.account,
+            "conversation-101",
+            message="您好，方便发送一份简历吗？",
+            first_contact=True,
+        )
+
+        commands = [call.args[0][1:] for call in run.call_args_list]
+        self.assertEqual(commands[0], ["list"])
+        self.assertEqual(commands[1], ["chat", "林然", "--index", "3", "--strict"])
+        self.assertEqual(
+            commands[2],
+            ["send", "--text", "您好，方便发送一份简历吗？", "--request-resume"],
+        )
+        self.assertGreaterEqual(inventory.return_value.selected_conversation.call_count, 2)
+
     @patch("recruitment.rpa.cli.subprocess.run")
     def test_send_text_rejects_line_breaks_before_subprocess(self, run):
         with self.assertRaises(BossCliError):

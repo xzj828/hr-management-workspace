@@ -435,7 +435,27 @@ class BossCliRunner:
 
     def conversations(self, account, *, unread=False):
         args = ["list", "--unread"] if unread else ["list"]
-        return self._run(args, env=self._account_env(account), timeout_seconds=120).stdout
+        self._run(args, env=self._account_env(account), timeout_seconds=120)
+        from recruitment.rpa.playwright_adapter import BrowserInventory
+
+        rows = BrowserInventory(account.cdp_port).conversation_rows()
+        lines = []
+        for row in rows:
+            parts = [
+                f"{int(row['index'])}. {row['name']}",
+                str(row.get("job_title", "")).strip(),
+                f"external_id:{row['external_id']}",
+            ]
+            unread_count = int(row.get("unread_count", 0) or 0)
+            if unread_count:
+                parts.append(f"未读:{unread_count}")
+            if row.get("selected"):
+                parts.append("selected:1")
+            preview = str(row.get("preview", "")).strip()
+            if preview:
+                parts.append(f"消息:{preview}")
+            lines.append("｜".join(part for part in parts if part))
+        return "\n".join(lines)
 
     def open_chat(self, account, name):
         normalized = str(name or "").strip()
@@ -470,6 +490,63 @@ class BossCliRunner:
             ["action", "request-attachment-resume"],
             env=self._account_env(account),
             timeout_seconds=120,
+        )
+
+    def _assert_selected_conversation(self, account, external_id):
+        from recruitment.rpa.playwright_adapter import BrowserInventory
+
+        selected = BrowserInventory(account.cdp_port).selected_conversation()
+        if str(selected.get("external_id", "")).strip() != str(external_id).strip():
+            raise BossCliError("打开后的 BOSS 会话稳定 ID 与批准目标不一致")
+        return selected
+
+    def open_chat_by_external_id(self, account, external_id):
+        from recruitment.rpa.conversations import parse_conversation_list
+
+        normalized = str(external_id or "").strip()
+        if not normalized or len(normalized) > 160:
+            raise BossCliError("候选人平台稳定 ID 无效")
+        rows = parse_conversation_list(self.conversations(account))
+        matches = [row for row in rows if str(row.get("external_id", "")).strip() == normalized]
+        if len(matches) != 1:
+            raise BossCliError("无法按平台稳定 ID 唯一定位 BOSS 会话")
+        row = matches[0]
+        result = self._run(
+            ["chat", row["name"], "--index", str(row["index"]), "--strict"],
+            env=self._account_env(account),
+            timeout_seconds=120,
+        )
+        selected = self._assert_selected_conversation(account, normalized)
+        if str(selected.get("name", "")).strip() != str(row.get("name", "")).strip():
+            raise BossCliError("打开后的 BOSS 会话展示身份与刷新快照不一致")
+        return result
+
+    def request_resume_by_external_id(self, account, external_id, *, message="", first_contact=False):
+        self.open_chat_by_external_id(account, external_id)
+        self._assert_selected_conversation(account, external_id)
+        if first_contact:
+            normalized = str(message or "").strip()
+            if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
+                raise BossCliError("首次联系求简历必须提供 1 到 1000 个字符的单行话术")
+            return self._run(
+                ["send", "--text", normalized, "--request-resume"],
+                env=self._account_env(account),
+                timeout_seconds=120,
+            )
+        return self._run(
+            ["action", "request-attachment-resume"],
+            env=self._account_env(account),
+            timeout_seconds=120,
+        )
+
+    def send_text_by_external_id(self, account, external_id, message):
+        normalized = str(message or "").strip()
+        if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
+            raise BossCliError("发送内容必须为 1 到 1000 个字符的单行文本")
+        self.open_chat_by_external_id(account, external_id)
+        self._assert_selected_conversation(account, external_id)
+        return self._run(
+            ["send", "--text", normalized], env=self._account_env(account), timeout_seconds=120
         )
 
     def send_text(self, account, name, message):

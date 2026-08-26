@@ -7,7 +7,7 @@ from recruitment.services.workflows import create_version
 STANDARD_SCHEMES = {
     "passive_resume": {
         "name": "被动咨询与简历获取",
-        "description": "同步完整会话，识别观望消息并通过 BOSS 原生动作索要附件简历。",
+        "description": "同步完整会话，确认首条话术后先打招呼，再通过 BOSS 原生动作索要附件简历。",
     },
     "active_resume_search": {
         "name": "主动搜索并拉取简历",
@@ -33,7 +33,7 @@ def _passive_graph(config):
         _node("sync", "sync_messages", "同步完整消息", 210),
         _node("intent", "classify_intent", "判断消息意图", 400),
         _node("approve_request", "human_approval", "HR 确认求简历", 590),
-        _node("request", "request_resume", "原生求简历", 780, {"message": reply}),
+        _node("request", "request_resume", "打招呼并原生求简历", 780, {"message": reply}),
         _node("attention", "create_attention", "人工介入", 590, {"attention_type": "observing_candidate"}),
         _node("stop_rejected", "stop", "候选人拒绝，停止跟进", 780),
         _node("stop_observing", "stop", "已转人工，停止自动跟进", 780),

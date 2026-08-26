@@ -59,6 +59,47 @@ class PlaywrightAdapterTests(SimpleTestCase):
         self.assertEqual(frame.eval_on_selector_all.call_count, 2)
 
     @patch("recruitment.rpa.playwright_adapter.sync_playwright")
+    def test_conversation_rows_require_unique_platform_ids(self, sync_playwright):
+        page = MagicMock()
+        page.url = "https://www.zhipin.com/web/chat/index"
+        page.eval_on_selector_all.return_value = [
+            {
+                "index": 1,
+                "external_id": "conversation-101",
+                "name": "林然",
+                "job_title": "产品经理",
+                "preview": "你好",
+                "unread_count": 1,
+                "selected": True,
+            }
+        ]
+        page.locator.return_value.evaluate_all.return_value = page.eval_on_selector_all.return_value
+        browser = MagicMock(contexts=[MagicMock(pages=[page])])
+        playwright = sync_playwright.return_value.__enter__.return_value
+        playwright.chromium.connect_over_cdp.return_value = browser
+
+        rows = BrowserInventory(53470).conversation_rows()
+
+        self.assertEqual(rows[0]["external_id"], "conversation-101")
+        self.assertEqual(BrowserInventory(53470).selected_conversation()["name"], "林然")
+
+    @patch("recruitment.rpa.playwright_adapter.sync_playwright")
+    def test_conversation_rows_reject_duplicate_platform_ids(self, sync_playwright):
+        page = MagicMock()
+        page.url = "https://www.zhipin.com/web/chat/index"
+        page.eval_on_selector_all.return_value = [
+            {"external_id": "duplicate", "name": "林然", "selected": False},
+            {"external_id": "duplicate", "name": "周青", "selected": False},
+        ]
+        page.locator.return_value.evaluate_all.return_value = page.eval_on_selector_all.return_value
+        browser = MagicMock(contexts=[MagicMock(pages=[page])])
+        playwright = sync_playwright.return_value.__enter__.return_value
+        playwright.chromium.connect_over_cdp.return_value = browser
+
+        with self.assertRaisesMessage(RuntimeError, "重复稳定 ID"):
+            BrowserInventory(53470).conversation_rows()
+
+    @patch("recruitment.rpa.playwright_adapter.sync_playwright")
     def test_pdf_export_requires_expected_candidate_on_boss_page(self, sync_playwright):
         page = MagicMock()
         page.url = "https://www.zhipin.com/web/geek/resume"

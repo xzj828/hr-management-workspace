@@ -106,6 +106,50 @@ class BrowserInventory:
         except PlaywrightError as exc:
             raise BrowserConnectionError(f"无法读取 BOSS 职位列表：{exc}") from exc
 
+    def conversation_rows(self):
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(self.endpoint)
+                pages = [
+                    page for context in browser.contexts for page in context.pages
+                    if str(page.url).startswith("https://www.zhipin.com/")
+                ]
+                if not pages:
+                    raise BrowserConnectionError("未找到已登录的 BOSS 页面")
+                page = pages[-1]
+                if not str(page.url).startswith("https://www.zhipin.com/web/chat/index"):
+                    raise BrowserConnectionError("当前不在 BOSS 沟通列表页")
+                rows = page.locator(".geek-item").evaluate_all(
+                    r"""items => items.map((el, index) => {
+                      const norm = (value) => (value || '').replace(/\s+/g, ' ').trim();
+                      const badge = norm(el.querySelector('.badge-count')?.textContent);
+                      const digits = badge.replace(/\D/g, '');
+                      return {
+                        index: index + 1,
+                        external_id: norm(el.getAttribute('data-id')),
+                        name: norm(el.querySelector('.geek-name')?.textContent),
+                        job_title: norm(el.querySelector('.source-job')?.textContent),
+                        preview: norm(el.querySelector('.push-text')?.textContent),
+                        unread_count: digits ? (parseInt(digits, 10) || 0) : 0,
+                        selected: el.classList.contains('selected'),
+                      };
+                    }).filter((row) => row.external_id && row.name)""",
+                )
+                external_ids = [str(row.get("external_id", "")).strip() for row in rows]
+                if len(external_ids) != len(set(external_ids)):
+                    raise BrowserConnectionError("BOSS 沟通列表存在重复稳定 ID")
+                return rows
+        except BrowserConnectionError:
+            raise
+        except PlaywrightError as exc:
+            raise BrowserConnectionError(f"无法读取 BOSS 沟通列表：{exc}") from exc
+
+    def selected_conversation(self):
+        selected = [row for row in self.conversation_rows() if row.get("selected")]
+        if len(selected) != 1:
+            raise BrowserConnectionError("无法唯一确认当前 BOSS 沟通会话")
+        return selected[0]
+
     def save_pdf(self, expected_name, output_path):
         normalized = str(expected_name or "").strip()
         if not normalized:
