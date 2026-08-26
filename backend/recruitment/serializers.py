@@ -6,6 +6,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from .models import (
     ApplicationStageHistory,
+    ApplicationScreeningDecision,
     AiProcessingTask,
     AutomationApproval,
     BossAccount,
@@ -19,6 +20,8 @@ from .models import (
     JobRequirementDocumentVersion,
     JobStandardVersion,
     MessageSyncPolicy,
+    RecruitmentAutomationPlan,
+    RecruitmentAutomationPlanRevision,
     RecruitmentJob,
     Resume,
     ResumeAssessment,
@@ -51,8 +54,19 @@ class BossAccountSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "browser_profile", "browser_executable", "user_data_dir", "cdp_port", "status",
-            "login_status", "verification_status", "last_checked_at", "archived_at",
+            "login_status", "verification_status", "last_checked_at", "active", "archived_at",
         ]
+
+    def validate(self, attrs):
+        if self.instance is not None and "active" in self.initial_data:
+            requested = self.initial_data.get("active")
+            if isinstance(requested, str):
+                requested = requested.strip().lower() in {"1", "true", "yes", "on"}
+            if bool(requested) != self.instance.active:
+                raise serializers.ValidationError({
+                    "active": "账号启停必须使用归档/恢复操作，以便安全停止关联招聘自动化方案"
+                })
+        return attrs
 
     @transaction.atomic
     def create(self, validated_data):
@@ -106,6 +120,29 @@ class RecruitmentJobSerializer(serializers.ModelSerializer):
             "archived_at",
         ]
         read_only_fields = ["id", "candidate_count", "created_at", "updated_at", "archived_at"]
+
+    def validate_boss_account(self, account):
+        account = _validate_authorized_account(account, self.context["request"].user)
+        if (
+            self.instance is not None
+            and self.instance.boss_account_id != account.pk
+        ):
+            raise serializers.ValidationError(
+                "已创建职位的 BOSS 账号不可更换，请新建职位后再配置招聘自动化"
+            )
+        return account
+
+    def update(self, instance, validated_data):
+        requested_status = validated_data.pop("status", instance.status)
+        if requested_status != instance.status:
+            from recruitment.services.lifecycle import change_job_status
+
+            instance = change_job_status(
+                job=instance,
+                to_status=requested_status,
+                actor=self.context["request"].user,
+            )
+        return super().update(instance, validated_data)
 
 
 class JobRequirementDocumentVersionSerializer(serializers.ModelSerializer):
@@ -340,6 +377,38 @@ class ResumeAssessmentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ApplicationScreeningDecisionSerializer(serializers.ModelSerializer):
+    batch_id = serializers.UUIDField(read_only=True)
+    decided_by_name = serializers.CharField(source="decided_by.username", read_only=True)
+    decided_at = serializers.DateTimeField(source="created_at", read_only=True)
+
+    class Meta:
+        model = ApplicationScreeningDecision
+        fields = [
+            "id", "batch_id", "application", "resume", "assessment", "decision",
+            "reason", "version", "decided_by_name", "decided_at",
+        ]
+        read_only_fields = fields
+
+
+class ScreeningDecisionBulkSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    job = serializers.IntegerField(min_value=1)
+    application_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        min_length=1,
+        max_length=100,
+    )
+    decision = serializers.ChoiceField(choices=ApplicationScreeningDecision.Decision.choices)
+    reason = serializers.CharField(min_length=1, max_length=1000, trim_whitespace=True)
+
+
+class RejectionNoticePrepareSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    decision_batch_id = serializers.UUIDField()
+    message = serializers.CharField(min_length=1, max_length=1000, trim_whitespace=True)
+
+
 class AiProcessingTaskSerializer(serializers.ModelSerializer):
     status_label = serializers.CharField(source="get_status_display", read_only=True)
     kind_label = serializers.CharField(source="get_kind_display", read_only=True)
@@ -391,6 +460,24 @@ class ConversationActionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.action == ConversationAction.Action.REJECTION_NOTICE:
+            target = instance.target_snapshot if isinstance(instance.target_snapshot, dict) else {}
+            data["target_snapshot"] = {
+                key: target.get(key)
+                for key in ("application_id", "job_id", "screening_decision_id", "screening_decision_batch_id")
+                if target.get(key) is not None
+            }
+            result = instance.result if isinstance(instance.result, dict) else {}
+            data["result"] = {"verified": result.get("verified") is True} if result else {}
+            data.pop("message_snapshot", None)
+            data["message_present"] = bool(instance.message_snapshot)
+            data["message_length"] = len(instance.message_snapshot or "")
+            if instance.error_code:
+                data["error_message"] = "该通知未自动完成，请由 HR 在 BOSS 直聘中核查并处理"
+        return data
+
 
 class StepExecutionSerializer(serializers.ModelSerializer):
     candidate_name = serializers.SerializerMethodField()
@@ -408,6 +495,16 @@ class StepExecutionSerializer(serializers.ModelSerializer):
         model = StepExecution
         fields = ["id", "action_id", "candidate_name", "status", "result", "error_code", "error_message", "created_at", "updated_at"]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        action = getattr(instance, "conversation_action", None)
+        if action is not None and action.action == ConversationAction.Action.REJECTION_NOTICE:
+            result = instance.result if isinstance(instance.result, dict) else {}
+            data["result"] = {"verified": result.get("verified") is True} if result else {}
+            if instance.error_code:
+                data["error_message"] = "该通知未自动完成，请由 HR 在 BOSS 直聘中核查并处理"
+        return data
+
 
 class ExecutionBatchSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="boss_account.name", read_only=True)
@@ -417,17 +514,28 @@ class ExecutionBatchSerializer(serializers.ModelSerializer):
         model = ExecutionBatch
         fields = [
             "id", "approval", "boss_account", "account_name", "action", "status", "total_items",
-            "succeeded_items", "failed_items", "steps", "created_at", "updated_at",
+            "succeeded_items", "failed_items", "reserved_metric", "reserved_amount",
+            "reserved_day", "steps", "created_at", "updated_at",
         ]
 
 
 class WorkflowTemplateSerializer(serializers.ModelSerializer):
     active_version_number = serializers.IntegerField(source="active_version.version", read_only=True, allow_null=True)
+    is_plan_managed = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowTemplate
-        fields = ["id", "name", "description", "active_version", "active_version_number", "archived_at", "created_at", "updated_at"]
-        read_only_fields = ["id", "active_version", "active_version_number", "archived_at", "created_at", "updated_at"]
+        fields = [
+            "id", "name", "description", "active_version", "active_version_number",
+            "is_plan_managed", "archived_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "active_version", "active_version_number", "is_plan_managed",
+            "archived_at", "created_at", "updated_at",
+        ]
+
+    def get_is_plan_managed(self, obj):
+        return obj.managed_automation_plans.exists()
 
 
 class WorkflowVersionSerializer(serializers.ModelSerializer):
@@ -447,6 +555,10 @@ class WorkflowVersionSerializer(serializers.ModelSerializer):
         template = validated_data["template"]
         if template.created_by_id != request.user.pk and not request.user.is_superuser:
             raise PermissionDenied("无权修改该流程")
+        if template.managed_automation_plans.exists():
+            raise serializers.ValidationError({
+                "template": "招聘作业台托管流程不能从流程管理入口新增版本"
+            })
         return create_version(
             template=template,
             boss_account=account,
@@ -503,6 +615,7 @@ class WorkflowRunSerializer(serializers.ModelSerializer):
         fields = [
             "id", "version", "version_number", "template_name", "boss_account", "account_name",
             "job", "actor", "mode", "status", "idempotency_key", "graph_snapshot", "input_snapshot",
+            "automation_plan_revision", "automation_generation",
             "result", "error_code", "error_message", "started_at", "completed_at", "created_at",
             "updated_at", "node_runs", "events",
         ]
@@ -526,6 +639,7 @@ class RpaTaskSerializer(serializers.ModelSerializer):
         fields = [
             "id", "boss_account", "account_name", "action", "status", "created_by_name",
             "worker", "approval", "execution_batch", "idempotency_key", "request_payload",
+            "automation_plan_revision", "automation_generation", "lease_generation",
             "result", "error_code", "error_message",
             "lease_expires_at", "started_at", "completed_at", "created_at", "updated_at", "events",
             "archived_at",
@@ -533,6 +647,7 @@ class RpaTaskSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "status", "worker", "result", "error_code", "error_message", "lease_expires_at",
             "started_at", "completed_at", "created_at", "updated_at", "archived_at",
+            "automation_plan_revision", "automation_generation", "lease_generation",
         ]
         extra_kwargs = {
             "idempotency_key": {"validators": [], "allow_blank": True, "allow_null": True},
@@ -552,6 +667,31 @@ class RpaTaskSerializer(serializers.ModelSerializer):
         )
         task._was_existing = not created
         return task
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.action == RpaTask.Action.REJECTION_NOTICE:
+            payload = instance.request_payload if isinstance(instance.request_payload, dict) else {}
+            target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+            data["request_payload"] = {
+                "step_id": payload.get("step_id"),
+                "conversation_action_id": payload.get("conversation_action_id"),
+                "target": {
+                    key: target.get(key)
+                    for key in ("application_id", "job_id", "screening_decision_id", "screening_decision_batch_id")
+                    if target.get(key) is not None
+                },
+                "message_present": bool(payload.get("message")),
+                "message_length": len(str(payload.get("message", ""))),
+            }
+            result = instance.result if isinstance(instance.result, dict) else {}
+            data["result"] = {"verified": result.get("verified") is True} if result else {}
+            for event in data.get("events", []):
+                event["message"] = "未通过通知任务状态已更新"
+                event["data"] = {}
+            if instance.error_code:
+                data["error_message"] = "该通知未自动完成，请由 HR 在 BOSS 直聘中核查并处理"
+        return data
 
     def validate(self, attrs):
         from recruitment.rpa.tasks import GENERIC_CREATE_ACTIONS
@@ -686,3 +826,87 @@ class AutomationApprovalSerializer(serializers.ModelSerializer):
             "item_count", "status", "approved_by_name", "expires_at", "approved_at", "created_at",
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.action == AutomationApproval.Action.REJECTION_NOTICE:
+            payload = instance.payload if isinstance(instance.payload, dict) else {}
+            data["payload"] = {
+                "action": payload.get("action"),
+                "decision_batch_id": payload.get("decision_batch_id"),
+                "item_count": instance.item_count,
+            }
+        return data
+
+
+class RecruitmentAutomationPlanRevisionSerializer(serializers.ModelSerializer):
+    config = serializers.JSONField(source="config_snapshot", read_only=True)
+    workflow_mode = serializers.SerializerMethodField()
+    is_managed_workflow = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RecruitmentAutomationPlanRevision
+        fields = [
+            "id", "revision", "kind", "config", "workflow_version",
+            "workflow_mode", "is_managed_workflow", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_is_managed_workflow(self, obj):
+        return (
+            obj.plan.managed_template_id is not None
+            and obj.workflow_version.template_id == obj.plan.managed_template_id
+        )
+
+    def get_workflow_mode(self, obj):
+        return "managed" if self.get_is_managed_workflow(obj) else "custom"
+
+
+class RecruitmentAutomationPlanSerializer(serializers.ModelSerializer):
+    current_revision = RecruitmentAutomationPlanRevisionSerializer(read_only=True)
+    current_run = serializers.SerializerMethodField()
+    current_run_status = serializers.CharField(source="current_run.status", read_only=True, allow_null=True)
+    job_title = serializers.CharField(source="job.title", read_only=True)
+    boss_account = serializers.IntegerField(source="job.boss_account_id", read_only=True)
+    effective_state = serializers.SerializerMethodField()
+    actual_state = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RecruitmentAutomationPlan
+        fields = [
+            "id", "job", "job_title", "boss_account", "kind", "desired_state",
+            "effective_state", "actual_state", "control_version", "control_generation",
+            "current_revision", "current_run", "current_run_status", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_effective_state(self, obj):
+        from recruitment.services.automation_plans import effective_plan_state
+
+        return effective_plan_state(obj)
+
+    def get_actual_state(self, obj):
+        return self.get_effective_state(obj)
+
+    def get_current_run(self, obj):
+        if obj.current_run_id is None:
+            return None
+        return {"id": str(obj.current_run_id), "status": obj.current_run.status}
+
+
+class RecruitmentAutomationPlanStartSerializer(serializers.Serializer):
+    job = serializers.PrimaryKeyRelatedField(queryset=RecruitmentJob.objects.all())
+    kind = serializers.ChoiceField(choices=RecruitmentAutomationPlan.Kind.choices)
+    config = serializers.JSONField()
+    request_id = serializers.UUIDField()
+    expected_control_version = serializers.IntegerField(min_value=0, required=False, default=0)
+    workflow_version = serializers.PrimaryKeyRelatedField(
+        queryset=WorkflowVersion.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+
+class RecruitmentAutomationPlanControlSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    expected_control_version = serializers.IntegerField(min_value=0)

@@ -1,5 +1,6 @@
 import hashlib
 import secrets
+import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import asdict
@@ -7,14 +8,14 @@ from dataclasses import asdict
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Subquery
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import AutomationApproval, AutomationEvidence, BossAccount, CandidateDiscovery, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentJob, Resume, RpaTask, RpaWorker, SearchCampaign, WorkflowNodeRun, WorkflowRun
+from .models import AutomationApproval, AutomationEvidence, BossAccount, CandidateDiscovery, ConversationAction, ExecutionBatch, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentAutomationPlan, RecruitmentJob, Resume, RpaTask, RpaWorker, SearchCampaign, StepExecution, WorkflowNodeRun, WorkflowRun
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
 from .services.discovery import _fingerprint, import_discoveries, sync_discoveries
@@ -25,6 +26,11 @@ from .services.conversation_ingestion import ingest_conversation, process_pendin
 from .services.task_recovery import recover_stale_tasks
 from .services.account_status import apply_account_observation
 from .services.message_scheduling import schedule_due_conversation_syncs
+from .services.screening import (
+    cancel_stale_rejection_task_before_lease,
+    rejection_task_snapshot_is_current,
+)
+from .services.sqlite_lifecycle import serialize_sqlite_lifecycle
 
 
 class HasRpaWorkerToken(BasePermission):
@@ -39,6 +45,65 @@ def _worker(request):
     if not key:
         return None
     return RpaWorker.objects.filter(key=key).first()
+
+
+def _raw_passive_scopes(task):
+    payload = task.request_payload if isinstance(task.request_payload, dict) else {}
+    scopes = payload.get("passive_plan_scopes")
+    if isinstance(scopes, dict):
+        return scopes
+    if task.automation_plan_revision_id and payload.get("job"):
+        return {
+            str(payload["job"]): {
+                "revision_id": task.automation_plan_revision_id,
+                "generation": task.automation_generation,
+            }
+        }
+    return None
+
+
+def _valid_passive_scope_plans(task):
+    scopes = _raw_passive_scopes(task)
+    if scopes is None:
+        return None
+    from .services.automation_plans import current_passive_plan_for_sync
+
+    valid = {}
+    for raw_job_id in scopes:
+        if not str(raw_job_id).isdigit():
+            continue
+        plan = current_passive_plan_for_sync(job_id=int(raw_job_id), scopes=scopes)
+        if plan is not None:
+            valid[plan.job_id] = plan
+    # A shared browser read cannot reliably tell which job an account-level
+    # conversation belongs to before opening it.  If any frozen scope changed,
+    # stop and discard the whole poll; a later poll is scheduled with the
+    # remaining jobs' fresh scope instead of continuing to read stopped jobs.
+    return valid if len(valid) == len(scopes) else {}
+
+
+def _scope_job_ids(scopes):
+    return sorted({int(value) for value in (scopes or {}) if str(value).isdigit()})
+
+
+def _safe_incoming_path(raw_value, *, suffix):
+    incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
+    try:
+        resolved = Path(str(raw_value or "")).resolve(strict=True)
+    except (OSError, ValueError):
+        return None
+    if incoming not in resolved.parents or resolved.suffix.lower() != suffix:
+        return None
+    return resolved
+
+
+def _set_account_runtime_status(account, desired_status):
+    account.status = (
+        BossAccount.Status.OFFLINE
+        if not account.active or account.archived_at is not None
+        else desired_status
+    )
+    account.save(update_fields=["status", "updated_at"])
 
 
 @api_view(["POST"])
@@ -108,6 +173,7 @@ def status_observations_view(request):
 
 @api_view(["POST"])
 @permission_classes([HasRpaWorkerToken])
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def lease_task_view(request):
     worker = _worker(request)
@@ -116,10 +182,13 @@ def lease_task_view(request):
     now = timezone.now()
     recover_stale_tasks(now=now)
     schedule_due_conversation_syncs(now=now)
-    task = (
-        RpaTask.objects.select_for_update()
-        .select_related("boss_account")
-        .filter(Q(status=RpaTask.Status.PENDING) | Q(status=RpaTask.Status.LEASED, lease_expires_at__lt=now))
+    busy_account_ids = RpaTask.objects.filter(
+        status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING]
+    ).values("boss_account_id")
+    candidate_tasks = (
+        RpaTask.objects.select_related("boss_account")
+        .filter(status=RpaTask.Status.PENDING)
+        .exclude(boss_account_id__in=Subquery(busy_account_ids))
         .filter(
             Q(workflow_node_run__isnull=True)
             | Q(
@@ -136,14 +205,152 @@ def lease_task_view(request):
             )
         )
         .order_by("created_at")
-        .first()
     )
+    task = None
+    for _ in range(100):
+        candidate_task = candidate_tasks.first()
+        if candidate_task is None:
+            break
+        passive_scopes = _raw_passive_scopes(candidate_task)
+        if (
+            candidate_task.action == RpaTask.Action.SYNC_CONVERSATIONS
+            and passive_scopes is not None
+            and not candidate_task.automation_plan_revision_id
+        ):
+            BossAccount.objects.select_for_update().get(pk=candidate_task.boss_account_id)
+            list(
+                RecruitmentAutomationPlan.objects.select_for_update()
+                .filter(job_id__in=_scope_job_ids(passive_scopes))
+                .order_by("job_id")
+            )
+            scoped = RpaTask.objects.select_for_update().filter(
+                pk=candidate_task.pk,
+                status=RpaTask.Status.PENDING,
+            ).first()
+            if scoped is None:
+                continue
+            if not _valid_passive_scope_plans(scoped):
+                scoped.status = RpaTask.Status.CANCELLED
+                scoped.error_code = "automation_plan_scopes_stale"
+                scoped.error_message = "该消息同步任务的部分或全部岗位订阅已停止或被新修订替代"
+                scoped.completed_at = now
+                scoped.save(update_fields=[
+                    "status", "error_code", "error_message", "completed_at", "updated_at",
+                ])
+                append_event(task=scoped, event="cancelled", message="消息同步任务在租约前发现岗位订阅范围已变化")
+                continue
+            task = scoped
+            break
+        if candidate_task.automation_plan_revision_id:
+            from .services.automation_plans import plan_fence_is_current
+
+            account = BossAccount.objects.select_for_update().get(pk=candidate_task.boss_account_id)
+            RecruitmentAutomationPlan.objects.select_for_update().get(
+                revisions__pk=candidate_task.automation_plan_revision_id,
+            )
+            if not plan_fence_is_current(
+                revision_id=candidate_task.automation_plan_revision_id,
+                generation=candidate_task.automation_generation,
+            ):
+                stale = RpaTask.objects.select_for_update().filter(
+                    pk=candidate_task.pk,
+                    status=RpaTask.Status.PENDING,
+                ).first()
+                if stale is not None:
+                    stale.status = RpaTask.Status.CANCELLED
+                    stale.error_code = "automation_plan_generation_stale"
+                    stale.error_message = "招聘自动化方案已暂停、停止或被新修订替代"
+                    stale.completed_at = now
+                    stale.save(update_fields=[
+                        "status", "error_code", "error_message", "completed_at", "updated_at",
+                    ])
+                    append_event(task=stale, event="cancelled", message="任务在租约前被方案控制栅栏取消")
+                continue
+            task = (
+                RpaTask.objects.select_for_update()
+                .select_related("boss_account")
+                .filter(pk=candidate_task.pk, status=RpaTask.Status.PENDING)
+                .first()
+            )
+            if task is not None:
+                break
+            continue
+        if candidate_task.action != RpaTask.Action.REJECTION_NOTICE:
+            task = (
+                RpaTask.objects.select_for_update()
+                .select_related("boss_account")
+                .filter(pk=candidate_task.pk, status=RpaTask.Status.PENDING)
+                .first()
+            )
+            if task is not None:
+                break
+            continue
+
+        # Rejection guards always lock account -> application -> task/action/step.
+        # Decision and stage services use the same order, preventing stale sends and deadlocks.
+        account = BossAccount.objects.select_for_update().get(pk=candidate_task.boss_account_id)
+        payload = candidate_task.request_payload if isinstance(candidate_task.request_payload, dict) else {}
+        target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+        application_id = target.get("application_id")
+        if not application_id:
+            application_id = ConversationAction.objects.filter(
+                pk=payload.get("conversation_action_id")
+            ).values_list("application_id", flat=True).first()
+        application = (
+            JobApplication.objects.select_for_update()
+            .select_related("job", "candidate")
+            .filter(pk=application_id, job__boss_account=account)
+            .first()
+        )
+        task = (
+            RpaTask.objects.select_for_update()
+            .select_related("boss_account", "approval")
+            .filter(pk=candidate_task.pk, status=RpaTask.Status.PENDING)
+            .first()
+        )
+        if task is None:
+            continue
+        if application is None:
+            action = (
+                ConversationAction.objects.select_for_update()
+                .filter(pk=payload.get("conversation_action_id"))
+                .first()
+            )
+            cancel_stale_rejection_task_before_lease(
+                task=task,
+                application=None,
+                action=action,
+            )
+            append_event(
+                task=task,
+                event="cancelled",
+                message="租约前复核发现未通过通知目标无效，任务已取消",
+            )
+            task = None
+            continue
+        valid, conversation_action = rejection_task_snapshot_is_current(
+            task=task,
+            application=application,
+        )
+        if not valid:
+            cancel_stale_rejection_task_before_lease(
+                task=task,
+                application=application,
+                action=conversation_action,
+            )
+            task = None
+            continue
+        break
     if task is None:
         return Response({"task": None})
     task.status = RpaTask.Status.LEASED
     task.worker = worker
     task.lease_expires_at = now + timedelta(seconds=60)
-    task.save(update_fields=["status", "worker", "lease_expires_at", "updated_at"])
+    task.lease_generation += 1
+    task.lease_token = uuid.uuid4()
+    task.save(update_fields=[
+        "status", "worker", "lease_expires_at", "lease_generation", "lease_token", "updated_at",
+    ])
     account = task.boss_account
     account.status = BossAccount.Status.RUNNING
     account.save(update_fields=["status", "updated_at"])
@@ -151,6 +358,8 @@ def lease_task_view(request):
     return Response({"task": {
         "id": str(task.pk),
         "action": task.action,
+        "lease_token": str(task.lease_token),
+        "lease_generation": task.lease_generation,
         "open_login": bool(task.request_payload.get("open_login", False)),
         "request_payload": task.request_payload,
         "browser": {
@@ -162,15 +371,83 @@ def lease_task_view(request):
     }})
 
 
-def _assigned_task(request, task_id, *, for_update=False):
+def _lock_task_for_worker(request, task_id):
+    """Lock account/domain before task and bind the call to one exact lease."""
     worker = _worker(request)
     if worker is None:
-        return None, None
-    tasks = RpaTask.objects.select_related("boss_account")
-    if for_update:
-        tasks = tasks.select_for_update()
-    task = tasks.filter(pk=task_id, worker=worker).first()
-    return worker, task
+        return None, None, "worker_missing"
+    snapshot = RpaTask.objects.filter(pk=task_id).values(
+        "action", "boss_account_id", "request_payload", "automation_plan_revision_id"
+    ).first()
+    if snapshot is None:
+        return worker, None, "task_missing"
+    if snapshot["automation_plan_revision_id"]:
+        BossAccount.objects.select_for_update().get(pk=snapshot["boss_account_id"])
+        RecruitmentAutomationPlan.objects.select_for_update().get(
+            revisions__pk=snapshot["automation_plan_revision_id"],
+        )
+        task = (
+            RpaTask.objects.select_for_update()
+            .select_related("boss_account")
+            .filter(pk=task_id)
+            .first()
+        )
+    elif (
+        snapshot["action"] == RpaTask.Action.SYNC_CONVERSATIONS
+        and isinstance((snapshot["request_payload"] or {}).get("passive_plan_scopes"), dict)
+    ):
+        scopes = snapshot["request_payload"]["passive_plan_scopes"]
+        BossAccount.objects.select_for_update().get(pk=snapshot["boss_account_id"])
+        list(
+            RecruitmentAutomationPlan.objects.select_for_update()
+            .filter(job_id__in=_scope_job_ids(scopes))
+            .order_by("job_id")
+        )
+        task = (
+            RpaTask.objects.select_for_update()
+            .select_related("boss_account")
+            .filter(pk=task_id)
+            .first()
+        )
+    elif snapshot["action"] == RpaTask.Action.REJECTION_NOTICE:
+        BossAccount.objects.select_for_update().get(pk=snapshot["boss_account_id"])
+        payload = snapshot["request_payload"] if isinstance(snapshot["request_payload"], dict) else {}
+        target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+        application_id = target.get("application_id")
+        if application_id:
+            JobApplication.objects.select_for_update().filter(
+                pk=application_id,
+                job__boss_account_id=snapshot["boss_account_id"],
+            ).first()
+        task = (
+            RpaTask.objects.select_for_update()
+            .select_related("boss_account")
+            .filter(pk=task_id)
+            .first()
+        )
+    else:
+        task = (
+            RpaTask.objects.select_for_update()
+            .select_related("boss_account")
+            .filter(pk=task_id)
+            .first()
+        )
+    if task is None:
+        return worker, None, "task_missing"
+    if task.worker_id != worker.pk:
+        return worker, task, "worker_changed"
+    supplied_token = str(request.data.get("lease_token", "")).strip()
+    try:
+        supplied_generation = int(request.data.get("lease_generation"))
+    except (TypeError, ValueError):
+        supplied_generation = -1
+    if (
+        task.lease_token is None
+        or supplied_token != str(task.lease_token)
+        or supplied_generation != task.lease_generation
+    ):
+        return worker, task, "lease_changed"
+    return worker, task, "assigned"
 
 
 class SearchPullResultError(ValueError):
@@ -182,11 +459,28 @@ class SearchPullResultError(ValueError):
 def _schedule_workflow_resume(task):
     if not task.workflow_node_run_id:
         return
+    if task.automation_plan_revision_id:
+        from .services.automation_plans import plan_fence_is_current
+
+        if not plan_fence_is_current(
+            revision_id=task.automation_plan_revision_id,
+            generation=task.automation_generation,
+        ):
+            return
     task_id = task.pk
 
     def resume_workflow():
         from .services.workflow_nodes import resume_workflow_for_task
-        resume_workflow_for_task(RpaTask.objects.get(pk=task_id))
+        current = RpaTask.objects.get(pk=task_id)
+        if current.automation_plan_revision_id:
+            from .services.automation_plans import plan_fence_is_current
+
+            if not plan_fence_is_current(
+                revision_id=current.automation_plan_revision_id,
+                generation=current.automation_generation,
+            ):
+                return
+        resume_workflow_for_task(current)
 
     transaction.on_commit(resume_workflow)
 
@@ -549,7 +843,7 @@ def _persist_search_pull_evidence(*, task, context, final_status, failure_code="
     )
 
 
-def _complete_search_pull_success(*, task, campaign, context):
+def _complete_search_pull_success(*, task, campaign, context, user_stopped=False):
     created_files = []
     incoming_paths = []
     try:
@@ -590,11 +884,19 @@ def _complete_search_pull_success(*, task, campaign, context):
 
             campaign.scanned_count = context["scanned_count"]
             campaign.pulled_resume_count = archived
-            campaign.status = SearchCampaign.Status.SUCCEEDED
+            campaign.status = (
+                SearchCampaign.Status.CANCELLED
+                if user_stopped
+                else SearchCampaign.Status.SUCCEEDED
+            )
             campaign.stop_reason = (
-                SearchCampaign.StopReason.TARGET_REACHED
-                if archived >= campaign.target_resume_count
-                else SearchCampaign.StopReason.SCAN_LIMIT
+                SearchCampaign.StopReason.USER_STOPPED
+                if user_stopped
+                else (
+                    SearchCampaign.StopReason.TARGET_REACHED
+                    if archived >= campaign.target_resume_count
+                    else SearchCampaign.StopReason.SCAN_LIMIT
+                )
             )
             campaign.error_message = ""
             campaign.completed_at = timezone.now()
@@ -618,34 +920,39 @@ def _complete_search_pull_success(*, task, campaign, context):
             _persist_search_pull_evidence(
                 task=task,
                 context=context,
-                final_status=RpaTask.Status.SUCCEEDED,
+                final_status=(RpaTask.Status.CANCELLED if user_stopped else RpaTask.Status.SUCCEEDED),
             )
-            task.status = RpaTask.Status.SUCCEEDED
+            task.status = RpaTask.Status.CANCELLED if user_stopped else RpaTask.Status.SUCCEEDED
             task.result = normalized_result
-            task.error_code = ""
-            task.error_message = ""
+            task.error_code = "automation_plan_stopped" if user_stopped else ""
+            task.error_message = "招聘自动化方案已停止；已完成的原子结果已保留" if user_stopped else ""
             task.completed_at = timezone.now()
             task.lease_expires_at = None
+            task.lease_token = None
             task.save(update_fields=[
                 "status", "result", "error_code", "error_message", "completed_at",
-                "lease_expires_at", "updated_at",
+                "lease_expires_at", "lease_token", "updated_at",
             ])
             append_event(
                 task=task,
-                event="completed",
-                message="主动寻访任务执行结束",
+                event="cancelled" if user_stopped else "completed",
+                message=(
+                    "主动寻访在安全检查点停止，已保留完成的原子结果"
+                    if user_stopped
+                    else "主动寻访任务执行结束"
+                ),
                 data={"status": task.status},
             )
             account = task.boss_account
-            account.status = BossAccount.Status.READY
-            account.save(update_fields=["status", "updated_at"])
+            _set_account_runtime_status(account, BossAccount.Status.READY)
             RecruitmentAuditLog.objects.create(
                 boss_account=account,
                 action="task_completed",
                 target_id=str(task.pk),
                 detail={"status": task.status, "error_code": ""},
             )
-            _schedule_workflow_resume(task)
+            if not user_stopped:
+                _schedule_workflow_resume(task)
             for path in incoming_paths:
                 transaction.on_commit(lambda resolved=path: resolved.unlink(missing_ok=True))
             return normalized_result
@@ -710,8 +1017,7 @@ def _fail_search_pull_completion(
         level="error",
     )
     account = task.boss_account
-    account.status = BossAccount.Status.READY
-    account.save(update_fields=["status", "updated_at"])
+    _set_account_runtime_status(account, BossAccount.Status.READY)
     _schedule_workflow_resume(task)
 
 
@@ -751,8 +1057,7 @@ def _fail_orphaned_search_pull_task(*, task):
         level="error",
     )
     account = task.boss_account
-    account.status = BossAccount.Status.READY
-    account.save(update_fields=["status", "updated_at"])
+    _set_account_runtime_status(account, BossAccount.Status.READY)
     _schedule_workflow_resume(task)
 
 
@@ -814,30 +1119,95 @@ def _complete_search_pull_waiting_human(*, task, campaign, context, error_code, 
             data={"status": task.status, "error_code": task.error_code},
         )
         account = task.boss_account
-        account.status = BossAccount.Status.PAUSED
-        account.save(update_fields=["status", "updated_at"])
+        _set_account_runtime_status(account, BossAccount.Status.PAUSED)
         _schedule_workflow_resume(task)
 
 
 @api_view(["POST"])
 @permission_classes([HasRpaWorkerToken])
+@serialize_sqlite_lifecycle
+@transaction.atomic
 def task_event_view(request, task_id):
-    _, task = _assigned_task(request, task_id)
+    _, task, assignment = _lock_task_for_worker(request, task_id)
     if task is None:
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    if assignment != "assigned":
+        return Response({"detail": "任务租约已转移，旧 Worker 不得继续执行"}, status=status.HTTP_409_CONFLICT)
+    now = timezone.now()
     if task.status not in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}:
         return Response({"detail": "任务已结束"}, status=status.HTTP_409_CONFLICT)
-    now = timezone.now()
+    if task.lease_expires_at is None or task.lease_expires_at <= now:
+        return Response({"detail": "任务租约已过期，Worker 不得继续执行"}, status=status.HTTP_409_CONFLICT)
+    if task.automation_plan_revision_id:
+        from .services.automation_plans import plan_fence_is_current
+
+        if not plan_fence_is_current(
+            revision_id=task.automation_plan_revision_id,
+            generation=task.automation_generation,
+        ):
+            return Response(
+                {"detail": "招聘自动化方案已暂停、停止或被新修订替代"},
+                status=status.HTTP_409_CONFLICT,
+            )
+    valid_scope_plans = _valid_passive_scope_plans(task)
+    if valid_scope_plans is not None and not valid_scope_plans:
+        return Response(
+            {"detail": "消息同步任务的岗位订阅范围已变化，必须使用新范围重新同步"},
+            status=status.HTTP_409_CONFLICT,
+        )
+    action = None
+    step = None
+    batch = None
+    if task.action == RpaTask.Action.REJECTION_NOTICE:
+        payload = task.request_payload if isinstance(task.request_payload, dict) else {}
+        target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+        action = (
+            ConversationAction.objects.select_for_update()
+            .filter(
+                pk=payload.get("conversation_action_id"),
+                application_id=target.get("application_id"),
+                approval_id=task.approval_id,
+                batch_id=task.execution_batch_id,
+            )
+            .first()
+        )
+        if action is None or not action.step_id or not action.batch_id:
+            return Response({"detail": "未通过通知执行快照无效"}, status=status.HTTP_409_CONFLICT)
+        step = StepExecution.objects.select_for_update().filter(
+            pk=action.step_id,
+            batch_id=action.batch_id,
+        ).first()
+        batch = ExecutionBatch.objects.select_for_update().filter(pk=action.batch_id).first()
+        if step is None or batch is None:
+            return Response({"detail": "未通过通知执行快照无效"}, status=status.HTTP_409_CONFLICT)
     if task.status == RpaTask.Status.LEASED:
         task.status = RpaTask.Status.RUNNING
         task.started_at = now
     task.lease_expires_at = now + timedelta(seconds=120)
     task.save(update_fields=["status", "started_at", "lease_expires_at", "updated_at"])
+    if action is not None:
+        if action.status == ConversationAction.Status.PENDING:
+            action.status = ConversationAction.Status.RUNNING
+            action.save(update_fields=["status", "updated_at"])
+        if step.status == StepExecution.Status.PENDING:
+            step.status = StepExecution.Status.RUNNING
+            step.started_at = step.started_at or now
+            step.save(update_fields=["status", "started_at", "updated_at"])
+        if batch.status == ExecutionBatch.Status.PENDING:
+            batch.status = ExecutionBatch.Status.RUNNING
+            batch.save(update_fields=["status", "updated_at"])
+    event_name = str(request.data.get("event", "progress"))[:64]
+    if task.action == RpaTask.Action.REJECTION_NOTICE:
+        event_message = "本机 Worker 正在执行未通过通知任务"
+        event_data = {"status": task.status}
+    else:
+        event_message = str(request.data.get("message", ""))[:500]
+        event_data = request.data.get("data") if isinstance(request.data.get("data"), dict) else {}
     event = append_event(
         task=task,
-        event=str(request.data.get("event", "progress"))[:64],
-        message=str(request.data.get("message", ""))[:500],
-        data=request.data.get("data") if isinstance(request.data.get("data"), dict) else {},
+        event=event_name,
+        message=event_message,
+        data=event_data,
         level=str(request.data.get("level", "info"))[:16],
     )
     return Response({"id": event.id}, status=status.HTTP_201_CREATED)
@@ -845,13 +1215,18 @@ def task_event_view(request, task_id):
 
 @api_view(["POST"])
 @permission_classes([HasRpaWorkerToken])
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def complete_task_view(request, task_id):
-    _, task = _assigned_task(request, task_id, for_update=True)
+    _, task, assignment = _lock_task_for_worker(request, task_id)
     if task is None:
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    if assignment != "assigned":
+        return Response({"detail": "任务租约已转移，旧 Worker 不得提交结果"}, status=status.HTTP_409_CONFLICT)
     if task.status not in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}:
         return Response({"detail": "任务已结束"}, status=status.HTTP_409_CONFLICT)
+    if task.lease_expires_at is None or task.lease_expires_at <= timezone.now():
+        return Response({"detail": "任务租约已过期，Worker 不得提交结果"}, status=status.HTTP_409_CONFLICT)
     terminal = {RpaTask.Status.WAITING_HUMAN, RpaTask.Status.SUCCEEDED, RpaTask.Status.FAILED}
     completed_status = request.data.get("status")
     if completed_status not in terminal:
@@ -910,8 +1285,22 @@ def complete_task_view(request, task_id):
             try:
                 context = _validate_search_pull_result(task=task, campaign=campaign, result=result)
                 validation_failed = False
-                if completed_status == RpaTask.Status.SUCCEEDED:
-                    _complete_search_pull_success(task=task, campaign=campaign, context=context)
+                from recruitment.services.automation_plans import plan_fence_is_current
+
+                completion_stopped = (
+                    result.get("checkpoint_stopped") is True
+                    or not plan_fence_is_current(
+                        revision_id=task.automation_plan_revision_id,
+                        generation=task.automation_generation,
+                    )
+                )
+                if completed_status == RpaTask.Status.SUCCEEDED or completion_stopped:
+                    _complete_search_pull_success(
+                        task=task,
+                        campaign=campaign,
+                        context=context,
+                        user_stopped=completion_stopped,
+                    )
                 else:
                     _complete_search_pull_waiting_human(
                         task=task,
@@ -954,18 +1343,51 @@ def complete_task_view(request, task_id):
             })
     if task.action == RpaTask.Action.SYNC_CONVERSATIONS and completed_status == RpaTask.Status.SUCCEEDED:
         rows = result.get("conversations")
+        sync_checkpoint_stopped = result.get("checkpoint_stopped") is True
+        cleanup_paths = set()
+        if isinstance(rows, list):
+            for cleanup_row in rows:
+                if not isinstance(cleanup_row, dict):
+                    continue
+                attachments = cleanup_row.get("attachments")
+                if not isinstance(attachments, list):
+                    continue
+                for attachment in attachments:
+                    if not isinstance(attachment, dict):
+                        continue
+                    resolved = _safe_incoming_path(attachment.get("path"), suffix=".pdf")
+                    if resolved is not None:
+                        cleanup_paths.add(resolved)
+        # A stopped or unmatched job must not leave downloaded applicant PII behind.
+        for cleanup_path in cleanup_paths:
+            transaction.on_commit(lambda path=cleanup_path: path.unlink(missing_ok=True))
         try:
-            sync_result = sync_conversation_states(account=task.boss_account, rows=rows, actor=task.created_by)
+            scoped_plans = _valid_passive_scope_plans(task)
+            unscoped_manual_sync = scoped_plans is None
+            server_scope_stopped = scoped_plans is not None and not scoped_plans
+            scope_stopped = sync_checkpoint_stopped or server_scope_stopped
+            valid_plans = {} if scope_stopped else (scoped_plans or {})
+            allowed_job_ids = None if unscoped_manual_sync and not scope_stopped else list(valid_plans)
+            sync_result = sync_conversation_states(
+                account=task.boss_account,
+                rows=rows,
+                actor=task.created_by,
+                allowed_job_ids=allowed_job_ids,
+            )
             archived = 0
-            incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
             for row in rows:
-                applications = list(JobApplication.objects.filter(
+                if not isinstance(row, dict):
+                    continue
+                application_queryset = JobApplication.objects.filter(
                     job__boss_account=task.boss_account,
                     candidate__name=str(row.get("name", "")).strip(),
-                )[:2])
+                )
+                applications = list(application_queryset[:2])
                 if len(applications) != 1:
                     continue
                 application = applications[0]
+                if allowed_job_ids is not None and application.job_id not in allowed_job_ids:
+                    continue
                 messages = [dict(item) for item in row.get("messages", []) if isinstance(item, dict)]
                 attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else []
                 if attachments:
@@ -992,10 +1414,11 @@ def complete_task_view(request, task_id):
                     cursor=str(row.get("cursor", "")),
                 )
                 for attachment in row.get("attachments") if isinstance(row.get("attachments"), list) else []:
-                    raw_path = Path(str(attachment.get("path", "")))
+                    if not isinstance(attachment, dict):
+                        continue
                     try:
-                        resolved = raw_path.resolve(strict=True)
-                        if incoming not in resolved.parents or resolved.suffix.lower() != ".pdf":
+                        resolved = _safe_incoming_path(attachment.get("path"), suffix=".pdf")
+                        if resolved is None:
                             continue
                         resume, created = archive_pdf(
                             application=application,
@@ -1004,7 +1427,6 @@ def complete_task_view(request, task_id):
                             source=Resume.Source.BOSS,
                             actor=task.created_by,
                         )
-                        resolved.unlink(missing_ok=True)
                         archived += int(created)
                         MessageAttachment.objects.filter(
                             message__conversation_state__application=application,
@@ -1014,14 +1436,34 @@ def complete_task_view(request, task_id):
                     except (OSError, ValueError):
                         continue
                 if not task.request_payload.get("workflow_managed"):
+                    if unscoped_manual_sync:
+                        process_pending_messages(
+                            application=application,
+                            account=task.boss_account,
+                            actor=task.created_by,
+                            schedule_actions=True,
+                            create_attentions=True,
+                        )
+                        continue
+                    plan = valid_plans.get(application.job_id)
+                    if plan is None:
+                        continue
                     process_pending_messages(
                         application=application,
                         account=task.boss_account,
                         actor=task.created_by,
                         schedule_actions=True,
+                        create_attentions=True,
+                        automation_plan_revision=plan.current_revision,
+                        automation_generation=plan.control_generation,
+                        workflow_run=plan.current_run,
                     )
             sync_result["attachments_archived"] = archived
             result = {"sync": sync_result}
+            if scope_stopped:
+                completed_status = RpaTask.Status.CANCELLED
+                completion_error_code = "automation_plan_stopped"
+                completion_error_message = "消息同步在安全检查点停止，未处理已停止岗位的数据"
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     if task.action == RpaTask.Action.VIEW_ONLINE_RESUME and completed_status == RpaTask.Status.SUCCEEDED:
@@ -1078,6 +1520,7 @@ def complete_task_view(request, task_id):
         RpaTask.Action.GREET,
         RpaTask.Action.REQUEST_RESUME,
         RpaTask.Action.SEND_INTERVIEW,
+        RpaTask.Action.REJECTION_NOTICE,
     }
     if task.action in communication_actions:
         complete_communication_task(
@@ -1091,10 +1534,10 @@ def complete_task_view(request, task_id):
         append_event(task=task, event="completed", message="沟通任务执行结束", data={"status": effective_status})
         account = task.boss_account
         if effective_status == RpaTask.Status.WAITING_HUMAN:
-            account.status = BossAccount.Status.PAUSED
+            next_account_status = BossAccount.Status.PAUSED
         else:
-            account.status = BossAccount.Status.READY
-        account.save(update_fields=["status", "updated_at"])
+            next_account_status = BossAccount.Status.READY
+        _set_account_runtime_status(account, next_account_status)
         RecruitmentAuditLog.objects.create(
             boss_account=account,
             action="communication_task_completed",
@@ -1136,6 +1579,8 @@ def complete_task_view(request, task_id):
     elif completed_status == RpaTask.Status.WAITING_HUMAN:
         account.status = BossAccount.Status.PAUSED
         account.save(update_fields=["status", "updated_at"])
+    if not account.active or account.archived_at is not None:
+        _set_account_runtime_status(account, BossAccount.Status.OFFLINE)
     RecruitmentAuditLog.objects.create(
         boss_account=account,
         action="task_completed",

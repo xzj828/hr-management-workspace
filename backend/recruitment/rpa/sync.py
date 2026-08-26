@@ -29,18 +29,29 @@ def sync_positions(*, account, owner, rows):
         if job_status not in valid_statuses:
             raise ValueError("职位状态无效")
 
-        previous = RecruitmentJob.objects.filter(
-            boss_account=account, external_id=external_id
-        ).values("title", "status").first()
-        _, created = RecruitmentJob.objects.update_or_create(
+        job = RecruitmentJob.objects.filter(
             boss_account=account,
             external_id=external_id,
-            defaults={"title": title, "status": job_status},
-            create_defaults={"title": title, "status": job_status, "owner": owner},
-        )
-        if created:
+        ).first()
+        if job is None:
+            RecruitmentJob.objects.create(
+                boss_account=account,
+                external_id=external_id,
+                title=title,
+                status=job_status,
+                owner=owner,
+            )
             created_count += 1
-        elif previous == {"title": title, "status": job_status}:
+            continue
+        previous = {"title": job.title, "status": job.status}
+        if job.status != job_status:
+            from recruitment.services.lifecycle import change_job_status
+
+            job = change_job_status(job=job, to_status=job_status, actor=owner)
+        if job.title != title:
+            job.title = title
+            job.save(update_fields=["title", "updated_at"])
+        if previous == {"title": title, "status": job_status}:
             unchanged_count += 1
         else:
             updated_count += 1

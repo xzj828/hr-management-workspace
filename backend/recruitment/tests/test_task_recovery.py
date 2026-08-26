@@ -1,13 +1,21 @@
 from datetime import timedelta
+import uuid
 
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
+from attendance.models import AccountProfile
 from recruitment.models import (
     AutomationApproval,
     AutomationEvidence,
     BossAccount,
+    Candidate,
+    ConversationAction,
+    ExecutionBatch,
+    JobApplication,
+    RecruitmentAutomationPlan,
+    RecruitmentAutomationPlanRevision,
     RecruitmentJob,
     RpaTask,
     RpaWorker,
@@ -77,6 +85,93 @@ class TaskRecoveryTests(TestCase):
         self.assertIsNone(task.lease_expires_at)
         self.assertEqual(self.account.status, BossAccount.Status.READY)
         self.assertTrue(task.events.filter(event="lease_expired").exists())
+
+    def test_expired_running_plan_communication_becomes_uncertain_and_stops_remaining_batch(self):
+        AccountProfile.objects.create(user=self.owner, role=AccountProfile.Role.HR)
+        self.account.authorized_users.add(self.owner)
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="stale-plan-communication",
+            title="沟通恢复测试",
+            owner=self.owner,
+        )
+        template = WorkflowTemplate.objects.create(name="plan communication", created_by=self.owner)
+        version = WorkflowVersion.objects.create(
+            template=template,
+            version=1,
+            boss_account=self.account,
+            created_by=self.owner,
+            status=WorkflowVersion.Status.ENABLED,
+        )
+        plan = RecruitmentAutomationPlan.objects.create(
+            job=job,
+            kind=RecruitmentAutomationPlan.Kind.PASSIVE_RESUME,
+            desired_state=RecruitmentAutomationPlan.DesiredState.RUNNING,
+            control_version=1,
+            control_generation=1,
+            created_by=self.owner,
+        )
+        revision = RecruitmentAutomationPlanRevision.objects.create(
+            plan=plan,
+            revision=1,
+            kind=plan.kind,
+            request_id=uuid.uuid4(),
+            request_hash="a" * 64,
+            config_snapshot={},
+            workflow_version=version,
+            created_by=self.owner,
+        )
+        plan.current_revision = revision
+        plan.save(update_fields=["current_revision", "updated_at"])
+        applications = []
+        for index in range(2):
+            candidate = Candidate.objects.create(
+                identity_key=f"stale-plan-communication-{index}",
+                name=f"沟通候选人{index}",
+                external_id=f"boss-communication-{index}",
+            )
+            applications.append(JobApplication.objects.create(
+                candidate=candidate, job=job, source="boss"
+            ))
+        from recruitment.services.approvals import approve
+        from recruitment.services.communications import materialize_communication_batch, prepare_communication
+
+        approval = prepare_communication(
+            account=self.account,
+            applications=applications,
+            action=ConversationAction.Action.REQUEST_RESUME,
+            message="方便发送一份简历吗？",
+            actor=self.owner,
+            request_id="stale-plan-communication",
+            automation_plan_revision=revision,
+            automation_generation=1,
+        )
+        approve(approval=approval, actor=self.owner)
+        batch = materialize_communication_batch(approval=approval, actor=self.owner)
+        task = batch.rpa_tasks.get()
+        task.status = RpaTask.Status.RUNNING
+        task.worker = self.worker
+        task.lease_expires_at = timezone.now() - timedelta(seconds=1)
+        task.started_at = timezone.now() - timedelta(minutes=5)
+        task.save(update_fields=[
+            "status", "worker", "lease_expires_at", "started_at", "updated_at",
+        ])
+
+        result = recover_stale_tasks()
+
+        task.refresh_from_db()
+        batch.refresh_from_db()
+        current_action = batch.conversation_actions.get(
+            pk=task.request_payload["conversation_action_id"]
+        )
+        remaining_action = batch.conversation_actions.exclude(pk=current_action.pk).get()
+        self.assertEqual(result.failed_running, 1)
+        self.assertEqual(task.status, RpaTask.Status.WAITING_HUMAN)
+        self.assertEqual(task.error_code, "external_result_uncertain")
+        self.assertEqual(current_action.status, ConversationAction.Status.WAITING_HUMAN)
+        self.assertEqual(remaining_action.status, ConversationAction.Status.CANCELLED)
+        self.assertEqual(batch.status, ExecutionBatch.Status.WAITING_HUMAN)
+        self.assertFalse(batch.rpa_tasks.filter(status=RpaTask.Status.PENDING).exists())
 
     def _assert_stale_search_pull_is_closed(self, task_status):
         job = RecruitmentJob.objects.create(

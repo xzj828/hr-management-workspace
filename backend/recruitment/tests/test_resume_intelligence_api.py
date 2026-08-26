@@ -393,7 +393,7 @@ class ResumeAssessmentServiceTests(TestCase):
         self.assertEqual(first.pk, second.pk)
         self.assertEqual(ResumeAssessment.objects.count(), 1)
 
-    def test_explicit_hard_requirement_failure_can_auto_reject_with_evidence(self):
+    def test_explicit_hard_requirement_failure_remains_hr_review_evidence(self):
         criteria = scoring_criteria()
         criteria["hard_requirements"] = [
             {"key": "experience", "text": "至少 6 年工作经验", "evidence_block_ids": [],
@@ -420,8 +420,8 @@ class ResumeAssessmentServiceTests(TestCase):
 
         self.structured.resume.application.refresh_from_db()
         self.assertEqual(assessment.recommendation, "hold")
-        self.assertTrue(assessment.auto_rejected)
-        self.assertEqual(self.structured.resume.application.stage, JobApplication.Stage.REJECTED)
+        self.assertFalse(assessment.auto_rejected)
+        self.assertEqual(self.structured.resume.application.stage, JobApplication.Stage.NEW)
         self.assertEqual(assessment.hard_failures[0]["criterion_key"], "experience")
 
     def test_scoring_prompt_redacts_identity_contact_and_sensitive_text(self):

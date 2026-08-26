@@ -333,12 +333,18 @@ class WorkflowRunApiTests(APITestCase):
         campaign = SearchCampaign.objects.get(workflow_run=run)
 
         with self.captureOnCommitCallbacks(execute=True):
-            cancelled = self.client.post(
+            rejected = self.client.post(
                 f"/api/recruitment/rpa-tasks/{task.pk}/cancel/",
                 {},
                 format="json",
             )
+            cancelled = self.client.post(
+                f"/api/recruitment/workflow-runs/{run.pk}/cancel/",
+                {},
+                format="json",
+            )
 
+        self.assertEqual(rejected.status_code, 409, rejected.data)
         self.assertEqual(cancelled.status_code, 200, cancelled.data)
         task.refresh_from_db()
         campaign.refresh_from_db()

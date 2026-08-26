@@ -52,6 +52,8 @@
 | JobStandardVersion | job, version, criteria, hard requirements, status | 同职位仅一个 published；发布后不可变 |
 | StructuredResumeVersion | resume, version, data, evidence, warnings | PDF/PNG 共用结构；原始未知字段保持 null |
 | ResumeAssessment | structure, standard, version, score, hard failures, evidence, recommendation | 请求 UUID 唯一；重评新增版本 |
+| ScreeningDecisionBatch | request_id, job, decision, reason, created_by | UUID 幂等；同一请求的业务载荷不可变化 |
+| ApplicationScreeningDecision | batch, application, resume, assessment, decision, version, decided_by | 只追加；application+version、batch+application 唯一；不修改招聘阶段 |
 | AiProcessingTask | kind, lease/status, resume/job/standard, error/result, private model snapshot/bound_at | DB 租约；岗位标准、结构化、评分三类任务；连接快照字段永不序列化 |
 
 ### 自动化与流程域
@@ -69,6 +71,8 @@
 | WorkflowTemplate / WorkflowVersion | 流程与不可变版本 | 版本号在模板内唯一；启用版本保留 |
 | WorkflowNode / WorkflowEdge | 有向图 | 节点 key 唯一；禁止环和未确认发送 |
 | WorkflowRun / WorkflowNodeRun / WorkflowRunEvent | 试运行/正式运行快照与控制 | request_id 幂等；节点执行顺序持久化 |
+| RecruitmentAutomationPlan | 岗位级招聘自动化控制面 | job 唯一；desired_state、control_version、control_generation、current revision/run |
+| RecruitmentAutomationPlanRevision | 每次正式开启的不可变方案 | plan+revision 唯一；冻结 kind、config、workflow version 和请求哈希 |
 
 对抗审查补充约束（2026-08-25）：`request_resume` 必须绑定已批准的不可变动作快照；主动搜索只产生候选摘要，打开/归档在线简历必须逐份计入 `resume_view`。外部动作只能由适配器在同一次原子调用中按平台稳定 ID（或平台原生等价标识）定位、复核并执行；组合指纹、展示名唯一或“先核验 ID、再按姓名执行”均不满足动作身份契约。缺少该能力时必须转人工提醒。批量任务的审批快照必须冻结候选集合或确定性搜索条件、最大数量和额度预算。
 
@@ -83,6 +87,12 @@
 Worker 执行 `open_login` 时异步启动固定 Node/JS CLI，轮询受管 CDP；CDP 就绪后写入账号隔离目录 marker、结束 CLI 父进程并返回 `succeeded + login_status=waiting_login`。CLI 进程 stdout/stderr 丢弃，终止采用 terminate→短等待→kill 的 best-effort 清理，不能把用户尚未扫码误报为系统失败。
 
 `GET /api/recruitment/automation/summary/` 的 Worker 在线值由 `last_seen_at` 与服务端 TTL 计算，不直接信任历史 `status=online`。Worker 心跳在 CLI 不可用时仍应上报结构化能力状态，使 UI 能区分“Worker 未连接”和“Worker 在线但 CLI 不可用”。BOSS 登录 `ready` 只接受明确的招聘端已认证页面；公共、错误、未知页面一律保持未就绪。
+
+招聘作业台不再直接串联消息策略、流程版本和 Run 写请求。`POST /api/recruitment/automation-plans/start/` 在同一事务中校验岗位/账号/乐观版本，冻结配置与流程、创建 Run 并最后刷新消息策略；失败整体回滚。`POST /api/recruitment/automation-plans/<id>/pause|resume|stop/` 使用 UUID request_id 与 expected_control_version。停止返回的 `effective_state=stopping` 表示在途原子动作尚在安全收尾；只有所有本代租约结束后才是 `stopped`。
+
+Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVersion 不允许从通用控制端点绕过 Plan 状态机。每次 RPA lease 返回唯一 token 和递增 generation，Worker event/checkpoint/complete 必须回传并匹配；Plan revision/generation 也必须在创建、领取、外部动作前后和完成推进边界复核。岗位或账号归档、职位关闭、Plan 停止/重启和共享被动 scope 变化均使旧代失败关闭。
+
+本地默认 SQLite 因不支持有效的 `SELECT FOR UPDATE`，数据库连接使用 `transaction_mode=IMMEDIATE`，生命周期入口再以进程内 RLock 包住最外层事务；这与数据库唯一约束、control version 和 lease token 共同提供单机 Waitress 多线程的线性化。切换 PostgreSQL 时使用原生行锁，不启用该进程锁。
 
 取消 WorkflowRun 后，草稿 Approval、未执行的领域 Task/Batch/Step 和后续 Node 一并终结；Worker lease 必须排除暂停或终态 Run/Node，`create_task` 也必须校验 Workflow 生命周期与 node attempt。已进入适配器的任务不能伪装取消，其真实完成回执只更新动作审计，不恢复已取消 Run。直接停止 SearchCampaign 与从 Task 入口停止使用同一领域服务，并在提交后同步 Workflow。失败的 `deep_search` 重试必须创建新 attempt 的确认、幂等键和 Task。
 
@@ -164,6 +174,14 @@ Worker 执行 `open_login` 时异步启动固定 Node/JS CLI，轮询受管 CDP�
 | 评分 GET | `/api/recruitment/resume-assessments[/<id>/]` | job, resume；返回维度证据与版本 |
 | POST | `/api/recruitment/resume-assessments/score/` | job + resume_ids + request_id；批量幂等评分 |
 | POST | `/api/recruitment/resume-assessments/<id>/rescore/` | 新 request_id 创建重评任务 |
+| GET | `/api/recruitment/screening-results/` | `job` 必填；返回当前排名、AI 建议、HR 结论与通知状态的统一读模型 |
+| POST | `/api/recruitment/screening-decisions/bulk/` | UUID request_id + 同岗位 application_ids + pass/fail + reason；只追加人工结论 |
+| POST | `/api/recruitment/rejection-notices/prepare/` | decision_batch_id + UUID request_id + 中性 message；冻结未通过通知审批快照 |
+| GET | `/api/recruitment/automation-plans/` | `job` 可选；返回岗位 Plan、当前不可变修订、运行和 effective_state |
+| POST | `/api/recruitment/automation-plans/start/` | job + kind + config + UUID request_id + expected_control_version；原子开启或重新开启 |
+| POST | `/api/recruitment/automation-plans/<id>/pause/` | UUID request_id + expected_control_version；写入暂停意图并 fence 旧代 |
+| POST | `/api/recruitment/automation-plans/<id>/resume/` | UUID request_id + expected_control_version；沿用当前修订创建新代运行 |
+| POST | `/api/recruitment/automation-plans/<id>/stop/` | UUID request_id + expected_control_version；协作式停止，可能返回 202/stopping |
 | AI 任务 GET | `/api/recruitment/ai-tasks/` | job, resume, kind, status |
 | POST | `/api/recruitment/ai-tasks/<uuid>/retry/` | 显式恢复失败/等待配置任务 |
 | GET/POST/DELETE | `/api/recruitment/demo-data/` | 状态/加载/只清除演示数据 |
@@ -235,6 +253,27 @@ Worker 执行 `open_login` 时异步启动固定 Node/JS CLI，轮询受管 CDP�
 - 请求包含账号、应聘 ID 列表、动作、消息快照；面试动作使用结构化邀请字段。
 - 服务端重新检查账号授权和候选人归属，创建 draft approval，不直接发送。
 - 批准后按候选人生成独立步骤；部分失败不得重复成功项。
+
+### GET `/api/recruitment/screening-results/?job=<id>`
+
+- 仅返回当前用户可读取岗位中的未归档应聘；列表权限必须显式过滤，不能依赖对象权限自动套用。
+- 每个应聘只绑定最新未归档简历、该简历最新结构化版本，以及当前 published 标准下对应的最新评分。旧标准评分不参与当前排名。
+- 有可比分数的记录按 `total_score DESC, application_id ASC` 排名；无简历、未评分、处理中或失败记录继续返回，`rank=null`。
+- 响应分别包含 `ai_state/assessment`、最新 `hr_decision`、`application.stage` 和最新未通过 `notification`，客户端不得相互推断。
+
+### POST `/api/recruitment/screening-decisions/bulk/`
+
+- 请求：`request_id`、`job`、`application_ids`、`decision=pass|fail`、必填内部 `reason`。所有应聘必须属于同一可写岗位；混入越权、归档或其他岗位 ID 时整批拒绝。
+- 服务端在事务内锁定应聘并重新选择当前简历/评分，创建一个幂等批次和每人一条只追加决策。相同 request_id 与相同载荷返回既有结果；载荷变化返回 409。
+- 决策绑定当时的简历和评分但允许二者为空；创建决策不修改 `JobApplication.stage`、不创建通知、不调用 Worker。
+
+### POST `/api/recruitment/rejection-notices/prepare/`
+
+- 仅接受一个当前最新结论仍为 `fail` 的 ScreeningDecisionBatch；所有应聘必须属于同一岗位、同一授权 BOSS 账号，且未进入面试、Offer、录用等禁止自动通知的后续阶段。
+- 最终通知文案不能为空，且不得由服务端拼入分数、AI 建议、硬性条件失败或内部原因。准备只创建不可变审批，不直接发送。
+- 批准时一次性校验并预占整批 `message` 额度，随后一次性物化全部步骤和 pending 任务；额度不足时不创建部分批次/任务。重复批准不得重复扣额或建任务。
+- 新动作 `rejection_notice` 只更新动作/通知状态，不修改 HR 决策或招聘阶段。Worker 必须按稳定平台 ID 原子定位、复核和发送；适配器不具备该能力时返回 `waiting_human`，禁止按姓名回退。
+- 每人独立记录 `pending/running/waiting_human/succeeded/failed/cancelled`。身份不匹配可转人工并继续安全项；登录、风控、CDP 错误或外发结果不确定时停止剩余批次且不得自动重试。
 
 ### POST `/api/recruitment/workflow-versions/<id>/run/`
 

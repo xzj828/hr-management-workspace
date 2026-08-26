@@ -1,8 +1,9 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
+import RecruitmentOperationControl from '@/components/RecruitmentOperationControl.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
@@ -17,7 +18,6 @@ const MAX_JOB_DOCUMENT_SIZE = 25 * 1024 * 1024
 const JOB_DOCUMENT_SUFFIX = /\.(doc|docx|xlsx)$/i
 
 const accounts = ref([])
-const policies = ref([])
 const workflowTemplates = ref([])
 const workflowVersions = ref([])
 const documents = ref([])
@@ -33,6 +33,8 @@ const stepHeading = ref(null)
 const currentStep = ref('context')
 const completedSteps = reactive({ context: false, standard: false })
 const wizardError = ref('')
+const routeJobError = ref('')
+const storageNotice = ref('')
 const wizardReady = ref(false)
 const wizardHydrating = ref(false)
 const restoredWizardStep = ref('context')
@@ -51,10 +53,31 @@ const targetResumeCount = ref(3)
 const maxScanCount = ref(20)
 const submitting = ref(false)
 const submitStage = ref('')
-const receipt = ref(null)
-const operationState = ref(null)
+const currentPlan = ref(null)
+const planLoading = ref(false)
+const planError = ref('')
+const planAction = ref('')
+const planActionError = ref('')
+const planVersionNotice = ref('')
+const legacyEditBaseUnknown = ref(false)
+const editBase = reactive({
+  active: false,
+  jobId: '',
+  controlVersion: 0,
+  revisionId: null,
+  revision: null,
+})
 const summary = reactive({ worker: null, cli_available: false })
+const startRequest = reactive({ id: '', signature: '' })
 let documentLoadSequence = 0
+let planLoadSequence = 0
+let planActionSequence = 0
+let planPollTimer = null
+let planPollInFlight = false
+let componentAlive = true
+let skipPreviousJobPersistFor = ''
+let activeExecutionSnapshot = null
+let activeUploadLock = null
 
 const selectedJob = computed(() => context.currentJob)
 const selectedAccount = computed(() => accounts.value.find((account) => String(account.id) === String(selectedAccountId.value)) || null)
@@ -81,12 +104,25 @@ const activeQueryValid = computed(() => {
 const passiveIntervalValid = computed(() => Number(interval.value) >= 1 && Number(interval.value) <= 1440)
 const browserReady = computed(() => selectedAccount.value?.login_status === 'ready')
 const runtimeReady = computed(() => summary.worker?.status === 'online' && summary.cli_available)
-const enabledWorkflowOptions = computed(() => workflowVersions.value
-  .filter((version) => version.status === 'enabled' && String(version.boss_account) === String(selectedAccountId.value))
-  .map((version) => ({
+const enabledWorkflowOptions = computed(() => {
+  const options = workflowVersions.value
+    .filter((version) => version.status === 'enabled'
+      && String(version.boss_account) === String(selectedAccountId.value)
+      && !workflowVersionIsPlanManaged(version))
+    .map((version) => ({
     id: version.id,
     label: `${workflowTemplates.value.find((item) => item.id === version.template)?.name || `流程 ${version.template}`} · V${version.version}`,
-  })))
+    }))
+  const revisionWorkflow = currentPlan.value?.current_revision?.workflow_version
+  const revisionWorkflowId = typeof revisionWorkflow === 'object' ? revisionWorkflow?.id : revisionWorkflow
+  if (revisionUsesCustomWorkflow(currentPlan.value?.current_revision)
+    && revisionWorkflowId
+    && !workflowVersionIsPlanManaged(revisionWorkflow)
+    && !options.some((item) => String(item.id) === String(revisionWorkflowId))) {
+    options.push({ id: revisionWorkflowId, label: '当前任务使用的高级流程' })
+  }
+  return options
+})
 const selectedCustomWorkflow = computed(() => {
   if (!String(workflowChoice.value).startsWith('custom:')) return null
   const id = String(workflowChoice.value).slice(7)
@@ -154,17 +190,25 @@ const checks = computed(() => [
   },
 ])
 const firstBlockingCheck = computed(() => checks.value.find((item) => !item.ok) || null)
-const canSubmit = computed(() => (
-  !loading.value
-  && !uploading.value
-  && !submitting.value
-  && !receipt.value
-  && currentStep.value === 'plan'
-  && checks.value.every((item) => item.ok)
-))
-const resultsLink = computed(() => receipt.value ? {
+const currentPlanState = computed(() => normalizePlanState(currentPlan.value))
+const startDisabledReason = computed(() => {
+  if (loading.value) return '招聘作业台仍在加载，请稍候。'
+  if (planLoading.value) return '正在同步服务端任务状态，请稍候。'
+  if (planError.value) return `任务状态同步失败，请等待自动刷新后再试：${planError.value}`
+  if (uploading.value) return '文件仍在上传，请等待完成。'
+  if (submitting.value || planAction.value) return '任务指令正在处理，请勿重复提交。'
+  if (currentStep.value !== 'plan') return '请先完成前置步骤，再进入执行方案。'
+  if (currentPlan.value && !['stopped', 'failed', 'completed'].includes(currentPlanState.value)) {
+    return '当前任务尚未停止，不能开启新版本。'
+  }
+  if (legacyEditBaseUnknown.value && currentPlan.value) return '旧草稿缺少编辑基线，请先确认以服务端最新版本继续编辑。'
+  if (firstBlockingCheck.value) return firstBlockingCheck.value.detail
+  return ''
+})
+const canSubmit = computed(() => !startDisabledReason.value)
+const resultsLink = computed(() => currentPlan.value?.current_run?.id ? {
   path: '/recruitment/results',
-  query: { job: String(receipt.value.jobId), run: String(receipt.value.run.id), view: 'tasks' },
+  query: { job: String(selectedJob.value?.id || ''), run: String(currentPlan.value.current_run.id), view: 'tasks' },
 } : null)
 
 function requirementLines(value) {
@@ -198,26 +242,144 @@ function parameterCheckMessage() {
   return `目标 ${targetResumeCount.value} 份，最多扫描 ${maxScanCount.value} 人`
 }
 
-function statusLabel(status) {
-  return {
-    pending: '等待执行',
-    running: '执行中',
-    waiting_human: '等待人工处理',
-    paused: '已暂停',
-    succeeded: '已完成',
-    failed: '执行失败',
-    cancelled: '已取消',
-  }[status] || status || '已创建'
-}
-
 function requestId() {
   return globalThis.crypto?.randomUUID?.()
     || `00000000-0000-4000-8000-${Date.now().toString().padStart(12, '0').slice(-12)}`
 }
 
-function operationStorageKey(jobId = selectedJob.value?.id) {
-  if (!jobId) return ''
-  return `ximing-hr:recruitment-operation:${auth.user?.id || 'unknown'}:${jobId}`
+function normalizePlanState(plan) {
+  const value = String(plan?.effective_state || plan?.actual_state || plan?.current_run?.status || plan?.desired_state || '')
+  return {
+    queued: 'starting',
+    pending: 'starting',
+    succeeded: 'completed',
+    cancelled: 'stopped',
+  }[value] || value || 'stopped'
+}
+
+function planRevisionSnapshot(plan) {
+  const revision = plan?.current_revision
+  if (!revision || typeof revision !== 'object') return { id: null, revision: null }
+  return {
+    id: revision.id ?? null,
+    revision: revision.revision ?? revision.version ?? null,
+  }
+}
+
+function revisionUsesCustomWorkflow(revision) {
+  if (!revision || typeof revision !== 'object') return false
+  const mode = String(revision.workflow_mode || '').toLowerCase()
+  if (['custom', 'advanced'].includes(mode)) return true
+  if (['managed', 'standard'].includes(mode)) return false
+  if (typeof revision.is_managed_workflow === 'boolean') return !revision.is_managed_workflow
+  return false
+}
+
+function workflowVersionIsPlanManaged(value) {
+  const versionId = typeof value === 'object' ? value?.id : value
+  const inlineVersion = value && typeof value === 'object' ? value : null
+  const loadedVersion = workflowVersions.value.find((version) => String(version.id) === String(versionId)) || null
+  if (inlineVersion?.is_plan_managed === true || loadedVersion?.is_plan_managed === true) return true
+  const templateValue = inlineVersion?.template ?? loadedVersion?.template
+  if (templateValue && typeof templateValue === 'object' && templateValue.is_plan_managed === true) return true
+  const templateId = typeof templateValue === 'object' ? templateValue?.id : templateValue
+  return workflowTemplates.value.some((template) => (
+    String(template.id) === String(templateId) && template.is_plan_managed === true
+  ))
+}
+
+function resetEditBase() {
+  editBase.active = false
+  editBase.jobId = ''
+  editBase.controlVersion = 0
+  editBase.revisionId = null
+  editBase.revision = null
+  legacyEditBaseUnknown.value = false
+  planVersionNotice.value = ''
+}
+
+function captureEditBase(plan = currentPlan.value) {
+  const jobId = selectedJob.value?.id
+  if (!jobId) return
+  const revision = planRevisionSnapshot(plan)
+  editBase.active = true
+  editBase.jobId = String(jobId)
+  editBase.controlVersion = Number(plan?.control_version ?? 0)
+  editBase.revisionId = revision.id
+  editBase.revision = revision.revision
+  legacyEditBaseUnknown.value = false
+  planVersionNotice.value = ''
+}
+
+function ensureEditBase() {
+  if (!selectedJob.value?.id || wizardHydrating.value || !wizardReady.value) return
+  if (legacyEditBaseUnknown.value) return
+  if (editBase.active && editBase.jobId === String(selectedJob.value.id)) return
+  captureEditBase()
+}
+
+function serializedEditBase() {
+  if (!editBase.active) return null
+  return {
+    jobId: editBase.jobId,
+    controlVersion: editBase.controlVersion,
+    revisionId: editBase.revisionId,
+    revision: editBase.revision,
+  }
+}
+
+function isValidStoredEditBase(value, jobId) {
+  if (value === null) return true
+  return isRecord(value)
+    && String(value.jobId) === String(jobId)
+    && Number.isInteger(value.controlVersion)
+    && value.controlVersion >= 0
+    && (value.revisionId == null || ['string', 'number'].includes(typeof value.revisionId))
+    && (value.revision == null || ['string', 'number'].includes(typeof value.revision))
+}
+
+function restoreEditBase(stored, jobId) {
+  resetEditBase()
+  if (!Object.prototype.hasOwnProperty.call(stored, 'editBase')) {
+    legacyEditBaseUnknown.value = true
+    return
+  }
+  if (stored.editBase === null) return
+  editBase.active = true
+  editBase.jobId = String(jobId)
+  editBase.controlVersion = Number(stored.editBase.controlVersion)
+  editBase.revisionId = stored.editBase.revisionId ?? null
+  editBase.revision = stored.editBase.revision ?? null
+}
+
+function editBaseDiffersFrom(plan) {
+  if (!editBase.active || editBase.jobId !== String(selectedJob.value?.id || '')) return false
+  const revision = planRevisionSnapshot(plan)
+  return editBase.controlVersion !== Number(plan?.control_version ?? 0)
+    || String(editBase.revisionId ?? '') !== String(revision.id ?? '')
+    || String(editBase.revision ?? '') !== String(revision.revision ?? '')
+}
+
+function updatePlanVersionNotice(plan) {
+  if (legacyEditBaseUnknown.value && plan) {
+    planVersionNotice.value = '这个旧草稿没有记录编辑基线。请确认以服务端最新版本继续编辑后再提交。'
+    return
+  }
+  if (!editBaseDiffersFrom(plan)) {
+    planVersionNotice.value = ''
+    return
+  }
+  const latest = planRevisionSnapshot(plan)
+  const baseLabel = editBase.revision ?? editBase.revisionId ?? '初始'
+  const latestLabel = latest.revision ?? latest.id ?? '最新'
+  planVersionNotice.value = `服务端方案已从 V${baseLabel} 更新为 V${latestLabel}。当前草稿仍基于原版本，提交时会保留冲突保护。`
+}
+
+function rebaseEditDraft() {
+  captureEditBase(currentPlan.value)
+  submitError.value = ''
+  planActionError.value = ''
+  persistWizardDraft()
 }
 
 function operationDraft() {
@@ -234,18 +396,55 @@ function operationDraft() {
   }
 }
 
-function operationFingerprint() {
+function operationFingerprint({
+  jobId = selectedJob.value?.id || null,
+  accountId = selectedAccountId.value || null,
+  draft = operationDraft(),
+} = {}) {
   return JSON.stringify({
-    job: selectedJob.value?.id || null,
-    account: selectedAccountId.value || null,
-    ...operationDraft(),
+    job: jobId,
+    account: accountId,
+    ...draft,
   })
 }
 
-function persistOperation(state = operationState.value) {
-  const key = operationStorageKey(state?.jobId)
-  if (!key || !state) return
-  sessionStorage.setItem(key, JSON.stringify(state))
+function reportStorageUnavailable() {
+  storageNotice.value = '浏览器临时存储不可用，本次仍可继续操作，但刷新页面后草稿和重试进度可能无法恢复。'
+}
+
+function readSessionItem(key) {
+  try {
+    const storage = globalThis.sessionStorage
+    if (!storage) throw new Error('sessionStorage unavailable')
+    return storage.getItem(key)
+  } catch {
+    reportStorageUnavailable()
+    return null
+  }
+}
+
+function writeSessionItem(key, value) {
+  try {
+    const storage = globalThis.sessionStorage
+    if (!storage) throw new Error('sessionStorage unavailable')
+    storage.setItem(key, JSON.stringify(value))
+    return true
+  } catch {
+    reportStorageUnavailable()
+    return false
+  }
+}
+
+function removeSessionItem(key) {
+  try {
+    const storage = globalThis.sessionStorage
+    if (!storage) throw new Error('sessionStorage unavailable')
+    storage.removeItem(key)
+    return true
+  } catch {
+    reportStorageUnavailable()
+    return false
+  }
 }
 
 function wizardStorageKey(jobId = selectedJob.value?.id) {
@@ -271,13 +470,14 @@ function resetWizardFields() {
   wizardError.value = ''
   dragging.value = false
   uploadQueue.value = []
+  resetEditBase()
 }
 
 function persistWizardDraft(jobId = selectedJob.value?.id) {
   if (!wizardReady.value || wizardHydrating.value || !jobId) return
   const key = wizardStorageKey(jobId)
   if (!key) return
-  sessionStorage.setItem(key, JSON.stringify({
+  writeSessionItem(key, {
     version: WIZARD_DRAFT_VERSION,
     jobId: String(jobId),
     selectedAccountId: String(selectedAccountId.value || ''),
@@ -288,29 +488,57 @@ function persistWizardDraft(jobId = selectedJob.value?.id) {
     },
     documentCategory: documentCategory.value,
     draft: operationDraft(),
-  }))
+    editBase: serializedEditBase(),
+  })
+}
+
+function isRecord(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function isValidWizardDraft(stored, jobId) {
+  if (!isRecord(stored) || stored.version !== WIZARD_DRAFT_VERSION || String(stored.jobId) !== String(jobId)) return false
+  if (typeof stored.selectedAccountId !== 'string') return false
+  if (!WIZARD_STEPS.includes(stored.step)) return false
+  if (!['persona', 'requirement', 'other'].includes(stored.documentCategory)) return false
+  if (!isRecord(stored.completed)
+    || typeof stored.completed.context !== 'boolean'
+    || typeof stored.completed.standard !== 'boolean') return false
+  if (Object.prototype.hasOwnProperty.call(stored, 'editBase') && !isValidStoredEditBase(stored.editBase, jobId)) return false
+  const draft = stored.draft
+  return isRecord(draft)
+    && ['passive_resume', 'active_resume_search'].includes(draft.schemeKind)
+    && typeof draft.workflowChoice === 'string'
+    && Boolean(draft.workflowChoice)
+    && typeof draft.coreText === 'string'
+    && typeof draft.bonusText === 'string'
+    && Number.isFinite(draft.interval)
+    && ['search', 'recommend', 'deep_search'].includes(draft.source)
+    && typeof draft.keyword === 'string'
+    && Number.isFinite(draft.targetResumeCount)
+    && Number.isFinite(draft.maxScanCount)
 }
 
 function restoreWizardDraft(jobId = selectedJob.value?.id) {
   const key = wizardStorageKey(jobId)
   if (!key) return false
   try {
-    const stored = JSON.parse(sessionStorage.getItem(key) || 'null')
-    if (
-      !stored
-      || stored.version !== WIZARD_DRAFT_VERSION
-      || String(stored.jobId) !== String(jobId)
-    ) return false
+    const serialized = readSessionItem(key)
+    if (!serialized) return false
+    const stored = JSON.parse(serialized)
+    if (!isValidWizardDraft(stored, jobId)) {
+      removeSessionItem(key)
+      return false
+    }
     applyOperationDraft(stored.draft)
-    documentCategory.value = ['persona', 'requirement', 'other'].includes(stored.documentCategory)
-      ? stored.documentCategory
-      : 'persona'
+    restoreEditBase(stored, jobId)
+    documentCategory.value = stored.documentCategory
     completedSteps.context = stored.completed?.context === true
     completedSteps.standard = stored.completed?.standard === true
-    restoredWizardStep.value = WIZARD_STEPS.includes(stored.step) ? stored.step : 'context'
+    restoredWizardStep.value = stored.step
     return true
   } catch {
-    sessionStorage.removeItem(key)
+    removeSessionItem(key)
     return false
   }
 }
@@ -332,17 +560,33 @@ async function focusCurrentStep() {
 
 function resolveWizardStep({ replaceInvalid = true } = {}) {
   if (!wizardReady.value) return
-  const requested = WIZARD_STEPS.includes(String(route.query.step || ''))
-    ? String(route.query.step)
-    : restoredWizardStep.value
+  if (restoreBusyRouteIfNeeded()) return
+  const queryStep = Array.isArray(route.query.step)
+    ? String(route.query.step[0] || '')
+    : String(route.query.step || '')
+  const hasExplicitStep = Boolean(queryStep)
+  const invalidStep = hasExplicitStep && !WIZARD_STEPS.includes(queryStep)
+  const requested = invalidStep
+    ? 'context'
+    : (hasExplicitStep ? queryStep : restoredWizardStep.value)
   const guarded = guardedWizardStep(requested)
+  if (invalidStep) {
+    wizardError.value = '步骤参数无效，已安全返回第一步。'
+  } else if (hasExplicitStep && guarded !== requested) {
+    wizardError.value = requested === 'plan'
+      ? '请先完成前置步骤，再进入执行方案。'
+      : '请先完成职位与账号确认，再进入招聘标准。'
+  }
   currentStep.value = guarded
   const jobId = selectedJob.value?.id
-  const queryStep = String(route.query.step || '')
-  const queryJob = String(route.query.job || '')
-  if (replaceInvalid && (queryStep !== guarded || (jobId && queryJob !== String(jobId)))) {
+  const queryJob = Array.isArray(route.query.job)
+    ? String(route.query.job[0] || '')
+    : String(route.query.job || '')
+  const shouldAttachSelectedJob = Boolean(jobId && !queryJob && !routeJobError.value)
+  if (replaceInvalid && (queryStep !== guarded || shouldAttachSelectedJob || routeJobError.value)) {
     const query = { ...route.query, step: guarded }
-    if (jobId) query.job = String(jobId)
+    if (routeJobError.value) delete query.job
+    else if (shouldAttachSelectedJob) query.job = String(jobId)
     router.replace({ name: route.name, query }).catch(() => {})
   }
   persistWizardDraft()
@@ -391,6 +635,7 @@ function previousStep() {
 
 function markStandardDirty() {
   if (!wizardReady.value || wizardHydrating.value) return
+  ensureEditBase()
   completedSteps.standard = false
   persistWizardDraft()
 }
@@ -408,32 +653,6 @@ function applyOperationDraft(draft) {
   maxScanCount.value = Number(draft.maxScanCount || 20)
 }
 
-function restoreOperation(jobId = selectedJob.value?.id) {
-  operationState.value = null
-  receipt.value = null
-  const key = operationStorageKey(jobId)
-  if (!key) return
-  try {
-    const stored = JSON.parse(sessionStorage.getItem(key) || 'null')
-    if (!stored || String(stored.jobId) !== String(jobId)) return
-    operationState.value = stored
-    applyOperationDraft(stored.draft)
-    receipt.value = stored.receipt || null
-  } catch {
-    sessionStorage.removeItem(key)
-  }
-}
-
-function beginNewTask() {
-  const key = operationStorageKey()
-  if (key) sessionStorage.removeItem(key)
-  operationState.value = null
-  receipt.value = null
-  submitError.value = ''
-  submitStage.value = ''
-  persistWizardDraft()
-}
-
 function replaceJobQuery(jobId, { step } = {}) {
   const query = { ...route.query }
   if (jobId) query.job = String(jobId)
@@ -446,6 +665,7 @@ function chooseJob(jobId, { updateRoute = true } = {}) {
   const normalized = jobId === null || jobId === undefined ? '' : String(jobId)
   const job = context.jobs.find((item) => String(item.id) === normalized)
   if (!job) return
+  routeJobError.value = ''
   const changed = String(selectedJob.value?.id || '') !== String(job.id)
   context.selectJob(job.id, { userId: auth.user?.id || context.loadedUserId })
   selectedAccountId.value = job.boss_account ? String(job.boss_account) : ''
@@ -469,22 +689,244 @@ function chooseAccount() {
   replaceJobQuery('')
 }
 
+function routeQueryValue(value) {
+  const candidate = Array.isArray(value) ? value[0] : value
+  return candidate === null || candidate === undefined ? '' : String(candidate)
+}
+
+function busyNavigationLock() {
+  if (activeExecutionSnapshot) {
+    return { jobId: String(activeExecutionSnapshot.job.id), step: 'plan' }
+  }
+  return activeUploadLock
+}
+
+function restoreBusyRouteIfNeeded() {
+  const lock = busyNavigationLock()
+  if (!lock) return false
+  const queryJobId = routeQueryValue(route.query.job)
+  const queryStep = routeQueryValue(route.query.step)
+  if (queryJobId === lock.jobId && queryStep === lock.step) return false
+  wizardError.value = '任务处理中，暂不能切换职位或步骤；已恢复到本次任务页面。'
+  router.replace({
+    name: route.name,
+    query: { ...route.query, job: lock.jobId, step: lock.step },
+  }).catch(() => {})
+  return true
+}
+
+function invalidateRouteJob(jobId) {
+  const message = `职位 ${jobId} 已失效、不再开放或无权访问，请重新选择。`
+  const wasHydrating = wizardHydrating.value
+  const previousJobId = selectedJob.value?.id ? String(selectedJob.value.id) : ''
+  if (previousJobId) {
+    persistWizardDraft(previousJobId)
+    skipPreviousJobPersistFor = previousJobId
+  }
+  wizardHydrating.value = true
+  routeJobError.value = message
+  resetWizardFields()
+  selectedAccountId.value = ''
+  planLoadSequence += 1
+  planActionSequence += 1
+  currentPlan.value = null
+  planError.value = ''
+  planActionError.value = ''
+  planAction.value = ''
+  submitError.value = ''
+  try {
+    context.invalidateSelection({
+      userId: auth.user?.id || context.loadedUserId,
+      reason: message,
+    })
+  } catch {
+    context.selectedJobId = ''
+    context.invalidationReason = message
+  }
+  if (previousJobId) {
+    nextTick(() => {
+      if (skipPreviousJobPersistFor === previousJobId) skipPreviousJobPersistFor = ''
+    })
+  }
+  wizardHydrating.value = wasHydrating
+  const query = { ...route.query, step: 'context' }
+  delete query.job
+  router.replace({ name: route.name, query }).catch(() => {})
+  if (wizardReady.value) focusCurrentStep()
+  return false
+}
+
 function alignInitialSelection() {
-  const queryJobId = route.query.job ? String(route.query.job) : ''
+  const queryJobId = routeQueryValue(route.query.job)
   if (queryJobId && context.jobs.some((job) => String(job.id) === queryJobId)) {
     chooseJob(queryJobId, { updateRoute: false })
-    return
+    return true
   }
+  if (queryJobId) {
+    return invalidateRouteJob(queryJobId)
+  }
+  routeJobError.value = ''
   if (selectedJob.value) {
     selectedAccountId.value = selectedJob.value.boss_account ? String(selectedJob.value.boss_account) : ''
     replaceJobQuery(selectedJob.value.id)
-    return
+    return true
   }
   const defaultJob = context.jobs.find((job) => accounts.value.some((account) => (
     String(account.id) === String(job.boss_account) && account.login_status === 'ready'
   ))) || context.jobs[0]
   if (defaultJob) chooseJob(defaultJob.id)
   else if (accounts.value[0]) selectedAccountId.value = String(accounts.value[0].id)
+  return Boolean(defaultJob)
+}
+
+function syncJobFromRoute(value) {
+  if (!wizardReady.value) return
+  if (restoreBusyRouteIfNeeded()) return
+  const jobId = routeQueryValue(value)
+  if (!jobId) {
+    resolveWizardStep()
+    return
+  }
+  const job = context.jobs.find((item) => String(item.id) === jobId)
+  if (!job) {
+    invalidateRouteJob(jobId)
+    return
+  }
+  routeJobError.value = ''
+  if (String(selectedJob.value?.id || '') !== jobId) {
+    chooseJob(jobId, { updateRoute: false })
+    return
+  }
+  resolveWizardStep()
+}
+
+function planFromPayload(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload) && payload.id) return payload
+  return listItems(payload)[0] || null
+}
+
+function planJobId(plan) {
+  return typeof plan?.job === 'object' ? plan.job?.id : plan?.job
+}
+
+function operationDraftFromRevision(plan) {
+  const revision = plan?.current_revision
+  if (!revision || typeof revision !== 'object') return null
+  const config = revision.config || revision.config_snapshot || {}
+  const revisionWorkflow = revision.workflow_version
+  const revisionWorkflowId = typeof revisionWorkflow === 'object' ? revisionWorkflow?.id : revisionWorkflow
+  return {
+    schemeKind: plan.kind || 'passive_resume',
+    workflowChoice: revisionUsesCustomWorkflow(revision)
+      && revisionWorkflowId
+      && !workflowVersionIsPlanManaged(revisionWorkflow)
+      ? `custom:${revisionWorkflowId}`
+      : 'standard',
+    coreText: Array.isArray(config.core) ? config.core.join('\n') : '',
+    bonusText: Array.isArray(config.bonus) ? config.bonus.join('\n') : '',
+    interval: Number(config.interval_minutes ?? 2),
+    source: config.source || 'search',
+    keyword: config.keyword || '',
+    targetResumeCount: Number(config.target_resume_count ?? 3),
+    maxScanCount: Number(config.max_scan_count ?? 20),
+  }
+}
+
+function applyServerPlan(plan, jobId, { hydrateDraft = false } = {}) {
+  if (!componentAlive || String(selectedJob.value?.id || '') !== String(jobId || '')) return false
+  if (plan && planJobId(plan) != null && String(planJobId(plan)) !== String(jobId)) return false
+  currentPlan.value = plan
+  planError.value = ''
+  if (legacyEditBaseUnknown.value && !plan) captureEditBase(null)
+  if (plan && hydrateDraft) {
+    const revisionDraft = operationDraftFromRevision(plan)
+    if (revisionDraft) applyOperationDraft(revisionDraft)
+    completedSteps.context = true
+    completedSteps.standard = true
+    restoredWizardStep.value = 'plan'
+  }
+  updatePlanVersionNotice(plan)
+  return true
+}
+
+async function refreshCurrentPlan({ jobId = selectedJob.value?.id, silent = false, poll = false, hydrateDraft = false } = {}) {
+  if (!jobId || !componentAlive) return null
+  if (poll && planPollInFlight) return null
+  const sequence = ++planLoadSequence
+  if (poll) planPollInFlight = true
+  if (!silent) planLoading.value = true
+  try {
+    const payload = await api(`recruitment/automation-plans/?job=${encodeURIComponent(jobId)}`)
+    const plan = planFromPayload(payload)
+    if (sequence === planLoadSequence) applyServerPlan(plan, jobId, { hydrateDraft })
+    return plan
+  } catch (error) {
+    if (sequence === planLoadSequence && String(selectedJob.value?.id || '') === String(jobId)) {
+      planError.value = error.message || '任务状态读取失败'
+    }
+    return null
+  } finally {
+    if (poll) planPollInFlight = false
+    if (!silent && sequence === planLoadSequence) planLoading.value = false
+  }
+}
+
+function enterPlanEdit() {
+  captureEditBase(currentPlan.value)
+  completedSteps.context = true
+  completedSteps.standard = false
+  submitError.value = ''
+  planActionError.value = ''
+  persistWizardDraft()
+  navigateWizardStep('standard')
+}
+
+async function controlPlan(action, { modifyAfter = false } = {}) {
+  if (!currentPlan.value?.id || planAction.value) return
+  const capturedPlan = currentPlan.value
+  const capturedJobId = selectedJob.value?.id
+  const actionSequence = ++planActionSequence
+  planLoadSequence += 1
+  const busyAction = modifyAfter ? 'stop-modify' : action
+  planAction.value = busyAction
+  planActionError.value = ''
+  try {
+    const body = {
+      request_id: requestId(),
+      expected_control_version: Number(capturedPlan.control_version ?? 0),
+    }
+    const updated = await api(`recruitment/automation-plans/${capturedPlan.id}/${action}/`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+    if (actionSequence === planActionSequence) {
+      planLoadSequence += 1
+      applyServerPlan(updated, capturedJobId)
+      if (modifyAfter && componentAlive && String(selectedJob.value?.id || '') === String(capturedJobId)) enterPlanEdit()
+    }
+  } catch (error) {
+    if (actionSequence !== planActionSequence) return
+    if (error.status === 409) {
+      await refreshCurrentPlan({ jobId: capturedJobId, silent: true })
+      planActionError.value = '任务状态刚刚发生变化，已为你刷新，请按最新状态重试。'
+    } else {
+      planActionError.value = error.message || '任务控制失败，请稍后重试'
+    }
+  } finally {
+    if (actionSequence === planActionSequence && planAction.value === busyAction) planAction.value = ''
+  }
+}
+
+function resumePlan() {
+  return controlPlan('resume')
+}
+
+function stopPlan() {
+  return controlPlan('stop')
+}
+
+function stopAndModifyPlan() {
+  return controlPlan('stop', { modifyAfter: true })
 }
 
 async function loadWorkbench() {
@@ -495,27 +937,22 @@ async function loadWorkbench() {
     if (!context.loaded) {
       await context.loadJobs({ userId: auth.user?.id })
     }
-    const [accountResult, policyResult, summaryResult, templateResult, versionResult] = await Promise.allSettled([
+    const [accountResult, summaryResult, templateResult, versionResult] = await Promise.allSettled([
       api('recruitment/boss-accounts/'),
-      api('recruitment/message-sync-policies/'),
       api('recruitment/automation/summary/'),
       api('recruitment/workflows/'),
       api('recruitment/workflow-versions/'),
     ])
     if (accountResult.status === 'rejected') throw accountResult.reason
     accounts.value = listItems(accountResult.value).filter((account) => account.active && !account.archived_at)
-    policies.value = policyResult.status === 'fulfilled' ? listItems(policyResult.value) : []
     workflowTemplates.value = templateResult.status === 'fulfilled' ? listItems(templateResult.value) : []
     workflowVersions.value = versionResult.status === 'fulfilled' ? listItems(versionResult.value) : []
     if (summaryResult.status === 'fulfilled') Object.assign(summary, summaryResult.value)
     else loadError.value = `自动化服务状态读取失败：${summaryResult.reason?.message || '请稍后重试'}`
-    alignInitialSelection()
-    restoreWizardDraft(selectedJob.value?.id)
-    restoreOperation(selectedJob.value?.id)
-    if (receipt.value) {
-      completedSteps.context = true
-      completedSteps.standard = true
-      restoredWizardStep.value = 'plan'
+    const hasValidSelection = alignInitialSelection()
+    if (hasValidSelection) {
+      const wizardDraftRestored = restoreWizardDraft(selectedJob.value?.id)
+      await refreshCurrentPlan({ jobId: selectedJob.value?.id, hydrateDraft: !wizardDraftRestored })
     }
   } catch (error) {
     loadError.value = error.message || '招聘作业台加载失败'
@@ -589,12 +1026,13 @@ async function handleDocumentFiles(files) {
     return
   }
 
+  const jobId = selectedJob.value.id
+  activeUploadLock = { jobId: String(jobId), step: 'standard' }
   uploading.value = true
   const failedFiles = queue
     .filter((item) => item.status === 'failed')
     .map((item) => `${item.name}：${item.error}`)
   let succeeded = 0
-  const jobId = selectedJob.value.id
   try {
     for (const item of validItems) {
       item.status = 'uploading'
@@ -622,126 +1060,112 @@ async function handleDocumentFiles(files) {
     if (failedFiles.length) documentError.value = `部分文件未上传：${failedFiles.join('；')}`
   } finally {
     uploading.value = false
+    activeUploadLock = null
   }
 }
 
-async function savePassivePolicy() {
-  const existing = policies.value.find((item) => String(item.boss_account) === String(selectedAccountId.value))
-  const body = JSON.stringify({
-    boss_account: Number(selectedAccountId.value),
-    enabled: true,
-    interval_minutes: Number(interval.value),
+function createExecutionSnapshot() {
+  const draft = Object.freeze({ ...operationDraft() })
+  const requirements = Object.freeze({
+    core: Object.freeze([...coreItems.value]),
+    bonus: Object.freeze([...bonusItems.value]),
   })
-  const policy = await api(
-    existing ? `recruitment/message-sync-policies/${existing.id}/` : 'recruitment/message-sync-policies/',
-    { method: existing ? 'PATCH' : 'POST', body },
-  )
-  if (existing) policies.value = policies.value.map((item) => item.id === existing.id ? policy : item)
-  else policies.value.push(policy)
+  const job = Object.freeze({
+    id: selectedJob.value.id,
+    title: selectedJob.value.title,
+  })
+  const account = Object.freeze({
+    id: Number(selectedAccountId.value),
+    name: selectedAccount.value.name,
+  })
+  const workflow = Object.freeze({
+    choice: draft.workflowChoice,
+    customId: selectedCustomWorkflow.value?.id || null,
+  })
+  const config = Object.freeze(draft.schemeKind === 'passive_resume'
+    ? {
+        interval_minutes: Number(draft.interval),
+        reply_message: '您好，这边是招聘岗位，方便发送一份简历进一步沟通吗？',
+        core: requirements.core,
+        bonus: requirements.bonus,
+      }
+    : {
+        source: draft.source,
+        keyword: draft.keyword.trim(),
+        target_resume_count: Number(draft.targetResumeCount),
+        max_scan_count: Number(draft.maxScanCount),
+        core: requirements.core,
+        bonus: requirements.bonus,
+      })
+  const fingerprint = operationFingerprint({ jobId: job.id, accountId: account.id, draft })
+  return Object.freeze({
+    job,
+    account,
+    scheme: draft.schemeKind,
+    draft,
+    requirements,
+    workflow,
+    config,
+    fingerprint,
+  })
 }
 
-async function startExecution() {
+async function startExecution({ busyAction = '' } = {}) {
   if (submitting.value) return
   if (!canSubmit.value) {
     submitError.value = firstBlockingCheck.value?.detail || '请先完成执行前检查'
     return
   }
   submitting.value = true
+  planLoadSequence += 1
+  if (busyAction) planAction.value = busyAction
   submitError.value = ''
+  planActionError.value = ''
+  let snapshot = null
   try {
-    const fingerprint = operationFingerprint()
-    if (!operationState.value || operationState.value.fingerprint !== fingerprint || operationState.value.receipt) {
-      operationState.value = {
-        jobId: selectedJob.value.id,
-        fingerprint,
-        requestId: requestId(),
-        draft: operationDraft(),
-        versionId: null,
-        enabledId: null,
-        receipt: null,
-      }
-      persistOperation()
+    snapshot = createExecutionSnapshot()
+    activeExecutionSnapshot = snapshot
+    ensureEditBase()
+    const command = {
+      job: Number(snapshot.job.id),
+      kind: snapshot.scheme,
+      config: snapshot.config,
+      expected_control_version: editBase.active && editBase.jobId === String(snapshot.job.id)
+        ? editBase.controlVersion
+        : Number(currentPlan.value?.control_version ?? 0),
     }
-    if (schemeKind.value === 'passive_resume') {
-      submitStage.value = '正在保存消息同步设置…'
-      await savePassivePolicy()
+    if (snapshot.workflow.customId) command.workflow_version = Number(snapshot.workflow.customId)
+    const signature = JSON.stringify(command)
+    if (startRequest.signature !== signature) {
+      startRequest.id = requestId()
+      startRequest.signature = signature
     }
-    const requirements = { core: coreItems.value, bonus: bonusItems.value }
-    const config = schemeKind.value === 'passive_resume'
-      ? {
-          reply_message: '您好，这边是招聘岗位，方便发送一份简历进一步沟通吗？',
-          ...requirements,
-        }
-      : {
-          source: source.value,
-          keyword: keyword.value.trim(),
-          target_resume_count: Number(targetResumeCount.value),
-          max_scan_count: Number(maxScanCount.value),
-          ...requirements,
-        }
-
-    let enabledId = operationState.value.enabledId
-    if (workflowChoice.value === 'standard') {
-      let versionId = operationState.value.versionId
-      if (!versionId) {
-        submitStage.value = '正在创建可追溯流程版本…'
-        const created = await api('recruitment/workflows/standard/', {
-          method: 'POST',
-          body: JSON.stringify({
-            kind: schemeKind.value,
-            boss_account: Number(selectedAccountId.value),
-            config,
-          }),
-        })
-        versionId = created.version.id
-        operationState.value.versionId = versionId
-        persistOperation()
-      }
-      if (!enabledId) {
-        submitStage.value = '正在校验并启用流程…'
-        const enabled = await api(`recruitment/workflow-versions/${versionId}/enable/`, { method: 'POST' })
-        enabledId = enabled.id
-        operationState.value.enabledId = enabledId
-        persistOperation()
-      }
-    } else {
-      enabledId = selectedCustomWorkflow.value.id
-      operationState.value.versionId = enabledId
-      operationState.value.enabledId = enabledId
-      persistOperation()
-    }
-
-    submitStage.value = '正在创建正式运行…'
-    const run = await api(`recruitment/workflow-versions/${enabledId}/run/`, {
+    submitStage.value = '正在原子开启招聘任务…'
+    const plan = await api('recruitment/automation-plans/start/', {
       method: 'POST',
       body: JSON.stringify({
-        mode: 'formal',
-        request_id: operationState.value.requestId,
-        job: Number(selectedJob.value.id),
-        input: {
-          scheme: schemeKind.value,
-          source: schemeKind.value === 'active_resume_search' ? source.value : 'messages',
-          keyword: keyword.value.trim(),
-          ...requirements,
-        },
-        confirm: true,
+        request_id: startRequest.id,
+        ...command,
       }),
     })
-    const completedReceipt = {
-      run,
-      jobId: selectedJob.value.id,
-      jobTitle: selectedJob.value.title,
-      accountName: selectedAccount.value.name,
-      scheme: schemeKind.value,
-    }
-    receipt.value = completedReceipt
-    operationState.value.receipt = completedReceipt
-    persistOperation()
+    planLoadSequence += 1
+    resetEditBase()
+    applyServerPlan(plan, snapshot.job.id)
+    persistWizardDraft(snapshot.job.id)
+    startRequest.id = ''
+    startRequest.signature = ''
     submitStage.value = ''
   } catch (error) {
-    submitError.value = `${submitStage.value ? `${submitStage.value.replace(/正在|…/g, '')}失败：` : ''}${error.message || '无法创建招聘作业'}`
+    if (error.status === 409 && snapshot) {
+      await refreshCurrentPlan({ jobId: snapshot.job.id, silent: true })
+      submitError.value = '任务状态刚刚发生变化，已为你刷新；请确认最新状态后重试。'
+    } else {
+      submitError.value = `${submitStage.value ? `${submitStage.value.replace(/正在|…/g, '')}失败：` : ''}${error.message || '无法创建招聘作业'}`
+    }
   } finally {
     submitting.value = false
+    if (busyAction && planAction.value === busyAction) planAction.value = ''
+    if (activeExecutionSnapshot === snapshot) activeExecutionSnapshot = null
     submitStage.value = ''
   }
 }
@@ -749,25 +1173,30 @@ async function startExecution() {
 watch(
   () => selectedJob.value?.id,
   (jobId, previousJobId) => {
-    if (previousJobId && String(previousJobId) !== String(jobId)) persistWizardDraft(previousJobId)
+    if (previousJobId && String(previousJobId) !== String(jobId)) {
+      if (skipPreviousJobPersistFor === String(previousJobId)) skipPreviousJobPersistFor = ''
+      else persistWizardDraft(previousJobId)
+    }
     wizardHydrating.value = true
     documentLoadSequence += 1
+    planLoadSequence += 1
+    planActionSequence += 1
     documents.value = []
-    operationState.value = null
-    receipt.value = null
+    currentPlan.value = null
+    planError.value = ''
+    planActionError.value = ''
+    planAction.value = ''
+    startRequest.id = ''
+    startRequest.signature = ''
     submitError.value = ''
     resetWizardFields()
     if (jobId) {
       const job = context.jobs.find((item) => String(item.id) === String(jobId))
+      routeJobError.value = ''
       selectedAccountId.value = job?.boss_account ? String(job.boss_account) : ''
       loadDocuments(jobId)
       restoreWizardDraft(jobId)
-      restoreOperation(jobId)
-      if (receipt.value) {
-        completedSteps.context = true
-        completedSteps.standard = true
-        restoredWizardStep.value = 'plan'
-      }
+      if (wizardReady.value) refreshCurrentPlan({ jobId, hydrateDraft: false })
     }
     wizardHydrating.value = false
     if (previousJobId && String(previousJobId) !== String(jobId)) {
@@ -784,6 +1213,11 @@ watch(schemeKind, () => {
 })
 
 watch(
+  () => route.query.job,
+  (value) => syncJobFromRoute(value),
+)
+
+watch(
   () => route.query.step,
   () => resolveWizardStep(),
 )
@@ -794,7 +1228,10 @@ watch([coreText, bonusText], () => {
 
 watch(
   [schemeKind, workflowChoice, interval, source, keyword, targetResumeCount, maxScanCount, documentCategory, selectedAccountId],
-  () => persistWizardDraft(),
+  () => {
+    if (currentStep.value === 'standard' || currentStep.value === 'plan') ensureEditBase()
+    persistWizardDraft()
+  },
 )
 
 watch(
@@ -808,7 +1245,22 @@ watch(enabledWorkflowOptions, (options) => {
   }
 })
 
-onMounted(loadWorkbench)
+onMounted(async () => {
+  await loadWorkbench()
+  if (!componentAlive) return
+  planPollTimer = globalThis.setInterval(() => {
+    refreshCurrentPlan({ silent: true, poll: true })
+  }, 5000)
+})
+
+onUnmounted(() => {
+  componentAlive = false
+  planActionSequence += 1
+  planLoadSequence += 1
+  documentLoadSequence += 1
+  if (planPollTimer) globalThis.clearInterval(planPollTimer)
+  planPollTimer = null
+})
 </script>
 
 <template>
@@ -851,7 +1303,11 @@ onMounted(loadWorkbench)
         </button>
       </nav>
 
+      <p v-if="routeJobError" class="workbench-error" role="alert">{{ routeJobError }}</p>
       <p v-if="wizardError" class="workbench-error" role="alert">{{ wizardError }}</p>
+      <p v-if="storageNotice" class="workbench-storage-notice" role="status">
+        <AppIcon name="alert-circle" :size="16" /> {{ storageNotice }}
+      </p>
 
       <div :class="['workbench-layout', { 'workbench-layout--single': currentStep !== 'plan' }]">
         <main class="panel workbench-main">
@@ -937,10 +1393,15 @@ onMounted(loadWorkbench)
             <label
               :class="['workbench-drop-zone', { 'is-dragging': dragging, 'is-uploading': uploading }]"
               data-test="workbench-drop-zone"
+              role="button"
+              tabindex="0"
+              :aria-disabled="!selectedJob || uploading || submitting"
               @dragenter.prevent="dragging = true"
               @dragover.prevent="dragging = true"
               @dragleave.prevent="dragging = false"
               @drop.prevent="dropDocuments"
+              @keydown.enter.prevent="fileInput?.click()"
+              @keydown.space.prevent="fileInput?.click()"
             >
               <span class="workbench-drop-zone__icon"><AppIcon name="upload" :size="24" /></span>
               <strong data-test="workbench-upload">
@@ -1046,7 +1507,7 @@ onMounted(loadWorkbench)
             <div class="workbench-workflow-choice">
               <label>
                 <span>运行流程</span>
-                <select v-model="workflowChoice" data-test="workflow-choice" :disabled="submitting || Boolean(receipt)">
+                <select v-model="workflowChoice" data-test="workflow-choice" :disabled="submitting">
                   <option value="standard">标准流程（按本页设置生成）</option>
                   <option v-for="option in enabledWorkflowOptions" :key="option.id" :value="`custom:${option.id}`">
                     {{ option.label }}
@@ -1126,7 +1587,16 @@ onMounted(loadWorkbench)
           </div>
 
           <p v-if="submitError" class="workbench-inline-error" role="alert">{{ submitError }}</p>
+          <div v-if="planVersionNotice" class="workbench-version-notice" data-test="plan-version-notice" role="status">
+            <p>{{ planVersionNotice }}</p>
+            <button data-test="rebase-edit-draft" type="button" :disabled="submitting || Boolean(planAction)" @click="rebaseEditDraft">
+              以最新版本继续编辑
+            </button>
+          </div>
+          <p v-if="planLoading" class="workbench-submit-hint" data-test="plan-loading" aria-live="polite">正在同步任务状态…</p>
+          <p v-else-if="planError && !currentPlan" class="workbench-inline-error" role="alert">{{ planError }}</p>
           <button
+            v-if="!currentPlan && !planLoading"
             class="primary-button workbench-start"
             data-test="start-execution"
             type="button"
@@ -1135,24 +1605,26 @@ onMounted(loadWorkbench)
             @click="startExecution"
           >
             <AppIcon name="arrow-right" :size="17" />
-            {{ submitting ? submitStage : (receipt ? '本次作业已提交' : '开始执行') }}
+            {{ submitting ? submitStage : '开始执行' }}
           </button>
-          <small class="workbench-submit-hint">
-            {{ receipt ? '本次运行已锁定，避免重复提交；如需重新执行，请先新建任务。' : (firstBlockingCheck ? `请先处理：${firstBlockingCheck.label}` : '点击后将创建、校验并运行一份可追溯流程版本。') }}
+          <small v-if="!currentPlan && !planLoading" class="workbench-submit-hint">
+            {{ firstBlockingCheck ? `请先处理：${firstBlockingCheck.label}` : '点击后将以一个原子命令创建方案版本并开启任务。' }}
           </small>
 
-          <section v-if="receipt" class="workbench-receipt" data-test="execution-receipt" aria-live="polite">
-            <i><AppIcon name="check-circle" :size="22" /></i>
-            <div>
-              <span>招聘作业已创建</span>
-              <strong>运行编号 {{ receipt.run.id }}</strong>
-              <small>{{ receipt.jobTitle }} · {{ receipt.accountName }} · {{ statusLabel(receipt.run.status) }}</small>
-              <router-link data-test="view-results" :to="resultsLink">
-                查看结果 <AppIcon name="arrow-right" :size="14" />
-              </router-link>
-              <button class="workbench-new-task" data-test="new-task" type="button" @click="beginNewTask">新建任务</button>
-            </div>
-          </section>
+          <RecruitmentOperationControl
+            v-if="currentPlan"
+            :plan="currentPlan"
+            :busy="planAction || (submitting ? 'restart' : '')"
+            :error="planActionError || planError"
+            :results-to="resultsLink"
+            :restart-disabled="!canSubmit"
+            :disabled-reason="!canSubmit && !submitting ? startDisabledReason : ''"
+            @resume="resumePlan"
+            @stop="stopPlan"
+            @stop-modify="stopAndModifyPlan"
+            @modify="enterPlanEdit"
+            @restart="startExecution({ busyAction: 'restart' })"
+          />
 
           <p class="workbench-safety"><AppIcon name="shield" :size="15" /> 外发、身份复核、额度与人工确认继续由服务端安全门控制。</p>
         </aside>
@@ -1211,7 +1683,6 @@ onMounted(loadWorkbench)
   --wb-passive-max-width: 420px;
   --wb-textarea-min-height: 116px;
   --wb-document-min-width: 180px;
-  --wb-upload-select-min-width: 116px;
   --wb-shadow-panel: 0 1px 2px rgba(15, 23, 42, .025);
   --wb-transition: 180ms ease;
   min-width: 0;
@@ -1271,6 +1742,24 @@ onMounted(loadWorkbench)
   line-height: var(--wb-line-height-compact);
 }
 
+.workbench-storage-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--wb-space-2);
+  margin: 0;
+  padding: var(--wb-space-3);
+  border: var(--wb-border-width) solid #f1d7a8;
+  border-radius: var(--wb-radius-control);
+  color: #8a5208;
+  background: #fffbeb;
+  font-size: var(--wb-font-size-control);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-storage-notice > svg {
+  flex: 0 0 auto;
+}
+
 .workbench-loading {
   min-height: var(--wb-loading-min-height);
   display: grid;
@@ -1296,12 +1785,124 @@ onMounted(loadWorkbench)
   width: min(var(--wb-document-min-width), 56%);
 }
 
+.workbench-wizard {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+  overflow: hidden;
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-panel);
+  background: var(--wb-color-surface);
+  box-shadow: var(--wb-shadow-panel);
+}
+
+.workbench-wizard__step {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--wb-space-3);
+  align-items: center;
+  min-width: 0;
+  padding: var(--wb-space-4) var(--wb-space-5);
+  border: 0;
+  border-right: var(--wb-border-width) solid var(--wb-color-line);
+  color: var(--wb-color-muted);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workbench-wizard__step:last-child {
+  border-right: 0;
+}
+
+.workbench-wizard__step::after {
+  position: absolute;
+  right: var(--wb-space-5);
+  bottom: 0;
+  left: var(--wb-space-5);
+  height: var(--wb-focus-width);
+  border-radius: var(--wb-radius-pill);
+  background: transparent;
+  content: '';
+}
+
+.workbench-wizard__step > span {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: var(--wb-upload-icon-size);
+  height: var(--wb-upload-icon-size);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-pill);
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  font-weight: var(--wb-font-weight-heavy);
+}
+
+.workbench-wizard__step strong {
+  overflow: hidden;
+  color: var(--wb-color-secondary);
+  font-size: var(--wb-font-size-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-wizard__step small {
+  overflow: hidden;
+  margin-top: var(--wb-space-1);
+  font-size: var(--wb-font-size-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-wizard__step:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.workbench-wizard__step:focus-visible {
+  z-index: 1;
+  outline: var(--wb-focus-width) solid var(--wb-color-primary);
+  outline-offset: calc(var(--wb-focus-width) * -1);
+}
+
+.workbench-wizard__step.is-current {
+  color: var(--wb-color-primary-dark);
+  background: #f7fcfb;
+}
+
+.workbench-wizard__step.is-current::after {
+  background: var(--wb-color-primary);
+}
+
+.workbench-wizard__step.is-current > span,
+.workbench-wizard__step.is-complete > span {
+  border-color: #bce8e2;
+  color: var(--wb-color-primary-dark);
+  background: #e9f8f5;
+}
+
+.workbench-wizard__step.is-current strong,
+.workbench-wizard__step.is-complete strong {
+  color: var(--wb-color-ink);
+}
+
+.workbench-wizard__step:disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
 .workbench-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(var(--wb-aside-min-width), var(--wb-aside-max-width));
   gap: var(--wb-space-5);
   align-items: start;
   min-width: 0;
+}
+
+.workbench-layout--single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .workbench-main {
@@ -1366,8 +1967,7 @@ onMounted(loadWorkbench)
 
 .workbench-context-grid label,
 .workbench-requirements label,
-.workbench-settings label,
-.workbench-upload__actions label {
+.workbench-settings label {
   display: grid;
   gap: var(--wb-space-2);
   min-width: 0;
@@ -1380,7 +1980,6 @@ onMounted(loadWorkbench)
 .workbench-requirements textarea,
 .workbench-settings select,
 .workbench-settings input,
-.workbench-upload__actions select,
 .workbench-workflow-choice select {
   width: 100%;
   min-width: 0;
@@ -1398,7 +1997,6 @@ onMounted(loadWorkbench)
 .workbench-requirements textarea:focus,
 .workbench-settings select:focus,
 .workbench-settings input:focus,
-.workbench-upload__actions select:focus,
 .workbench-workflow-choice select:focus {
   outline: var(--wb-focus-width) solid var(--wb-color-primary);
   border-color: var(--wb-color-primary);
@@ -1414,6 +2012,218 @@ onMounted(loadWorkbench)
   line-height: var(--wb-line-height-compact);
 }
 
+.workbench-step-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--wb-space-4);
+  align-items: center;
+  margin-top: var(--wb-space-6);
+  padding-top: var(--wb-space-4);
+  border-top: var(--wb-border-width) solid var(--wb-color-line);
+}
+
+.workbench-step-actions--forward {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.workbench-step-actions--previous-only {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workbench-step-actions > span {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-step-actions--previous-only > span {
+  text-align: right;
+}
+
+.workbench-step-actions .secondary-button {
+  min-height: var(--wb-control-min-height);
+  border-color: var(--wb-color-line);
+  color: var(--wb-color-secondary);
+  background: var(--wb-color-surface);
+  box-shadow: none;
+}
+
+.workbench-step-actions .workbench-next {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  border-color: var(--wb-color-ink);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-ink);
+}
+
+.workbench-step-actions .workbench-next:hover:not(:disabled) {
+  border-color: var(--wb-color-secondary);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-secondary);
+}
+
+.workbench-upload-kind {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--wb-space-5);
+  min-width: 0;
+  margin-bottom: var(--wb-space-3);
+}
+
+.workbench-upload-kind > div,
+.workbench-upload-kind > label {
+  display: grid;
+  gap: var(--wb-space-1);
+  min-width: 0;
+}
+
+.workbench-upload-kind > div strong,
+.workbench-upload-kind > label span {
+  color: var(--wb-color-secondary);
+  font-size: var(--wb-font-size-control);
+  font-weight: var(--wb-font-weight-bold);
+}
+
+.workbench-upload-kind > div small {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-upload-kind select {
+  min-width: 148px;
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-ink);
+  background: var(--wb-color-surface);
+  font: inherit;
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-upload-kind select:focus {
+  outline: var(--wb-focus-width) solid var(--wb-color-primary);
+  border-color: var(--wb-color-primary);
+}
+
+.workbench-drop-zone {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--wb-space-2);
+  min-height: 224px;
+  padding: var(--wb-space-6);
+  border: var(--wb-border-width) dashed #b8c8d8;
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-secondary);
+  background: #fbfdfe;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--wb-transition), background-color var(--wb-transition), transform var(--wb-transition);
+}
+
+.workbench-drop-zone:hover,
+.workbench-drop-zone.is-dragging {
+  border-color: var(--wb-color-primary);
+  background: #f2fbf9;
+}
+
+.workbench-drop-zone.is-dragging {
+  transform: translateY(-1px);
+}
+
+.workbench-drop-zone.is-uploading {
+  cursor: progress;
+}
+
+.workbench-drop-zone[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: .72;
+}
+
+.workbench-drop-zone:focus-visible,
+.workbench-drop-zone:focus-within {
+  outline: var(--wb-focus-width) solid var(--wb-color-primary);
+  outline-offset: var(--wb-space-1);
+}
+
+.workbench-drop-zone__icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: var(--wb-space-1);
+  border-radius: 14px;
+  color: var(--wb-color-primary-dark);
+  background: #def5f1;
+}
+
+.workbench-drop-zone > strong {
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-body);
+  font-weight: var(--wb-font-weight-bold);
+}
+
+.workbench-drop-zone > small {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-upload-queue {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--wb-space-2);
+  min-width: 0;
+  margin: var(--wb-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workbench-upload-queue li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--wb-space-2);
+  align-items: start;
+  min-width: 0;
+  padding: var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-muted);
+  background: var(--wb-color-surface);
+}
+
+.workbench-upload-queue li > span {
+  display: grid;
+  gap: var(--wb-space-1);
+  min-width: 0;
+}
+
+.workbench-upload-queue strong,
+.workbench-upload-queue small {
+  overflow-wrap: anywhere;
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-upload-queue strong {
+  color: var(--wb-color-secondary);
+}
+
+.workbench-upload-queue .is-succeeded {
+  border-color: #ccebe6;
+  color: var(--wb-color-primary-dark);
+  background: #f7fcfb;
+}
+
+.workbench-upload-queue .is-failed {
+  border-color: #f2caca;
+  color: var(--wb-color-danger);
+  background: #fffafa;
+}
+
 .workbench-empty-actions {
   margin-top: var(--wb-space-3);
 }
@@ -1427,81 +2237,6 @@ onMounted(loadWorkbench)
   font-size: var(--wb-font-size-control);
   font-weight: var(--wb-font-weight-bold);
   text-decoration: none;
-}
-
-.workbench-upload {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--wb-space-4);
-  min-width: 0;
-  padding: var(--wb-space-3) 0;
-  border-top: var(--wb-border-width) solid var(--wb-color-line);
-  border-bottom: var(--wb-border-width) solid var(--wb-color-line);
-  background: var(--wb-color-surface);
-}
-
-.workbench-upload__copy,
-.workbench-upload__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--wb-space-3);
-  min-width: 0;
-}
-
-.workbench-upload__copy > i {
-  display: grid;
-  place-items: center;
-  width: var(--wb-upload-icon-size);
-  height: var(--wb-upload-icon-size);
-  flex: 0 0 var(--wb-upload-icon-size);
-  border-radius: var(--wb-radius-control);
-  color: var(--wb-color-primary-dark);
-  background: var(--wb-color-canvas);
-}
-
-.workbench-upload__copy div {
-  display: grid;
-  gap: var(--wb-space-1);
-  min-width: 0;
-}
-
-.workbench-upload__copy strong {
-  color: var(--wb-color-ink);
-  font-size: var(--wb-font-size-body);
-}
-
-.workbench-upload__copy small {
-  color: var(--wb-color-muted);
-  font-size: var(--wb-font-size-small);
-  line-height: var(--wb-line-height-compact);
-}
-
-.workbench-upload__actions select {
-  min-width: var(--wb-upload-select-min-width);
-  padding: var(--wb-space-2);
-}
-
-.workbench-upload__actions button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--wb-space-2);
-  white-space: nowrap;
-}
-
-.workbench-upload__actions .secondary-button {
-  border-color: var(--wb-color-line);
-  color: var(--wb-color-secondary);
-  background: var(--wb-color-surface);
-  box-shadow: none;
-  font-size: var(--wb-font-size-control);
-  font-weight: var(--wb-font-weight-semibold);
-}
-
-.workbench-upload__actions .secondary-button:hover:not(:disabled) {
-  border-color: var(--wb-color-muted);
-  color: var(--wb-color-ink);
-  background: var(--wb-color-canvas);
 }
 
 .workbench-documents {
@@ -1806,6 +2541,36 @@ onMounted(loadWorkbench)
   margin-bottom: var(--wb-space-2);
 }
 
+.workbench-version-notice {
+  order: 3;
+  display: grid;
+  gap: var(--wb-space-2);
+  margin-bottom: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: var(--wb-border-width) solid #f1d7a8;
+  border-radius: var(--wb-radius-control);
+  color: #8a5208;
+  background: #fffbeb;
+  font-size: var(--wb-font-size-meta);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-version-notice p {
+  margin: 0;
+}
+
+.workbench-version-notice button {
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 var(--wb-space-3);
+  border: var(--wb-border-width) solid #d5a14a;
+  border-radius: var(--wb-radius-control);
+  color: #714207;
+  background: #fff;
+  font: inherit;
+  font-weight: var(--wb-font-weight-semibold);
+}
+
 .workbench-start {
   order: 4;
   display: inline-flex;
@@ -2009,8 +2774,7 @@ onMounted(loadWorkbench)
 
 @media (max-width: 720px) {
   .workbench-hero,
-  .workbench-section-heading,
-  .workbench-upload {
+  .workbench-section-heading {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -2028,12 +2792,53 @@ onMounted(loadWorkbench)
     padding: var(--wb-space-4);
   }
 
+  .workbench-wizard {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-wizard__step {
+    border-right: 0;
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-wizard__step:last-child {
+    border-bottom: 0;
+  }
+
   .workbench-context-grid,
   .workbench-requirements,
   .workbench-settings,
   .workbench-schemes,
-  .workbench-checks {
+  .workbench-checks,
+  .workbench-upload-queue,
+  .workbench-step-actions,
+  .workbench-step-actions--forward,
+  .workbench-step-actions--previous-only {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-step-actions > span,
+  .workbench-step-actions--previous-only > span {
+    text-align: left;
+  }
+
+  .workbench-step-actions button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .workbench-upload-kind {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workbench-upload-kind select {
+    width: 100%;
+  }
+
+  .workbench-drop-zone {
+    min-height: 190px;
+    padding: var(--wb-space-5);
   }
 
   .workbench-checks li {
@@ -2052,21 +2857,6 @@ onMounted(loadWorkbench)
   .workbench-workflow-choice a {
     align-self: flex-start;
     padding-bottom: 0;
-  }
-
-  .workbench-upload__copy,
-  .workbench-upload__actions {
-    width: 100%;
-  }
-
-  .workbench-upload__actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .workbench-upload__actions button {
-    justify-content: center;
-    width: 100%;
   }
 }
 

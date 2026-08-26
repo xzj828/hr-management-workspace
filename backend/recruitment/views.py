@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from .demo_data import clear_demo_data, demo_status, load_demo_data
 from .models import (
     AiProcessingTask,
+    ApplicationScreeningDecision,
     AutomationApproval,
     BossAccount,
     Candidate,
@@ -29,10 +30,12 @@ from .models import (
     JobRequirementDocumentVersion,
     JobStandardVersion,
     MessageSyncPolicy,
+    RecruitmentAutomationPlan,
     RecruitmentAuditLog,
     RecruitmentJob,
     Resume,
     ResumeAssessment,
+    ScreeningDecisionBatch,
     StructuredResumeVersion,
     RpaTask,
     RpaWorker,
@@ -53,6 +56,7 @@ from .rpa.tasks import (
 )
 from .rpa.status import inspect_boss_status
 from .serializers import (
+    ApplicationScreeningDecisionSerializer,
     BossAccountSerializer,
     AutomationApprovalSerializer,
     CandidateDiscoveryImportSerializer,
@@ -71,8 +75,13 @@ from .serializers import (
     MessageSyncPolicySerializer,
     PositionSyncRequestSerializer,
     RecruitmentJobSerializer,
+    RecruitmentAutomationPlanControlSerializer,
+    RecruitmentAutomationPlanSerializer,
+    RecruitmentAutomationPlanStartSerializer,
     ResumeSerializer,
     ResumeAssessmentSerializer,
+    RejectionNoticePrepareSerializer,
+    ScreeningDecisionBulkSerializer,
     StructuredResumeVersionSerializer,
     AiProcessingTaskSerializer,
     RpaTaskSerializer,
@@ -103,6 +112,218 @@ from .services.standard_workflows import create_standard_workflow
 from .services.workflow_nodes import execute_workflow_node
 from .services.workflow_runtime import HUMAN_NODE_TYPES, WorkflowConflict, advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
 from .services.search_campaigns import prepare_search_campaign, start_search_campaign, stop_search_campaign
+from .services.screening import build_screening_results, create_screening_decisions, prepare_rejection_notice
+from .services.automation_plans import pause_plan, resume_plan, start_plan, stop_plan
+from .services.sqlite_lifecycle import serialize_sqlite_lifecycle
+
+
+def _notification_error_summary(notification):
+    if notification is None or not notification.error_code:
+        return ""
+    if notification.error_code == "external_result_uncertain":
+        return "发送结果待人工核查，禁止自动重试"
+    if notification.error_code in {
+        "stable_identity_action_unavailable",
+        "target_identity_ambiguous",
+        "target_identity_missing",
+    }:
+        return "该候选人需要 HR 在 BOSS 直聘中人工处理通知"
+    if notification.error_code == "rejection_batch_stopped":
+        return "批次因账号环境或执行结果不确定而停止，请人工核查"
+    return "通知执行未完成，请查看人工事项并在 BOSS 直聘中核查"
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def screening_results_view(request):
+    raw_job_id = str(request.query_params.get("job", "")).strip()
+    if not raw_job_id.isdigit():
+        raise ValidationError({"job": "job 参数必填且必须是有效职位 ID"})
+    job = (
+        accessible_jobs(request.user)
+        .select_related("boss_account")
+        .filter(pk=int(raw_job_id), archived_at__isnull=True)
+        .first()
+    )
+    if job is None:
+        raise NotFound("职位不存在或不可访问")
+    standard, rows = build_screening_results(job=job)
+    serialized_rows = []
+    for row in rows:
+        application = row["application"]
+        candidate = row["candidate"]
+        resume = row["resume"]
+        structure = row["structure"]
+        assessment = row["assessment"]
+        decision = row["hr_decision"]
+        notification = row["notification"]
+        resume_summary = None
+        if resume is not None:
+            resume_summary = {
+                "id": resume.pk,
+                "candidate": resume.candidate_id,
+                "candidate_name": resume.candidate.name,
+                "application": resume.application_id,
+                "job_title": resume.application.job.title if resume.application_id else None,
+                "original_name": resume.original_name,
+                "content_type": resume.content_type,
+                "file_size": resume.file_size,
+                "source": resume.source,
+                "source_label": resume.get_source_display(),
+                "processing_status": resume.processing_status,
+                "status_label": resume.get_processing_status_display(),
+                "file_available": bool(resume.file and resume.file.storage.exists(resume.file.name)),
+                "preview_url": f"/api/recruitment/resumes/{resume.pk}/file/",
+                "download_url": f"/api/recruitment/resumes/{resume.pk}/file/?download=1",
+                "is_demo": resume.is_demo,
+                "version": resume.version,
+                "acquired_at": resume.acquired_at,
+                "created_at": resume.created_at,
+                "updated_at": resume.updated_at,
+                "archived_at": resume.archived_at,
+                "latest_structure_id": structure.pk if structure else None,
+                "intelligence_status": "completed" if structure else row["ai_state"],
+            }
+        structure_summary = None
+        if structure is not None:
+            structure_summary = {
+                "id": structure.pk,
+                "resume": structure.resume_id,
+                "version": structure.version,
+                "warnings_count": len(structure.warnings) if isinstance(structure.warnings, list) else 0,
+                "created_at": structure.created_at,
+            }
+        assessment_summary = None
+        if assessment is not None:
+            assessment_summary = {
+                "id": assessment.pk,
+                "structured_resume": assessment.structured_resume_id,
+                "standard": assessment.standard_id,
+                "standard_version": assessment.standard.version,
+                "version": assessment.version,
+                "total_score": format(assessment.total_score, ".2f"),
+                "confidence": format(assessment.confidence, ".3f"),
+                "recommendation": assessment.recommendation,
+                "recommendation_label": assessment.get_recommendation_display(),
+                "auto_rejected": assessment.auto_rejected,
+                "hard_failure_count": len(assessment.hard_failures) if isinstance(assessment.hard_failures, list) else 0,
+                "created_at": assessment.created_at,
+            }
+        serialized_rows.append({
+            "rank": row["rank"],
+            "application": {
+                "id": application.pk,
+                "job": application.job_id,
+                "stage": application.stage,
+                "stage_label": application.get_stage_display(),
+                "source": application.source,
+                "owner_name": application.owner.username if application.owner_id else None,
+                "updated_at": application.updated_at,
+            },
+            "candidate": {
+                "id": candidate.pk,
+                "name": candidate.name,
+                "current_title": candidate.current_title,
+                "current_city": candidate.current_city,
+            },
+            "resume": resume_summary,
+            "structure": structure_summary,
+            "assessment": assessment_summary,
+            "ai_state": row["ai_state"],
+            "hr_decision": {
+                "id": decision.pk,
+                "batch_id": str(decision.batch_id),
+                "decision": decision.decision,
+                "version": decision.version,
+                "decided_by_name": decision.decided_by.username,
+                "decided_at": decision.created_at,
+            } if decision else None,
+            "notification": {
+                "action_id": str(notification.pk) if notification else None,
+                "status": notification.status if notification else "not_requested",
+                "error_code": notification.error_code if notification else "",
+                "error_message": _notification_error_summary(notification),
+                "updated_at": notification.updated_at if notification else None,
+            },
+        })
+    return Response({
+        "job": {"id": job.pk, "title": job.title, "boss_account": job.boss_account_id},
+        "standard": {
+            "id": standard.pk,
+            "job": standard.job_id,
+            "version": standard.version,
+            "status": standard.status,
+            "status_label": standard.get_status_display(),
+            "published_at": standard.published_at,
+        } if standard else None,
+        "results": serialized_rows,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([RecruitmentWritePermission])
+def bulk_screening_decisions_view(request):
+    serializer = ScreeningDecisionBulkSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    job = (
+        accessible_jobs(request.user)
+        .select_related("boss_account")
+        .filter(pk=data["job"], archived_at__isnull=True)
+        .first()
+    )
+    if job is None:
+        raise NotFound("职位不存在或不可操作")
+    batch, created = create_screening_decisions(
+        request_id=data["request_id"],
+        job=job,
+        application_ids=data["application_ids"],
+        decision=data["decision"],
+        reason=data["reason"],
+        actor=request.user,
+    )
+    decisions = batch.decisions.select_related("decided_by").order_by("application_id")
+    return Response({
+        "decision_batch_id": str(batch.pk),
+        "request_id": str(batch.request_id),
+        "job": batch.job_id,
+        "decision": batch.decision,
+        "reason": batch.reason,
+        "item_count": decisions.count(),
+        "decisions": ApplicationScreeningDecisionSerializer(decisions, many=True).data,
+    }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([RecruitmentWritePermission])
+def prepare_rejection_notice_view(request):
+    serializer = RejectionNoticePrepareSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    decision_batch = (
+        ScreeningDecisionBatch.objects.select_related("job__boss_account")
+        .filter(pk=data["decision_batch_id"], job__in=accessible_jobs(request.user))
+        .first()
+    )
+    if decision_batch is None:
+        raise NotFound("人工筛选批次不存在或不可操作")
+    approval, created = prepare_rejection_notice(
+        request_id=data["request_id"],
+        decision_batch=decision_batch,
+        message=data["message"],
+        actor=request.user,
+    )
+    approval_summary = {
+        "id": str(approval.pk),
+        "status": approval.status,
+        "item_count": approval.item_count,
+    }
+    return Response({
+        "approval_id": str(approval.pk),
+        "status": approval.status,
+        "item_count": approval.item_count,
+        "approval": approval_summary,
+    }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 def _materialize_deep_match_task(*, approval, actor, workflow_node_run=None):
@@ -437,7 +658,7 @@ class JobStandardVersionViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({"task_id": str(task.pk), "status": task.status})
 
 
-class MessageSyncPolicyViewSet(viewsets.ModelViewSet):
+class MessageSyncPolicyViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = MessageSyncPolicy.objects.select_related("boss_account")
     serializer_class = MessageSyncPolicySerializer
     permission_classes = [RecruitmentWritePermission]
@@ -632,16 +853,25 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
         return queryset.filter(boss_account__authorized_users=self.request.user)
 
     @action(detail=True, methods=["post"])
+    @serialize_sqlite_lifecycle
     @transaction.atomic
     def approve(self, request, pk=None):
         approval_target = self.get_object()
-        try:
-            approval = approve(approval=approval_target, actor=request.user)
-        except ValidationError:
-            approval_target.refresh_from_db()
-            if approval_target.status == AutomationApproval.Status.EXPIRED:
-                return Response({"detail": "该确认项已过期"}, status=status.HTTP_400_BAD_REQUEST)
-            raise
+        rejection_replay = (
+            approval_target.action == AutomationApproval.Action.REJECTION_NOTICE
+            and approval_target.status == AutomationApproval.Status.APPROVED
+            and approval_target.approved_by_id == request.user.pk
+        )
+        if rejection_replay:
+            approval = approval_target
+        else:
+            try:
+                approval = approve(approval=approval_target, actor=request.user)
+            except ValidationError:
+                approval_target.refresh_from_db()
+                if approval_target.status == AutomationApproval.Status.EXPIRED:
+                    return Response({"detail": "该确认项已过期"}, status=status.HTTP_400_BAD_REQUEST)
+                raise
         task = None
         created = False
         if approval.action == AutomationApproval.Action.DEEP_MATCH:
@@ -679,10 +909,11 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
             AutomationApproval.Action.GREET,
             AutomationApproval.Action.REQUEST_RESUME,
             AutomationApproval.Action.SEND_INTERVIEW,
+            AutomationApproval.Action.REJECTION_NOTICE,
         }:
             batch = materialize_communication_batch(approval=approval, actor=request.user)
             response["batch"] = ExecutionBatchSerializer(batch).data
-            created = True
+            created = not rejection_replay
         if task:
             response["task_id"] = str(task.pk)
             response["task_status"] = task.status
@@ -818,7 +1049,9 @@ class ExecutionBatchViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class WorkflowTemplateViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
-    queryset = WorkflowTemplate.objects.select_related("active_version", "created_by").all()
+    queryset = WorkflowTemplate.objects.select_related(
+        "active_version", "created_by"
+    ).prefetch_related("managed_automation_plans").all()
     serializer_class = WorkflowTemplateSerializer
     permission_classes = [RecruitmentWritePermission]
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
@@ -829,6 +1062,29 @@ class WorkflowTemplateViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @staticmethod
+    def _assert_direct_control_allowed(template):
+        if template.managed_automation_plans.exists():
+            raise WorkflowConflict("招聘作业台托管流程不能从流程管理入口修改或归档")
+
+    def update(self, request, *args, **kwargs):
+        self._assert_direct_control_allowed(self.get_object())
+        return super().update(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        template = self.get_object()
+        self._assert_direct_control_allowed(template)
+        instance = archive_object(instance=template, actor=request.user)
+        return Response(self.get_serializer(instance).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        template = self.get_object()
+        self._assert_direct_control_allowed(template)
+        instance = restore_object(instance=template, actor=request.user)
+        return Response(self.get_serializer(instance).data)
 
     @action(detail=False, methods=["post"], url_path="standard")
     def standard(self, request):
@@ -870,6 +1126,11 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         accessible_version = self.get_object()
+        if (
+            accessible_version.automation_plan_revisions.exists()
+            or accessible_version.template.managed_automation_plans.exists()
+        ):
+            raise WorkflowConflict("招聘作业台托管流程版本需要保留审计，不能直接删除")
         version = WorkflowVersion.objects.select_for_update().select_related("template", "boss_account").get(
             pk=accessible_version.pk
         )
@@ -895,7 +1156,10 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def enable(self, request, pk=None):
-        version = enable_version(version=self.get_object(), actor=request.user)
+        version = self.get_object()
+        if version.template.managed_automation_plans.exists():
+            raise WorkflowConflict("招聘作业台托管流程版本不能从流程管理入口切换")
+        version = enable_version(version=version, actor=request.user)
         return Response(self.get_serializer(version).data)
 
     @action(detail=True, methods=["post"])
@@ -906,6 +1170,11 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
         if not request_id:
             raise ValidationError({"request_id": "运行请求标识必填"})
         if mode == WorkflowRun.Mode.FORMAL:
+            if (
+                version.automation_plan_revisions.exists()
+                or version.template.managed_automation_plans.exists()
+            ):
+                raise WorkflowConflict("招聘作业台托管流程请从招聘作业台开启")
             if version.status != WorkflowVersion.Status.ENABLED:
                 raise ValidationError("正式运行只能使用已启用版本")
             if request.data.get("confirm") is not True:
@@ -937,30 +1206,58 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = super().get_queryset()
         return queryset if self.request.user.is_superuser else queryset.filter(boss_account__authorized_users=self.request.user)
 
+
     def retrieve(self, request, *args, **kwargs):
         run = self.get_object()
         if run.status not in {WorkflowRun.Status.SUCCEEDED, WorkflowRun.Status.FAILED, WorkflowRun.Status.CANCELLED, WorkflowRun.Status.PAUSED}:
             run = advance_run(run, executor=execute_workflow_node)
         return Response(self.get_serializer(run).data)
 
+    @staticmethod
+    def _assert_direct_control_allowed(run):
+        if run.automation_plan_revision_id is not None:
+            raise WorkflowConflict("招聘作业台任务请使用方案的停止或重新开启操作")
+
     @action(detail=True, methods=["post"])
     def pause(self, request, pk=None):
-        return Response(self.get_serializer(pause_run(self.get_object(), actor=request.user)).data)
+        run = self.get_object()
+        self._assert_direct_control_allowed(run)
+        return Response(self.get_serializer(pause_run(run, actor=request.user)).data)
 
     @action(detail=True, methods=["post"])
     def resume(self, request, pk=None):
-        run = resume_run(self.get_object(), actor=request.user)
+        run = self.get_object()
+        self._assert_direct_control_allowed(run)
+        run = resume_run(run, actor=request.user)
         return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
-        return Response(self.get_serializer(cancel_run(self.get_object(), actor=request.user)).data)
+        run = self.get_object()
+        self._assert_direct_control_allowed(run)
+        return Response(self.get_serializer(cancel_run(run, actor=request.user)).data)
 
     @action(detail=True, methods=["post"])
+    @serialize_sqlite_lifecycle
     @transaction.atomic
     def decision(self, request, pk=None):
         run = self.get_object()
-        node = run.node_runs.filter(pk=request.data.get("node_id")).first()
+        if run.automation_plan_revision_id is not None:
+            from recruitment.services.automation_plans import assert_plan_fence_current
+
+            BossAccount.objects.select_for_update().get(pk=run.boss_account_id)
+            RecruitmentAutomationPlan.objects.select_for_update().get(
+                revisions__pk=run.automation_plan_revision_id,
+            )
+            run = WorkflowRun.objects.select_for_update().get(pk=run.pk)
+            assert_plan_fence_current(
+                revision_id=run.automation_plan_revision_id,
+                generation=run.automation_generation,
+                message="招聘作业台方案已停止、暂停或被新修订替代，旧人工决定已失效",
+            )
+            node = run.node_runs.select_for_update().filter(pk=request.data.get("node_id")).first()
+        else:
+            node = run.node_runs.filter(pk=request.data.get("node_id")).first()
         if node is None:
             raise ValidationError({"node_id": "运行节点不存在"})
         if not isinstance(request.data.get("approved"), bool):
@@ -1018,11 +1315,102 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"])
     def retry(self, request, pk=None):
         run = self.get_object()
+        self._assert_direct_control_allowed(run)
         node = run.node_runs.filter(pk=request.data.get("node_id")).first()
         if node is None:
             raise ValidationError({"node_id": "运行节点不存在"})
         retry_node(node, actor=request.user)
         return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
+
+
+class RecruitmentAutomationPlanViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = RecruitmentAutomationPlan.objects.select_related(
+        "job__boss_account",
+        "current_revision__workflow_version",
+        "current_run",
+        "managed_template",
+    )
+    serializer_class = RecruitmentAutomationPlanSerializer
+    permission_classes = [RecruitmentWritePermission]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(job__boss_account__authorized_users=self.request.user)
+        job_id = self.request.query_params.get("job")
+        if job_id:
+            queryset = queryset.filter(job_id=job_id)
+        return queryset.distinct()
+
+    @staticmethod
+    def _reconcile_expired_worker_leases():
+        # This endpoint is the HR workbench's regular control/status poll.  It is
+        # therefore a production maintenance path even when no Worker remains
+        # alive to call the lease endpoint after a crash.
+        from recruitment.services.task_recovery import recover_stale_tasks
+
+        recover_stale_tasks()
+
+    def list(self, request, *args, **kwargs):
+        self._reconcile_expired_worker_leases()
+        return super().list(request, *args, **kwargs)
+
+    def retrieve(self, request, *args, **kwargs):
+        self._reconcile_expired_worker_leases()
+        return super().retrieve(request, *args, **kwargs)
+
+    @action(detail=False, methods=["post"])
+    def start(self, request):
+        self._reconcile_expired_worker_leases()
+        serializer = RecruitmentAutomationPlanStartSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        result = start_plan(
+            job_id=data["job"].pk,
+            kind=data["kind"],
+            config=data["config"],
+            request_id=data["request_id"],
+            expected_control_version=data["expected_control_version"],
+            actor=request.user,
+            workflow_version_id=data.get("workflow_version").pk if data.get("workflow_version") else None,
+        )
+        result.plan.refresh_from_db()
+        return Response(
+            self.get_serializer(result.plan).data,
+            status=status.HTTP_200_OK if result.idempotent or not result.created else status.HTTP_201_CREATED,
+        )
+
+    def _control(self, request, command):
+        self._reconcile_expired_worker_leases()
+        serializer = RecruitmentAutomationPlanControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        result = command(
+            plan_id=self.get_object().pk,
+            actor=request.user,
+            request_id=data["request_id"],
+            expected_control_version=data["expected_control_version"],
+        )
+        result.plan.refresh_from_db()
+        payload = self.get_serializer(result.plan).data
+        response_status = (
+            status.HTTP_202_ACCEPTED
+            if payload["effective_state"] in {"stopping", "pausing"}
+            else status.HTTP_200_OK
+        )
+        return Response(payload, status=response_status)
+
+    @action(detail=True, methods=["post"])
+    def pause(self, request, pk=None):
+        return self._control(request, pause_plan)
+
+    @action(detail=True, methods=["post"])
+    def resume(self, request, pk=None):
+        return self._control(request, resume_plan)
+
+    @action(detail=True, methods=["post"])
+    def stop(self, request, pk=None):
+        return self._control(request, stop_plan)
 
 
 class SearchCampaignViewSet(viewsets.ModelViewSet):
@@ -1036,8 +1424,18 @@ class SearchCampaignViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
+    @staticmethod
+    def _assert_direct_control_allowed(campaign):
+        if campaign.automation_plan_revision_id is not None:
+            raise WorkflowConflict("招聘作业台主动寻访请使用方案的停止或重新开启操作")
+
+    def update(self, request, *args, **kwargs):
+        self._assert_direct_control_allowed(self.get_object())
+        return super().update(request, *args, **kwargs)
+
     def destroy(self, request, *args, **kwargs):
         campaign = self.get_object()
+        self._assert_direct_control_allowed(campaign)
         if campaign.status not in {SearchCampaign.Status.DRAFT, SearchCampaign.Status.CANCELLED, SearchCampaign.Status.FAILED}:
             raise ValidationError("运行中或已完成的主动寻访记录需要保留审计，不可删除")
         campaign.delete()
@@ -1046,6 +1444,7 @@ class SearchCampaignViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
         campaign = self.get_object()
+        self._assert_direct_control_allowed(campaign)
         approval = prepare_search_campaign(campaign=campaign, actor=request.user)
         return Response({
             "campaign": self.get_serializer(campaign).data,
@@ -1056,7 +1455,9 @@ class SearchCampaignViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def stop(self, request, pk=None):
-        return Response(self.get_serializer(stop_search_campaign(campaign=self.get_object())).data)
+        campaign = self.get_object()
+        self._assert_direct_control_allowed(campaign)
+        return Response(self.get_serializer(stop_search_campaign(campaign=campaign)).data)
 
 
 class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
@@ -1285,6 +1686,8 @@ class RpaTaskViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     @transaction.atomic
     def cancel(self, request, pk=None):
         task = self.get_object()
+        if task.automation_plan_revision_id is not None or task.workflow_node_run_id is not None:
+            raise WorkflowConflict("流程或招聘作业台任务不能通过通用任务入口取消")
         if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:
             if task.status != RpaTask.Status.PENDING:
                 raise ValidationError("当前主动寻访任务不能通过通用取消入口处理")
@@ -1302,7 +1705,10 @@ class RpaTaskViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def retry(self, request, pk=None):
-        task = retry_task(task=self.get_object(), actor=request.user)
+        original = self.get_object()
+        if original.automation_plan_revision_id is not None or original.workflow_node_run_id is not None:
+            raise WorkflowConflict("流程或招聘作业台任务不能通过通用任务入口重试")
+        task = retry_task(task=original, actor=request.user)
         return Response(self.get_serializer(task).data, status=status.HTTP_201_CREATED)
 
 

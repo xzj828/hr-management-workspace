@@ -14,6 +14,8 @@ def ensure_attention(
     application=None,
     workflow_run=None,
     workflow_node_run=None,
+    automation_plan_revision=None,
+    automation_generation=None,
     detail=None,
     priority=0,
 ):
@@ -27,6 +29,8 @@ def ensure_attention(
             "application": application,
             "workflow_run": workflow_run,
             "workflow_node_run": workflow_node_run,
+            "automation_plan_revision": automation_plan_revision,
+            "automation_generation": automation_generation,
             "detail": detail or {},
             "priority": priority,
         },

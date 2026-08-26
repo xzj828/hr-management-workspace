@@ -173,7 +173,7 @@ class JobStandardServiceTests(TestCase):
 
         criteria = valid_criteria(self.block_id)
         criteria["auto_reject_on_hard_fail"] = "false"
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "确定性硬性条件核验"):
             validate_criteria(criteria, allowed_evidence_ids={self.block_id}, require_publishable=True)
 
 

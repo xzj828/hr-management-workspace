@@ -7,9 +7,18 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from recruitment.models import ConversationAction, ConversationMessage, ConversationSyncState, MessageAttachment
+from recruitment.models import (
+    BossAccount,
+    ConversationAction,
+    ConversationMessage,
+    ConversationSyncState,
+    MessageAttachment,
+    RecruitmentAutomationPlan,
+    RecruitmentJob,
+)
 from recruitment.services.human_attention import ensure_attention
 from recruitment.services.message_intent import MessageIntent, classify_candidate_message
+from recruitment.services.sqlite_lifecycle import serialize_sqlite_lifecycle
 
 
 @dataclass(frozen=True)
@@ -142,9 +151,43 @@ def ingest_conversation(*, application, account, messages, cursor=""):
     return ConversationIngestionResult(created_messages, created_attachments, state.cursor)
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
-def _queue_resume_request(*, application, account, actor, message, first_contact, source_message):
+def _queue_resume_request(
+    *,
+    application,
+    account,
+    actor,
+    message,
+    first_contact,
+    source_message,
+    automation_plan_revision=None,
+    automation_generation=None,
+):
     from recruitment.services.communications import _identity_snapshot, prepare_communication
+
+    plan_revision_id = getattr(automation_plan_revision, "pk", automation_plan_revision)
+    if plan_revision_id is not None:
+        # Linearize the callback with stop/restart.  Whichever transaction gets
+        # Account -> Plan first either creates a cancellable old-generation
+        # draft before stop, or observes the closed fence and does nothing.
+        account = BossAccount.objects.select_for_update().get(pk=account.pk)
+        plan = RecruitmentAutomationPlan.objects.select_for_update().filter(
+            revisions__pk=plan_revision_id,
+        ).first()
+        if (
+            plan is None
+            or plan.current_revision_id != plan_revision_id
+            or plan.control_generation != automation_generation
+            or plan.desired_state != RecruitmentAutomationPlan.DesiredState.RUNNING
+            or plan.job_id != application.job_id
+            or plan.job.boss_account_id != account.pk
+            or plan.job.archived_at is not None
+            or plan.job.status != RecruitmentJob.Status.OPEN
+            or not account.active
+            or account.archived_at is not None
+        ):
+            return None
 
     target = _identity_snapshot(application, account)
     if not target.get("external_id") and not target.get("fingerprint"):
@@ -166,13 +209,19 @@ def _queue_resume_request(*, application, account, actor, message, first_contact
             action=ConversationAction.Action.REQUEST_RESUME,
             message=message,
             actor=actor,
-            request_id=f"auto-request-resume:{application.pk}:{source_message.pk}",
+            request_id=(
+                f"auto-request-resume:{application.pk}:{source_message.pk}:"
+                f"{getattr(automation_plan_revision, 'pk', automation_plan_revision) or 0}:"
+                f"{automation_generation or 0}"
+            ),
             item_contexts={
                 application.pk: {
                     "first_contact": first_contact,
                     "source_message_id": source_message.pk,
                 }
             },
+            automation_plan_revision=automation_plan_revision,
+            automation_generation=automation_generation,
         )
     except (PermissionDenied, ValidationError) as exc:
         ensure_attention(
@@ -189,7 +238,17 @@ def _queue_resume_request(*, application, account, actor, message, first_contact
 
 
 @transaction.atomic
-def process_pending_messages(*, application, account, actor=None, schedule_actions=False, create_attentions=True):
+def process_pending_messages(
+    *,
+    application,
+    account,
+    actor=None,
+    schedule_actions=False,
+    create_attentions=True,
+    automation_plan_revision=None,
+    automation_generation=None,
+    workflow_run=None,
+):
     state = ConversationSyncState.objects.select_for_update().filter(
         application=application,
         boss_account=account,
@@ -222,6 +281,9 @@ def process_pending_messages(*, application, account, actor=None, schedule_actio
             account=account,
             job=application.job,
             application=application,
+            workflow_run=workflow_run,
+            automation_plan_revision=automation_plan_revision,
+            automation_generation=automation_generation,
             detail={"message_id": latest.pk, "message": latest.content},
             priority=10,
         )
@@ -243,6 +305,8 @@ def process_pending_messages(*, application, account, actor=None, schedule_actio
                 message="您好，这边是招聘岗位，方便发送一份简历进一步沟通吗？",
                 first_contact=first_contact,
                 source_message=latest,
+                automation_plan_revision=automation_plan_revision,
+                automation_generation=automation_generation,
             )
         )
     return ConversationDecision(intent=intent, message=latest, attention=attention)

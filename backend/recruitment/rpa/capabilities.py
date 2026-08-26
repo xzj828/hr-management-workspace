@@ -73,6 +73,14 @@ REGISTRY = {
         consumes="message",
         enabled=False,
     ),
+    "rejection_notice": CapabilitySpec(
+        name="rejection_notice",
+        adapter="cli",
+        read_only=False,
+        requires_approval=True,
+        consumes="message",
+        enabled=True,
+    ),
     "deep_match": CapabilitySpec(
         name="deep_match",
         adapter="cli",

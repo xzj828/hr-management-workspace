@@ -1,11 +1,22 @@
 from datetime import timedelta
+import uuid
 
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
 from attendance.models import AccountProfile
-from recruitment.models import BossAccount, MessageSyncPolicy, RpaTask, RpaWorker
+from recruitment.models import (
+    BossAccount,
+    MessageSyncPolicy,
+    RecruitmentAutomationPlan,
+    RecruitmentAutomationPlanRevision,
+    RecruitmentJob,
+    RpaTask,
+    RpaWorker,
+    WorkflowTemplate,
+    WorkflowVersion,
+)
 from recruitment.services.message_scheduling import schedule_due_conversation_syncs
 
 
@@ -23,8 +34,46 @@ class MessageSchedulingTests(TestCase):
             capabilities={"boss_cli": True},
         )
 
+    def create_running_passive_plan(self):
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id=f"scheduler-job-{uuid.uuid4()}",
+            title="消息同步职位",
+            owner=self.user,
+        )
+        template = WorkflowTemplate.objects.create(name="scheduler-plan", created_by=self.user)
+        version = WorkflowVersion.objects.create(
+            template=template,
+            version=1,
+            status=WorkflowVersion.Status.ENABLED,
+            boss_account=self.account,
+            created_by=self.user,
+        )
+        plan = RecruitmentAutomationPlan.objects.create(
+            job=job,
+            kind=RecruitmentAutomationPlan.Kind.PASSIVE_RESUME,
+            desired_state=RecruitmentAutomationPlan.DesiredState.RUNNING,
+            control_generation=1,
+            control_version=1,
+            created_by=self.user,
+        )
+        revision = RecruitmentAutomationPlanRevision.objects.create(
+            plan=plan,
+            revision=1,
+            kind=plan.kind,
+            request_id=uuid.uuid4(),
+            request_hash="a" * 64,
+            config_snapshot={"interval_minutes": 5},
+            workflow_version=version,
+            created_by=self.user,
+        )
+        plan.current_revision = revision
+        plan.save(update_fields=["current_revision", "updated_at"])
+        return plan
+
     def test_due_policy_queues_once_and_respects_interval(self):
         now = timezone.now()
+        self.create_running_passive_plan()
         policy = MessageSyncPolicy.objects.create(boss_account=self.account, interval_minutes=5)
         MessageSyncPolicy.objects.filter(pk=policy.pk).update(last_scheduled_at=now - timedelta(minutes=6))
 
@@ -39,6 +88,7 @@ class MessageSchedulingTests(TestCase):
     def test_due_policy_is_left_due_when_runtime_is_offline(self):
         now = timezone.now()
         self.worker.delete()
+        self.create_running_passive_plan()
         policy = MessageSyncPolicy.objects.create(boss_account=self.account, interval_minutes=5)
         MessageSyncPolicy.objects.filter(pk=policy.pk).update(last_scheduled_at=now - timedelta(minutes=6))
 

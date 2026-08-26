@@ -12,7 +12,9 @@ from recruitment.models import (
     AutomationApproval,
     BossAccount,
     ConversationAction,
+    ExecutionBatch,
     RecruitmentAuditLog,
+    RecruitmentAutomationPlan,
     RpaTask,
     RpaTaskEvent,
     RpaWorker,
@@ -28,6 +30,7 @@ COMMUNICATION_ACTIONS = {
     RpaTask.Action.GREET,
     RpaTask.Action.REQUEST_RESUME,
     RpaTask.Action.SEND_INTERVIEW,
+    RpaTask.Action.REJECTION_NOTICE,
 }
 IDENTITY_SNAPSHOT_FIELDS = {
     "boss_account_id",
@@ -39,6 +42,8 @@ IDENTITY_SNAPSHOT_FIELDS = {
     "job_id",
     "job_title",
     "verification",
+    "screening_decision_id",
+    "screening_decision_batch_id",
 }
 GENERIC_CREATE_ACTIONS = frozenset({
     RpaTask.Action.CHECK_STATUS,
@@ -49,6 +54,7 @@ APPROVAL_CREATION_PATHS = {
     RpaTask.Action.GREET: "communication_batch",
     RpaTask.Action.REQUEST_RESUME: "communication_batch",
     RpaTask.Action.SEND_INTERVIEW: "communication_batch",
+    RpaTask.Action.REJECTION_NOTICE: "rejection_notice_batch",
     RpaTask.Action.VIEW_ONLINE_RESUME: "view_online_resume_approval",
     RpaTask.Action.DEEP_MATCH: "deep_match_approval",
     RpaTask.Action.SEARCH_AND_PULL_RESUMES: "search_campaign",
@@ -263,9 +269,12 @@ def create_task(
     approval=None,
     execution_batch=None,
     workflow_node_run=None,
+    automation_plan_revision=None,
+    automation_generation=None,
     idempotency_key="",
     creation_path="internal",
     return_created=False,
+    usage_preconsumed=False,
 ):
     locked = BossAccount.objects.select_for_update().get(pk=account.pk)
     _ensure_authorized(locked, actor)
@@ -282,6 +291,39 @@ def create_task(
         raise ValidationError("该批准型自动化尚未配置安全创建路径")
 
     payload = request_payload if isinstance(request_payload, dict) else {}
+
+    # Establish the plan partition before locking any run/node/approval/task row.
+    preliminary_revision_ids = {
+        value
+        for value in [getattr(automation_plan_revision, "pk", automation_plan_revision)]
+        if value is not None
+    }
+    if workflow_node_run is not None:
+        snapshot = WorkflowNodeRun.objects.filter(pk=workflow_node_run.pk).values(
+            "run__automation_plan_revision_id"
+        ).first()
+        if snapshot and snapshot["run__automation_plan_revision_id"] is not None:
+            preliminary_revision_ids.add(snapshot["run__automation_plan_revision_id"])
+    if approval is not None:
+        snapshot = AutomationApproval.objects.filter(pk=approval.pk).values(
+            "automation_plan_revision_id"
+        ).first()
+        if snapshot and snapshot["automation_plan_revision_id"] is not None:
+            preliminary_revision_ids.add(snapshot["automation_plan_revision_id"])
+    if execution_batch is not None:
+        snapshot = ExecutionBatch.objects.filter(pk=execution_batch.pk).values(
+            "automation_plan_revision_id"
+        ).first()
+        if snapshot and snapshot["automation_plan_revision_id"] is not None:
+            preliminary_revision_ids.add(snapshot["automation_plan_revision_id"])
+    if len(preliminary_revision_ids) > 1:
+        raise ValidationError("自动化任务引用了不一致的方案修订")
+    if preliminary_revision_ids:
+        plan = RecruitmentAutomationPlan.objects.select_for_update().get(
+            revisions__pk=next(iter(preliminary_revision_ids))
+        )
+        if plan.job.boss_account_id != locked.pk:
+            raise ValidationError("自动化方案与 BOSS 账号不一致")
 
     if workflow_node_run is not None:
         locked_workflow_node = (
@@ -349,6 +391,41 @@ def create_task(
         ):
             raise ValidationError("自动化确认记录无效")
 
+    plan_revision_ids = {
+        value
+        for value in [
+            getattr(automation_plan_revision, "pk", automation_plan_revision),
+            getattr(getattr(workflow_node_run, "run", None), "automation_plan_revision_id", None),
+            getattr(locked_approval, "automation_plan_revision_id", None),
+            getattr(execution_batch, "automation_plan_revision_id", None),
+        ]
+        if value is not None
+    }
+    plan_generations = {
+        int(value)
+        for value in [
+            automation_generation,
+            getattr(getattr(workflow_node_run, "run", None), "automation_generation", None),
+            getattr(locked_approval, "automation_generation", None),
+            getattr(execution_batch, "automation_generation", None),
+        ]
+        if value is not None
+    }
+    if len(plan_revision_ids) > 1 or len(plan_generations) > 1:
+        raise ValidationError("自动化任务引用了不一致的方案修订或代际")
+    plan_revision_id = next(iter(plan_revision_ids), None)
+    plan_generation = next(iter(plan_generations), None)
+    if (plan_revision_id is None) != (plan_generation is None):
+        raise ValidationError("自动化任务的方案修订与代际必须同时存在")
+    if plan_revision_id is not None:
+        from recruitment.services.automation_plans import assert_plan_fence_current
+
+        assert_plan_fence_current(
+            revision_id=plan_revision_id,
+            generation=plan_generation,
+            message="招聘自动化方案当前未运行，不能创建新的任务",
+        )
+
     if normalized_key:
         existing = RpaTask.objects.filter(idempotency_key=normalized_key).first()
         if existing:
@@ -359,6 +436,8 @@ def create_task(
                 or existing.approval_id != (locked_approval.pk if locked_approval else None)
                 or existing.execution_batch_id != (execution_batch.pk if execution_batch else None)
                 or existing.workflow_node_run_id != (workflow_node_run.pk if workflow_node_run else None)
+                or existing.automation_plan_revision_id != plan_revision_id
+                or existing.automation_generation != plan_generation
                 or existing.request_payload != payload
             ):
                 raise ValidationError("幂等请求标识已被不同范围的任务使用")
@@ -377,7 +456,19 @@ def create_task(
     if locked.rpa_tasks.filter(status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING]).exists():
         raise ValidationError("该账号已有任务正在执行")
 
-    if capability.consumes:
+    if usage_preconsumed:
+        if (
+            action != RpaTask.Action.REJECTION_NOTICE
+            or creation_path != "rejection_notice_batch"
+            or execution_batch is None
+            or execution_batch.approval_id != (locked_approval.pk if locked_approval else None)
+            or execution_batch.reserved_metric != "message"
+            or execution_batch.reserved_amount != locked_approval.item_count
+            or execution_batch.reserved_day != timezone.localdate()
+            or execution_batch.quota_reserved_at is None
+        ):
+            raise ValidationError("任务没有可验证的整批额度预占")
+    elif capability.consumes:
         consume(account=locked, metric=capability.consumes)
 
     task = RpaTask.objects.create(
@@ -387,6 +478,8 @@ def create_task(
         approval=locked_approval,
         execution_batch=execution_batch,
         workflow_node_run=workflow_node_run,
+        automation_plan_revision_id=plan_revision_id,
+        automation_generation=plan_generation,
         idempotency_key=normalized_key or None,
         request_payload=payload,
     )

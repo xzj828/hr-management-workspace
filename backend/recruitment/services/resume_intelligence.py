@@ -457,23 +457,6 @@ def create_assessment(*, structured, standard, gateway, request_id, actor=None) 
         assessment.hard_failures = deterministic_failures
         assessment.recommendation = ResumeAssessment.Recommendation.HOLD
         assessment.save(update_fields=["hard_failures", "recommendation"])
-    if (
-        deterministic_failures
-        and standard.criteria.get("auto_reject_on_hard_fail") is True
-        and structured.resume.application_id
-    ):
-        from recruitment.services.stages import reject_for_hard_requirements
-        assessment.auto_rejected = reject_for_hard_requirements(
-            application=structured.resume.application,
-            actor=actor,
-            failure_keys=[item["criterion_key"] for item in deterministic_failures],
-        )
-        assessment.save(update_fields=["auto_rejected"])
-        RecruitmentAuditLog.objects.create(
-            actor=actor, boss_account=standard.job.boss_account,
-            action="hard_requirement_auto_rejected", target_id=str(assessment.pk),
-            detail={"failures": deterministic_failures},
-        )
     RecruitmentAuditLog.objects.create(
         actor=actor,
         boss_account=standard.job.boss_account,

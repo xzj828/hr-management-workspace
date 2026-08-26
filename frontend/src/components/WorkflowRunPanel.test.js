@@ -2,6 +2,8 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import WorkflowRunPanel from './WorkflowRunPanel.vue'
 
+const RouterLinkStub = { props: ['to'], template: '<a><slot /></a>' }
+
 describe('WorkflowRunPanel', () => {
   it('shows runtime progress and emits human and control actions', async () => {
     const wrapper = mount(WorkflowRunPanel, { props: { run: {
@@ -29,5 +31,35 @@ describe('WorkflowRunPanel', () => {
 
     expect(wrapper.text()).toContain('确认并继续')
     expect(wrapper.text()).toContain('拒绝')
+  })
+
+  it('routes plan-managed lifecycle controls back to the workbench while keeping human decisions', async () => {
+    const wrapper = mount(WorkflowRunPanel, {
+      props: {
+        run: {
+          id: 'run-plan', job: 51, status: 'waiting_human', mode: 'formal', account_name: 'BOSS 账号',
+          automation_plan_revision: 402,
+          events: [],
+          node_runs: [
+            { id: 23, node_key: 'human-check', status: 'waiting_human', attempt: 0 },
+            { id: 24, node_key: 'search', status: 'failed', attempt: 1 },
+          ],
+        },
+      },
+      global: { stubs: { RouterLink: RouterLinkStub } },
+    })
+
+    expect(wrapper.find('.workflow-run-actions').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('重试')
+    expect(wrapper.get('[data-test="plan-managed-guidance"]').text()).toContain('请回招聘作业台停止/修改/重新开启')
+    expect(wrapper.getComponent(RouterLinkStub).props('to')).toEqual({
+      name: 'recruitment-workbench',
+      query: { job: '51', step: 'plan' },
+    })
+
+    await wrapper.get('.workflow-run-node-actions .is-primary').trigger('click')
+    expect(wrapper.emitted('decision')[0][0]).toEqual({ nodeId: 23, approved: true })
+    expect(wrapper.emitted('pause')).toBeUndefined()
+    expect(wrapper.emitted('retry')).toBeUndefined()
   })
 })

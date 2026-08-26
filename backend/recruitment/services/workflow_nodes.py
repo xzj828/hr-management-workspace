@@ -1,11 +1,14 @@
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 
 from recruitment.models import (
     AutomationApproval,
+    BossAccount,
     ExecutionBatch,
     JobApplication,
+    RecruitmentAutomationPlan,
     RpaTask,
     Resume,
     SearchCampaign,
@@ -112,6 +115,8 @@ def execute_workflow_node(node):
                     "payload": payload,
                     "item_count": 1,
                     "expires_at": timezone.now() + timedelta(minutes=15),
+                    "automation_plan_revision_id": run.automation_plan_revision_id,
+                    "automation_generation": run.automation_generation,
                 },
             )
         return WorkflowNodeRun.Status.WAITING_HUMAN, {
@@ -174,6 +179,8 @@ def execute_workflow_node(node):
                 idempotency_key=f"workflow-attention:{node.pk}:{application.pk}",
                 account=run.boss_account, job=application.job, application=application,
                 workflow_run=run, workflow_node_run=node, detail={"source": "workflow"}, priority=10,
+                automation_plan_revision=run.automation_plan_revision,
+                automation_generation=run.automation_generation,
             )
         return WorkflowNodeRun.Status.SUCCEEDED, {"application_ids": application_ids, "created": len(application_ids)}
 
@@ -206,6 +213,8 @@ def execute_workflow_node(node):
                 max_scan_count=int(config.get("max_scan_count", 20)),
                 criteria=criteria,
                 created_by=run.actor,
+                automation_plan_revision=run.automation_plan_revision,
+                automation_generation=run.automation_generation,
             )
         approval_id = node.output.get("approval_id")
         approval = AutomationApproval.objects.filter(pk=approval_id).first() if approval_id else None
@@ -270,6 +279,8 @@ def execute_workflow_node(node):
             account=run.boss_account, applications=applications, action=MESSAGE_ACTIONS[node.node_type],
             message=message, actor=run.actor, request_id=f"workflow-{node.pk}-{node.attempt}",
             invitation=node.config_snapshot.get("invitation"), item_contexts=item_contexts,
+            automation_plan_revision=run.automation_plan_revision,
+            automation_generation=run.automation_generation,
         )
         approval.payload["workflow_node_run_id"] = node.pk
         approval.save(update_fields=["payload"])
@@ -280,10 +291,33 @@ def execute_workflow_node(node):
     return WorkflowNodeRun.Status.SUCCEEDED, {"internal": True}
 
 
+@transaction.atomic
 def resume_workflow_for_task(task):
     if not task.workflow_node_run_id:
         return None
-    node = WorkflowNodeRun.objects.select_related("run").get(pk=task.workflow_node_run_id)
+    snapshot = WorkflowNodeRun.objects.filter(pk=task.workflow_node_run_id).values(
+        "run__boss_account_id",
+        "run__automation_plan_revision_id",
+        "run__automation_generation",
+    ).first()
+    if snapshot is None:
+        return None
+    if task.automation_plan_revision_id:
+        BossAccount.objects.select_for_update().get(pk=snapshot["run__boss_account_id"])
+        plan = RecruitmentAutomationPlan.objects.select_for_update().get(
+            revisions__pk=task.automation_plan_revision_id
+        )
+        if (
+            plan.desired_state != RecruitmentAutomationPlan.DesiredState.RUNNING
+            or plan.current_revision_id != task.automation_plan_revision_id
+            or plan.control_generation != task.automation_generation
+            or snapshot["run__automation_plan_revision_id"] != task.automation_plan_revision_id
+            or snapshot["run__automation_generation"] != task.automation_generation
+        ):
+            return None
+    node = WorkflowNodeRun.objects.select_for_update().select_related("run").get(
+        pk=task.workflow_node_run_id
+    )
     status, output = _task_outcome(task)
     node.status = status
     node.output = output

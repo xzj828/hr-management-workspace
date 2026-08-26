@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import ResumeIntelligencePanel from './ResumeIntelligencePanel.vue'
 
 const resume = { id: 1, candidate_name: '周晓宁', content_type: 'application/pdf', preview_url: '/resume/1' }
@@ -16,6 +16,8 @@ const assessment = {
 }
 
 describe('ResumeIntelligencePanel', () => {
+  afterEach(() => document.body.innerHTML = '')
+
   it('renders structured facts without guessing missing fields', async () => {
     const wrapper = mount(ResumeIntelligencePanel, { props: { resume, structure, assessment, tasks: [] } })
     await wrapper.get('[data-test="tab-structured"]').trigger('click')
@@ -38,5 +40,27 @@ describe('ResumeIntelligencePanel', () => {
     const wrapper = mount(ResumeIntelligencePanel, { props: { resume, structure: null, assessment: null, tasks: [{ kind: 'resume_structure', status: 'failed', error_message: 'PDF 无法读取' }] } })
     expect(wrapper.text()).toContain('PDF 无法读取')
     expect(wrapper.get('[data-test="retry-structure"]').exists()).toBe(true)
+  })
+
+  it('keeps the original resume available while the full report is loading', () => {
+    const wrapper = mount(ResumeIntelligencePanel, {
+      props: { resume, structure: { id: 11, resume: 1, version: 1 }, assessment: { id: 21, total_score: 78, confidence: 0.82, recommendation_label: '建议人工复核' }, tasks: [], loading: true },
+    })
+    expect(wrapper.get('[data-test="intelligence-detail-loading"]').text()).toContain('正在加载完整分析报告')
+    expect(wrapper.get('iframe').attributes('src')).toBe('/resume/1')
+  })
+
+  it('is an accessible modal, closes with Escape, and never presents an AI result as automatic rejection', async () => {
+    const wrapper = mount(ResumeIntelligencePanel, {
+      attachTo: document.body,
+      props: { resume, structure, assessment: { ...assessment, auto_rejected: true }, tasks: [] },
+    })
+    expect(wrapper.get('[role="dialog"]').attributes('aria-modal')).toBe('true')
+    expect(document.activeElement).toBe(wrapper.get('button[aria-label="关闭"]').element)
+    expect(wrapper.text()).toContain('仍需 HR 人工确认')
+    expect(wrapper.text()).not.toContain('触发硬性淘汰')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(wrapper.emitted('close')).toHaveLength(1)
+    wrapper.unmount()
   })
 })

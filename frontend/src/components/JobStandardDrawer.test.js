@@ -37,7 +37,10 @@ describe('JobStandardDrawer', () => {
     await wrapper.get('[data-test="add-dimension"]').trigger('click')
     expect(wrapper.find('[data-test="dimension-weight-1"]').exists()).toBe(true)
     await wrapper.get('[data-test="add-hard-requirement"]').trigger('click')
-    expect(wrapper.text()).toContain('明确不满足时自动淘汰')
+    expect(wrapper.text()).toContain('启用确定性硬性条件核验')
+    expect(wrapper.text()).toContain('需 HR 人工确认')
+    expect(wrapper.text()).not.toContain('自动淘汰')
+    expect(wrapper.text()).not.toContain('会改变招聘阶段')
   })
 
   it('saves a draft and requires explicit publish confirmation', async () => {
@@ -55,9 +58,35 @@ describe('JobStandardDrawer', () => {
 
     await wrapper.get('[data-test="publish-standard"]').trigger('click')
     expect(wrapper.find('[data-test="publish-confirm"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="publish-confirm"]').text()).toContain('AI 建议不会自动改变候选人阶段')
     expect(apiMock).not.toHaveBeenCalledWith('recruitment/job-standards/7/publish/', expect.anything())
     await wrapper.get('[data-test="confirm-publish-standard"]').trigger('click')
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('recruitment/job-standards/7/publish/', { method: 'POST' })
+  })
+
+  it('keeps the legacy hard-rule field in the API payload while presenting review-only semantics', async () => {
+    apiMock.mockReset()
+    apiMock.mockResolvedValue(draft)
+    const standard = {
+      ...draft,
+      criteria: {
+        ...draft.criteria,
+        auto_reject_on_hard_fail: true,
+        hard_requirements: [{ key: 'degree', text: '学历低于本科', evidence_block_ids: [], rule: { field: 'highest_degree', operator: 'gte', value: '本科' } }],
+      },
+    }
+    const wrapper = mount(JobStandardDrawer, { props: { job: { id: 1, title: '后端工程师' }, standard, documents: [] } })
+
+    expect(wrapper.text()).toContain('启用确定性硬性条件核验')
+    expect(wrapper.text()).toContain('不会自动改变招聘阶段')
+    await wrapper.get('[data-test="save-standard"]').trigger('click')
+    await flushPromises()
+    const payload = JSON.parse(apiMock.mock.calls.find(([path]) => path === 'recruitment/job-standards/7/')[1].body)
+    expect(payload.criteria.auto_reject_on_hard_fail).toBe(true)
+
+    await wrapper.get('[data-test="publish-standard"]').trigger('click')
+    expect(wrapper.get('[data-test="publish-confirm"]').text()).toContain('只会标记冲突')
+    expect(wrapper.get('[data-test="publish-confirm"]').text()).toContain('不改变招聘阶段')
   })
 })

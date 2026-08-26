@@ -11,6 +11,7 @@ router.register("job-documents", views.JobRequirementDocumentViewSet, basename="
 router.register("job-document-versions", views.JobRequirementDocumentVersionViewSet, basename="job-document-version")
 router.register("job-standards", views.JobStandardVersionViewSet, basename="job-standard")
 router.register("message-sync-policies", views.MessageSyncPolicyViewSet, basename="message-sync-policy")
+router.register("automation-plans", views.RecruitmentAutomationPlanViewSet, basename="automation-plan")
 router.register("human-attentions", views.HumanAttentionViewSet, basename="human-attention")
 router.register("candidates", views.CandidateViewSet, basename="candidate")
 router.register("candidate-discoveries", views.CandidateDiscoveryViewSet, basename="candidate-discovery")
@@ -30,6 +31,9 @@ router.register("rpa-tasks", views.RpaTaskViewSet, basename="rpa-task")
 
 urlpatterns = [
     path("dashboard/", views.dashboard_view),
+    path("screening-results/", views.screening_results_view),
+    path("screening-decisions/bulk/", views.bulk_screening_decisions_view),
+    path("rejection-notices/prepare/", views.prepare_rejection_notice_view),
     path("demo-data/", views.demo_data_view),
     path("automation/summary/", views.automation_summary_view),
     path("worker/heartbeat/", worker_api.heartbeat_view),

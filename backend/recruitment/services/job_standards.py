@@ -42,7 +42,7 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
         raise ValueError("评分标准必须是 JSON 对象")
     auto_reject = criteria.get("auto_reject_on_hard_fail", False)
     if not isinstance(auto_reject, bool):
-        raise ValueError("自动淘汰开关必须是布尔值")
+        raise ValueError("确定性硬性条件核验开关必须是布尔值")
     normalized = {
         "summary": str(criteria.get("summary") or "").strip(),
         "dimensions": criteria.get("dimensions") or [],
@@ -114,7 +114,10 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
             item["rule"] = {"field": field, "operator": operator, "value": rule["value"]}
         hard_keys.add(key)
     if normalized["auto_reject_on_hard_fail"] and any(not item.get("rule") for item in normalized["hard_requirements"]):
-        raise ValueError("启用自动淘汰前，每个硬性指标都必须配置可确定判定的字段、条件和阈值")
+        raise ValueError(
+            "启用确定性硬性条件冲突标记前，每个硬性指标都必须配置可确定判定的字段、条件和阈值；"
+            "冲突仅供 HR 确认，不改变招聘阶段"
+        )
     for group in ("required", "preferred", "risks"):
         for item in normalized[group]:
             if _contains_sensitive_criterion(*item.values()):

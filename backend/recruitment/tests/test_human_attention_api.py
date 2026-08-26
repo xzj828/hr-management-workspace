@@ -33,30 +33,28 @@ class HumanAttentionApiTests(APITestCase):
         self.application = JobApplication.objects.create(candidate=candidate, job=self.job, source="boss")
         self.client.force_login(self.user)
 
-    def test_updates_account_sync_policy_with_supported_boundaries(self):
+    def test_account_sync_policy_is_a_read_only_plan_projection(self):
         created = self.client.post(
             "/api/recruitment/message-sync-policies/",
             {"boss_account": self.account.pk, "enabled": True, "interval_minutes": 1},
             format="json",
         )
-        self.assertEqual(created.status_code, 201, created.data)
-        self.assertEqual(created.data["interval_minutes"], 1)
+        self.assertEqual(created.status_code, 405, created.data)
 
         updated = self.client.patch(
-            f"/api/recruitment/message-sync-policies/{created.data['id']}/",
+            "/api/recruitment/message-sync-policies/1/",
             {"interval_minutes": 1440},
             format="json",
         )
-        self.assertEqual(updated.status_code, 200, updated.data)
-        self.assertEqual(updated.data["interval_minutes"], 1440)
+        self.assertEqual(updated.status_code, 405, updated.data)
 
         invalid = self.client.patch(
-            f"/api/recruitment/message-sync-policies/{created.data['id']}/",
+            "/api/recruitment/message-sync-policies/1/",
             {"interval_minutes": 1441},
             format="json",
         )
-        self.assertEqual(invalid.status_code, 400)
-        self.assertEqual(MessageSyncPolicy.objects.get().interval_minutes, 1440)
+        self.assertEqual(invalid.status_code, 405)
+        self.assertFalse(MessageSyncPolicy.objects.exists())
 
     def test_attention_creation_is_idempotent_and_can_be_resolved(self):
         first, first_created = ensure_attention(

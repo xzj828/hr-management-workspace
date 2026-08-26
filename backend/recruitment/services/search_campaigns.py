@@ -36,6 +36,14 @@ def _campaign_snapshot(campaign, *, workflow_node_run_id=None):
             AutomationUsage.Metric.RESUME_VIEW: campaign.max_scan_count,
         },
         **({"workflow_node_run_id": workflow_node_run_id} if workflow_node_run_id else {}),
+        **(
+            {
+                "automation_plan_revision_id": campaign.automation_plan_revision_id,
+                "automation_generation": campaign.automation_generation,
+            }
+            if campaign.automation_plan_revision_id
+            else {}
+        ),
     }
 
 
@@ -82,8 +90,15 @@ def prepare_search_campaign(*, campaign, actor, workflow_node_run=None):
             "payload": payload,
             "item_count": payload["resume_view_budget"],
             "expires_at": timezone.now() + timedelta(minutes=30),
+            "automation_plan_revision_id": locked.automation_plan_revision_id,
+            "automation_generation": locked.automation_generation,
         },
     )
+    if (
+        approval.automation_plan_revision_id != locked.automation_plan_revision_id
+        or approval.automation_generation != locked.automation_generation
+    ):
+        raise ValidationError("主动寻访确认请求已被其他方案代际使用")
     return approval
 
 
@@ -105,6 +120,14 @@ def start_search_campaign(*, campaign, actor, approval, idempotency_key=""):
         .get(pk=campaign.pk)
     )
     _ensure_authorized(locked, actor)
+    if locked.automation_plan_revision_id:
+        from recruitment.services.automation_plans import assert_plan_fence_current
+
+        assert_plan_fence_current(
+            revision_id=locked.automation_plan_revision_id,
+            generation=locked.automation_generation,
+            message="招聘自动化方案已暂停、停止或被修改，不能启动主动寻访",
+        )
     approved = AutomationApproval.objects.select_for_update().filter(pk=approval.pk).first()
     if (
         approved is None
@@ -157,6 +180,8 @@ def start_search_campaign(*, campaign, actor, approval, idempotency_key=""):
         request_payload=payload,
         idempotency_key=task_key,
         creation_path="search_campaign",
+        automation_plan_revision=locked.automation_plan_revision,
+        automation_generation=locked.automation_generation,
     )
     locked.status = SearchCampaign.Status.QUEUED
     locked.stop_reason = SearchCampaign.StopReason.NONE
@@ -167,17 +192,24 @@ def start_search_campaign(*, campaign, actor, approval, idempotency_key=""):
 
 @transaction.atomic
 def stop_search_campaign(*, campaign):
-    locked = SearchCampaign.objects.select_for_update().get(pk=campaign.pk)
+    snapshot = SearchCampaign.objects.filter(pk=campaign.pk).values(
+        "pk", "boss_account_id"
+    ).get()
+    # Recovery already uses Task -> Campaign for ordinary campaigns.  Take the
+    # same order here so a user stop cannot deadlock with lease recovery.
+    tasks = list(
+        RpaTask.objects.select_for_update().filter(
+            request_payload__campaign_id=snapshot["pk"],
+        ).order_by("created_at")
+    )
+    locked = SearchCampaign.objects.select_for_update().get(pk=snapshot["pk"])
     if locked.status in {SearchCampaign.Status.SUCCEEDED, SearchCampaign.Status.CANCELLED}:
         return locked
-    tasks = RpaTask.objects.select_for_update().filter(
-        request_payload__campaign_id=locked.pk,
-    )
-    if tasks.filter(status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING]).exists():
+    if any(task.status in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING} for task in tasks):
         raise ValidationError("主动寻访已在浏览器中执行，当前适配器无法安全中断，请等待任务转人工或结束")
     now = timezone.now()
     workflow_tasks = {}
-    for task in tasks.filter(status=RpaTask.Status.PENDING):
+    for task in (item for item in tasks if item.status == RpaTask.Status.PENDING):
         try:
             reserved = int(task.request_payload.get("resume_view_budget", 0) or 0)
         except (TypeError, ValueError):
@@ -250,7 +282,7 @@ def stop_search_campaign(*, campaign):
 
 
 @transaction.atomic
-def fail_stale_search_campaign_task(*, task, observed_at, account_status):
+def fail_stale_search_campaign_task(*, task, observed_at, account_status, user_stopped=False):
     """Fail a stale search/pull task and all of its domain state atomically."""
     locked_task = (
         RpaTask.objects.select_for_update()
@@ -284,8 +316,8 @@ def fail_stale_search_campaign_task(*, task, observed_at, account_status):
     campaign_id = campaign.pk if campaign is not None else payload.get("campaign_id")
     common = {
         "campaign_id": campaign_id,
-        "final_status": RpaTask.Status.FAILED,
-        "failure_code": "worker_lease_expired",
+        "final_status": RpaTask.Status.CANCELLED if user_stopped else RpaTask.Status.FAILED,
+        "failure_code": "automation_plan_stopped" if user_stopped else "worker_lease_expired",
         "actual_known": False,
         "actual_unknown": True,
         "evidence_untrusted": True,
@@ -322,21 +354,29 @@ def fail_stale_search_campaign_task(*, task, observed_at, account_status):
     )
 
     if campaign is not None:
-        campaign.status = SearchCampaign.Status.FAILED
-        campaign.stop_reason = SearchCampaign.StopReason.ERROR
-        campaign.error_message = "Worker 租约过期，主动寻访已安全终止"
+        campaign.status = SearchCampaign.Status.CANCELLED if user_stopped else SearchCampaign.Status.FAILED
+        campaign.stop_reason = (
+            SearchCampaign.StopReason.USER_STOPPED
+            if user_stopped
+            else SearchCampaign.StopReason.ERROR
+        )
+        campaign.error_message = "" if user_stopped else "Worker 租约过期，主动寻访已安全终止"
         campaign.completed_at = observed_at
         campaign.save(update_fields=[
             "status", "stop_reason", "error_message", "completed_at", "updated_at",
         ])
 
     previous_status = locked_task.status
-    locked_task.status = RpaTask.Status.FAILED
+    locked_task.status = RpaTask.Status.CANCELLED if user_stopped else RpaTask.Status.FAILED
     locked_task.worker = None
     locked_task.lease_expires_at = None
     locked_task.completed_at = observed_at
-    locked_task.error_code = "worker_lease_expired"
-    locked_task.error_message = "Worker 失联或任务长时间没有进度，主动寻访已安全终止"
+    locked_task.error_code = "automation_plan_stopped" if user_stopped else "worker_lease_expired"
+    locked_task.error_message = (
+        "招聘自动化方案已停止；Worker 租约到期，执行已安全收口"
+        if user_stopped
+        else "Worker 失联或任务长时间没有进度，主动寻访已安全终止"
+    )
     locked_task.result = {
         "campaign_id": campaign_id,
         "resume_view_usage": {
@@ -353,9 +393,13 @@ def fail_stale_search_campaign_task(*, task, observed_at, account_status):
     ])
     append_event(
         task=locked_task,
-        level="error",
-        event="worker_lease_expired",
-        message="Worker 租约过期，主动寻访任务与额度账本已安全终结",
+        level="warning" if user_stopped else "error",
+        event="automation_plan_stopped" if user_stopped else "worker_lease_expired",
+        message=(
+            "招聘自动化方案停止后 Worker 租约到期，主动寻访已安全收口"
+            if user_stopped
+            else "Worker 租约过期，主动寻访任务与额度账本已安全终结"
+        ),
         data={"status": locked_task.status, "failure_code": locked_task.error_code},
     )
     RecruitmentAuditLog.objects.create(

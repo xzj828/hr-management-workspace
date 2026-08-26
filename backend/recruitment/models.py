@@ -293,6 +293,7 @@ class RpaTask(models.Model):
         REQUEST_RESUME = "request_resume", "索要简历"
         VIEW_ONLINE_RESUME = "view_online_resume", "查看在线简历"
         SEND_INTERVIEW = "send_interview", "发送面试邀约"
+        REJECTION_NOTICE = "rejection_notice", "发送简历未通过通知"
         DEEP_MATCH = "deep_match", "深度匹配"
         SYNC_CONVERSATIONS = "sync_conversations", "同步沟通状态"
         SEARCH_AND_PULL_RESUMES = "search_pull_resumes", "搜索并拉取在线简历"
@@ -333,12 +334,22 @@ class RpaTask(models.Model):
         blank=True,
         related_name="rpa_tasks",
     )
+    automation_plan_revision = models.ForeignKey(
+        "RecruitmentAutomationPlanRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="rpa_tasks",
+    )
+    automation_generation = models.PositiveIntegerField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=160, unique=True, null=True, blank=True)
     request_payload = models.JSONField(default=dict, blank=True)
     result = models.JSONField(default=dict, blank=True)
     error_code = models.CharField(max_length=64, blank=True)
     error_message = models.TextField(blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
+    lease_token = models.UUIDField(null=True, blank=True, editable=False)
+    lease_generation = models.PositiveIntegerField(default=0)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -395,6 +406,7 @@ class AutomationApproval(models.Model):
         REQUEST_RESUME = "request_resume", "索要简历"
         VIEW_ONLINE_RESUME = "view_online_resume", "查看在线简历"
         SEND_INTERVIEW = "send_interview", "发送面试邀约"
+        REJECTION_NOTICE = "rejection_notice", "发送简历未通过通知"
         DEEP_MATCH = "deep_match", "深度匹配"
         SEARCH_AND_PULL_RESUMES = "search_pull_resumes", "搜索并拉取在线简历"
 
@@ -424,6 +436,14 @@ class AutomationApproval(models.Model):
         blank=True,
         related_name="approved_automation_approvals",
     )
+    automation_plan_revision = models.ForeignKey(
+        "RecruitmentAutomationPlanRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="automation_approvals",
+    )
+    automation_generation = models.PositiveIntegerField(null=True, blank=True)
     payload = models.JSONField(default=dict)
     item_count = models.PositiveIntegerField(default=1)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
@@ -473,9 +493,21 @@ class ExecutionBatch(models.Model):
         blank=True,
         related_name="execution_batch",
     )
+    automation_plan_revision = models.ForeignKey(
+        "RecruitmentAutomationPlanRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="execution_batches",
+    )
+    automation_generation = models.PositiveIntegerField(null=True, blank=True)
     total_items = models.PositiveIntegerField(default=1)
     succeeded_items = models.PositiveIntegerField(default=0)
     failed_items = models.PositiveIntegerField(default=0)
+    reserved_metric = models.CharField(max_length=24, blank=True)
+    reserved_amount = models.PositiveIntegerField(default=0)
+    reserved_day = models.DateField(null=True, blank=True)
+    quota_reserved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -585,6 +617,7 @@ class ConversationAction(models.Model):
         GREET = "greet", "打招呼"
         REQUEST_RESUME = "request_resume", "索要简历"
         SEND_INTERVIEW = "send_interview", "发送面试邀约"
+        REJECTION_NOTICE = "rejection_notice", "简历未通过通知"
 
     class Status(models.TextChoices):
         DRAFT = "draft", "待确认"
@@ -614,6 +647,14 @@ class ConversationAction(models.Model):
     step = models.OneToOneField(
         StepExecution, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversation_action"
     )
+    automation_plan_revision = models.ForeignKey(
+        "RecruitmentAutomationPlanRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="conversation_actions",
+    )
+    automation_generation = models.PositiveIntegerField(null=True, blank=True)
     result = models.JSONField(default=dict, blank=True)
     error_code = models.CharField(max_length=64, blank=True)
     error_message = models.TextField(blank=True)
@@ -802,6 +843,14 @@ class HumanAttention(models.Model):
     application = models.ForeignKey(JobApplication, on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
     workflow_run = models.ForeignKey("WorkflowRun", on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
     workflow_node_run = models.ForeignKey("WorkflowNodeRun", on_delete=models.PROTECT, null=True, blank=True, related_name="human_attentions")
+    automation_plan_revision = models.ForeignKey(
+        "RecruitmentAutomationPlanRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="human_attentions",
+    )
+    automation_generation = models.PositiveIntegerField(null=True, blank=True)
     resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="resolved_human_attentions")
     resolution_note = models.TextField(blank=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
@@ -843,6 +892,14 @@ class SearchCampaign(models.Model):
     boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, related_name="search_campaigns")
     job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, related_name="search_campaigns")
     workflow_run = models.ForeignKey("WorkflowRun", on_delete=models.PROTECT, null=True, blank=True, related_name="search_campaigns")
+    automation_plan_revision = models.ForeignKey(
+        "RecruitmentAutomationPlanRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="search_campaigns",
+    )
+    automation_generation = models.PositiveIntegerField(null=True, blank=True)
     source = models.CharField(max_length=24, choices=Source.choices)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
     target_resume_count = models.PositiveIntegerField(validators=[MinValueValidator(1)])
@@ -934,6 +991,90 @@ class WorkflowEdge(models.Model):
         ordering = ["order", "id"]
 
 
+class RecruitmentAutomationPlan(models.Model):
+    class Kind(models.TextChoices):
+        PASSIVE_RESUME = "passive_resume", "被动咨询与简历获取"
+        ACTIVE_RESUME_SEARCH = "active_resume_search", "主动搜索并拉取简历"
+
+    class DesiredState(models.TextChoices):
+        RUNNING = "running", "运行中"
+        PAUSED = "paused", "已暂停"
+        STOPPED = "stopped", "已停止"
+
+    job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, related_name="automation_plans")
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+    desired_state = models.CharField(
+        max_length=16,
+        choices=DesiredState.choices,
+        default=DesiredState.STOPPED,
+        db_index=True,
+    )
+    control_version = models.PositiveIntegerField(default=0)
+    control_generation = models.PositiveIntegerField(default=0)
+    current_revision = models.ForeignKey(
+        "RecruitmentAutomationPlanRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="current_for_plans",
+    )
+    current_run = models.ForeignKey(
+        "WorkflowRun",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="current_for_automation_plans",
+    )
+    managed_template = models.ForeignKey(
+        WorkflowTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="managed_automation_plans",
+    )
+    last_control_request_id = models.UUIDField(null=True, blank=True)
+    last_control_action = models.CharField(max_length=16, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_recruitment_automation_plans")
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_recruitment_automation_plans",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["job_id", "kind"]
+        constraints = [
+            models.UniqueConstraint(fields=["job"], name="unique_job_automation_plan"),
+        ]
+
+
+class RecruitmentAutomationPlanRevision(models.Model):
+    plan = models.ForeignKey(RecruitmentAutomationPlan, on_delete=models.PROTECT, related_name="revisions")
+    revision = models.PositiveIntegerField()
+    kind = models.CharField(max_length=32, choices=RecruitmentAutomationPlan.Kind.choices)
+    request_id = models.UUIDField(unique=True)
+    request_hash = models.CharField(max_length=64)
+    config_snapshot = models.JSONField(default=dict)
+    workflow_version = models.ForeignKey(WorkflowVersion, on_delete=models.PROTECT, related_name="automation_plan_revisions")
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="recruitment_automation_plan_revisions")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-revision", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["plan", "revision"], name="unique_automation_plan_revision"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("招聘自动化方案修订是不可变快照，不能原地修改")
+        return super().save(*args, **kwargs)
+
+
 class WorkflowRun(models.Model):
     class Mode(models.TextChoices):
         DRY_RUN = "dry_run", "试运行"
@@ -953,6 +1094,14 @@ class WorkflowRun(models.Model):
     boss_account = models.ForeignKey(BossAccount, on_delete=models.PROTECT, related_name="workflow_runs")
     job = models.ForeignKey(RecruitmentJob, on_delete=models.PROTECT, null=True, blank=True, related_name="workflow_runs")
     actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="workflow_runs")
+    automation_plan_revision = models.ForeignKey(
+        RecruitmentAutomationPlanRevision,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="workflow_runs",
+    )
+    automation_generation = models.PositiveIntegerField(null=True, blank=True)
     mode = models.CharField(max_length=16, choices=Mode.choices, default=Mode.DRY_RUN)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.QUEUED, db_index=True)
     idempotency_key = models.CharField(max_length=180, unique=True)
@@ -1170,6 +1319,119 @@ class ResumeAssessment(models.Model):
                 name="unique_resume_assessment_version",
             )
         ]
+
+
+class ScreeningDecisionBatch(models.Model):
+    class Decision(models.TextChoices):
+        PASS = "pass", "通过"
+        FAIL = "fail", "未通过"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    request_id = models.UUIDField(unique=True, editable=False)
+    job = models.ForeignKey(
+        RecruitmentJob,
+        on_delete=models.PROTECT,
+        related_name="screening_decision_batches",
+    )
+    decision = models.CharField(max_length=12, choices=Decision.choices)
+    reason = models.TextField()
+    payload_hash = models.CharField(max_length=64)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="created_screening_decision_batches",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(
+                "request_id", "job_id", "decision", "reason", "payload_hash", "created_by_id"
+            ).first()
+            if original and any(
+                getattr(self, field) != original[field]
+                for field in ("request_id", "job_id", "decision", "reason", "payload_hash", "created_by_id")
+            ):
+                raise ValidationError("人工筛选批次为只追加审计记录，不能修改")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("人工筛选批次为只追加审计记录，不能删除")
+
+
+class ApplicationScreeningDecision(models.Model):
+    class Decision(models.TextChoices):
+        PASS = "pass", "通过"
+        FAIL = "fail", "未通过"
+
+    batch = models.ForeignKey(
+        ScreeningDecisionBatch,
+        on_delete=models.PROTECT,
+        related_name="decisions",
+    )
+    application = models.ForeignKey(
+        JobApplication,
+        on_delete=models.PROTECT,
+        related_name="screening_decisions",
+    )
+    resume = models.ForeignKey(
+        Resume,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="screening_decisions",
+    )
+    assessment = models.ForeignKey(
+        ResumeAssessment,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="screening_decisions",
+    )
+    decision = models.CharField(max_length=12, choices=Decision.choices)
+    reason = models.TextField()
+    version = models.PositiveIntegerField()
+    decided_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="screening_decisions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["application", "version"],
+                name="unique_application_screening_decision_version",
+            ),
+            models.UniqueConstraint(
+                fields=["batch", "application"],
+                name="unique_screening_batch_application",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(
+                "batch_id", "application_id", "resume_id", "assessment_id", "decision",
+                "reason", "version", "decided_by_id",
+            ).first()
+            if original and any(
+                getattr(self, field) != original[field]
+                for field in (
+                    "batch_id", "application_id", "resume_id", "assessment_id", "decision",
+                    "reason", "version", "decided_by_id",
+                )
+            ):
+                raise ValidationError("人工筛选结论为只追加审计记录，不能修改")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("人工筛选结论为只追加审计记录，不能删除")
 
 
 class AiProcessingTask(models.Model):

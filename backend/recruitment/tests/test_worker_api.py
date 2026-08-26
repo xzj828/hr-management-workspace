@@ -1,13 +1,14 @@
 from datetime import timedelta
 import json
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import override_settings
 from django.utils import timezone
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 from attendance.models import AccountProfile
 from recruitment.models import (
@@ -37,8 +38,35 @@ from recruitment.services.resumes import archive_online_resume_image as real_arc
 from recruitment.services.search_campaigns import _campaign_snapshot
 
 
+class LeaseAwareWorkerClient(APIClient):
+    """Make legacy happy-path fixtures speak the current per-lease protocol."""
+
+    def post(self, path, data=None, format=None, content_type=None, follow=False, **extra):
+        payload = dict(data) if isinstance(data, dict) else data
+        if (
+            isinstance(payload, dict)
+            and "/worker/tasks/" in str(path)
+            and (str(path).endswith("/event/") or str(path).endswith("/complete/"))
+            and "lease_token" not in payload
+        ):
+            task_id = str(path).split("/worker/tasks/", 1)[1].split("/", 1)[0]
+            task = RpaTask.objects.filter(pk=task_id).select_related("worker").first()
+            if (
+                task is not None
+                and task.worker_id is not None
+                and task.worker.key == payload.get("worker_key")
+                and task.lease_token is not None
+            ):
+                payload["lease_token"] = str(task.lease_token)
+                payload["lease_generation"] = task.lease_generation
+        return super().post(
+            path, data=payload, format=format, content_type=content_type, follow=follow, **extra
+        )
+
+
 @override_settings(RPA_WORKER_TOKEN="test-worker-secret")
 class WorkerApiTests(APITestCase):
+    client_class = LeaseAwareWorkerClient
     token_header = {"HTTP_X_RPA_WORKER_TOKEN": "test-worker-secret"}
 
     def setUp(self):
@@ -103,6 +131,13 @@ class WorkerApiTests(APITestCase):
             boss_account=self.account,
             created_by=self.hr,
         )
+
+    @staticmethod
+    def lease_credentials(lease):
+        return {
+            "lease_token": lease.data["task"]["lease_token"],
+            "lease_generation": lease.data["task"]["lease_generation"],
+        }
         run = WorkflowRun.objects.create(
             version=version,
             boss_account=self.account,
@@ -136,12 +171,15 @@ class WorkerApiTests(APITestCase):
         self.assertEqual(self.task.status, RpaTask.Status.PENDING)
 
     def test_expired_lease_can_be_reclaimed(self):
-        worker = RpaWorker.objects.create(key="old-worker", hostname="OLD")
+        self.heartbeat()
+        worker = RpaWorker.objects.get(key="local-worker")
+        old_token = uuid.uuid4()
         self.task.status = RpaTask.Status.LEASED
         self.task.worker = worker
         self.task.lease_expires_at = timezone.now() - timedelta(seconds=1)
+        self.task.lease_token = old_token
+        self.task.lease_generation = 1
         self.task.save()
-        self.heartbeat()
 
         response = self.client.post(
             "/api/recruitment/worker/tasks/lease/",
@@ -154,6 +192,60 @@ class WorkerApiTests(APITestCase):
         self.task.refresh_from_db()
         self.assertEqual(self.task.worker.key, "local-worker")
 
+        stale_event = self.client.post(
+            f"/api/recruitment/worker/tasks/{self.task.pk}/event/",
+            {
+                "worker_key": "local-worker", "event": "started", "message": "迟到的旧租约",
+                "lease_token": str(old_token), "lease_generation": 1,
+            },
+            format="json",
+            **self.token_header,
+        )
+
+        self.assertEqual(stale_event.status_code, 409, stale_event.data)
+        stale_complete = self.client.post(
+            f"/api/recruitment/worker/tasks/{self.task.pk}/complete/",
+            {
+                "worker_key": "local-worker", "status": "succeeded", "result": {},
+                "lease_token": str(old_token), "lease_generation": 1,
+            },
+            format="json",
+            **self.token_header,
+        )
+        self.assertEqual(stale_complete.status_code, 409, stale_complete.data)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.worker.key, "local-worker")
+        self.assertEqual(self.task.status, RpaTask.Status.LEASED)
+
+    def test_expired_but_not_reassigned_completion_is_rejected(self):
+        worker = RpaWorker.objects.create(key="slow-worker", hostname="SLOW")
+        lease_token = uuid.uuid4()
+        self.task.status = RpaTask.Status.RUNNING
+        self.task.worker = worker
+        self.task.lease_expires_at = timezone.now() - timedelta(seconds=1)
+        self.task.lease_token = lease_token
+        self.task.lease_generation = 1
+        self.task.save(update_fields=[
+            "status", "worker", "lease_expires_at", "lease_token", "lease_generation",
+        ])
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{self.task.pk}/complete/",
+            {
+                "worker_key": worker.key,
+                "lease_token": str(lease_token),
+                "lease_generation": 1,
+                "status": "succeeded",
+                "result": {"login_status": "ready", "verification_status": "none", "detail": ""},
+            },
+            format="json",
+            **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, RpaTask.Status.RUNNING)
+
     def test_worker_can_append_event_and_complete(self):
         self.heartbeat()
         lease = self.client.post(
@@ -164,12 +256,18 @@ class WorkerApiTests(APITestCase):
 
         event = self.client.post(
             f"/api/recruitment/worker/tasks/{task_id}/event/",
-            {"worker_key": "local-worker", "event": "browser_checked", "message": "浏览器状态已检查"},
+            {
+                **self.lease_credentials(lease),
+                "worker_key": "local-worker", "event": "browser_checked", "message": "浏览器状态已检查",
+            },
             format="json", **self.token_header,
         )
         complete = self.client.post(
             f"/api/recruitment/worker/tasks/{task_id}/complete/",
-            {"worker_key": "local-worker", "status": "waiting_human", "result": {"login_status": "token_invalid"}},
+            {
+                **self.lease_credentials(lease),
+                "worker_key": "local-worker", "status": "waiting_human", "result": {"login_status": "token_invalid"},
+            },
             format="json", **self.token_header,
         )
 
@@ -183,7 +281,10 @@ class WorkerApiTests(APITestCase):
 
         replay = self.client.post(
             f"/api/recruitment/worker/tasks/{task_id}/complete/",
-            {"worker_key": "local-worker", "status": "succeeded", "result": {}},
+            {
+                **self.lease_credentials(lease),
+                "worker_key": "local-worker", "status": "succeeded", "result": {},
+            },
             format="json", **self.token_header,
         )
         self.assertEqual(replay.status_code, 409)
@@ -200,7 +301,10 @@ class WorkerApiTests(APITestCase):
 
         response = self.client.post(
             f"/api/recruitment/worker/tasks/{task_id}/event/",
-            {"worker_key": "local-worker", "event": "progress", "message": "仍在执行"},
+            {
+                **self.lease_credentials(lease),
+                "worker_key": "local-worker", "event": "progress", "message": "仍在执行",
+            },
             format="json", **self.token_header,
         )
 
@@ -758,6 +862,43 @@ class WorkerApiTests(APITestCase):
         self.task.idempotency_key = f"search-campaign:{campaign.pk}:approval:{approval.pk}"
         self.task.save(update_fields=["action", "approval", "request_payload", "idempotency_key"])
         return campaign, payload
+
+    def test_search_checkpoint_stop_is_cancelled_not_reported_as_natural_success(self):
+        campaign, payload = self.configure_search_pull_task(suffix="checkpoint-stopped")
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"},
+            format="json",
+            **self.token_header,
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+            {
+                "worker_key": "local-worker",
+                "status": "succeeded",
+                "result": {
+                    "candidates": [],
+                    "resumes": [],
+                    "scanned_count": 0,
+                    "view_attempt_count": 0,
+                    "resume_view_budget": payload["resume_view_budget"],
+                    "attempts": [],
+                    "checkpoint_stopped": True,
+                },
+            },
+            format="json",
+            **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.task.refresh_from_db()
+        campaign.refresh_from_db()
+        self.assertEqual(self.task.status, RpaTask.Status.CANCELLED)
+        self.assertEqual(campaign.status, SearchCampaign.Status.CANCELLED)
+        self.assertEqual(campaign.stop_reason, SearchCampaign.StopReason.USER_STOPPED)
+        self.assertEqual(self.task.result["pulled_resume_count"], 0)
 
     def test_worker_reported_search_failure_persists_unknown_safe_quota_ledger(self):
         campaign, payload = self.configure_search_pull_task(suffix="worker-failed")

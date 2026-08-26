@@ -77,6 +77,26 @@ class BossStatusTests(SimpleTestCase):
 
 
 class WorkerEngineTests(SimpleTestCase):
+    def test_conversation_stop_before_list_never_calls_platform(self):
+        class Runner:
+            calls = 0
+
+            def conversations(self, account):
+                self.calls += 1
+                return ""
+
+        runner = Runner()
+        outcome = execute_sync_conversations(
+            {},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            runner,
+            checkpoint=lambda phase, sequence: False,
+        )
+
+        self.assertEqual(runner.calls, 0)
+        self.assertTrue(outcome["result"]["checkpoint_stopped"])
+        self.assertEqual(outcome["result"]["conversations"], [])
+
     @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
     def test_conversation_sync_returns_every_chat_message(self, inventory):
         inventory.return_value.download_resume_attachments.return_value = []
@@ -164,6 +184,8 @@ class WorkerEngineTests(SimpleTestCase):
         task = {
             "id": "task-identity-check",
             "action": "sync_positions",
+            "lease_token": "test-lease-token",
+            "lease_generation": 1,
             "browser": {
                 "executable": "edge.exe",
                 "user_data_dir": "C:/profiles/expected",
@@ -195,6 +217,8 @@ class WorkerEngineTests(SimpleTestCase):
         task = {
             "id": "task-current-login-check",
             "action": "sync_positions",
+            "lease_token": "test-lease-token",
+            "lease_generation": 1,
             "browser": {
                 "executable": "edge.exe",
                 "user_data_dir": "C:/profiles/expected",

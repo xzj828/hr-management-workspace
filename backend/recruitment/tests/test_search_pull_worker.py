@@ -26,6 +26,67 @@ class FakeRunner:
 
 
 class SearchPullWorkerTests(SimpleTestCase):
+    def test_stop_before_first_search_checkpoint_never_calls_platform(self):
+        runner = FakeRunner(Path("unused.png"))
+        runner.search_calls = 0
+
+        def search(account, keyword):
+            runner.search_calls += 1
+            return []
+
+        runner.search = search
+        task = {"request_payload": {
+            "source": "search", "criteria": {"keyword": "Python"},
+            "target_resume_count": 1, "max_scan_count": 2,
+            "resume_view_budget": 2, "boss_account_id": 7,
+        }}
+
+        outcome = execute_search_pull_resumes(
+            task,
+            CliAccountConfig("edge", "profile", 53990),
+            runner,
+            checkpoint=lambda phase, sequence: False,
+        )
+
+        self.assertEqual(runner.search_calls, 0)
+        self.assertEqual(outcome["result"]["scanned_count"], 0)
+        self.assertTrue(outcome["result"]["checkpoint_stopped"])
+
+    def test_stop_after_one_preview_preserves_one_atomic_result_and_starts_no_next_call(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.png"
+            source.write_bytes(b"\x89PNG\r\n\x1a\ncontent")
+            runner = FakeRunner(source)
+            rows = [
+                {"display_name": "陈月", "external_id": "stable-1", "current_title": "Python"},
+                {"display_name": "林河", "external_id": "stable-2", "current_title": "Django"},
+            ]
+            runner.search = lambda account, keyword: rows
+            runner.preview_by_external_id = lambda account, external_id: (
+                runner.previewed.append(external_id)
+                or SimpleNamespace(stdout=f"简历预览截图：{source}\n")
+            )
+            task = {"request_payload": {
+                "source": "search", "criteria": {"keyword": "Python"},
+                "target_resume_count": 2, "max_scan_count": 2,
+                "resume_view_budget": 2, "boss_account_id": 7,
+            }}
+
+            def checkpoint(phase, sequence):
+                return not (phase == "after_preview" and sequence == 1)
+
+            with override_settings(MEDIA_ROOT=Path(root) / "media"):
+                outcome = execute_search_pull_resumes(
+                    task,
+                    CliAccountConfig("edge", "profile", 53990),
+                    runner,
+                    checkpoint=checkpoint,
+                )
+
+            self.assertEqual(runner.previewed, ["stable-1"])
+            self.assertEqual(len(outcome["result"]["resumes"]), 1)
+            self.assertTrue(outcome["result"]["checkpoint_stopped"])
+
     def test_search_preserves_results_but_name_based_preview_waits_for_human(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "source.png"

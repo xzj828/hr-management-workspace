@@ -4,14 +4,17 @@ from rest_framework.exceptions import APIException, ValidationError
 
 from recruitment.models import (
     AutomationApproval,
+    BossAccount,
     ConversationAction,
     RecruitmentAuditLog,
+    RecruitmentAutomationPlan,
     RpaTask,
     SearchCampaign,
     WorkflowNodeRun,
     WorkflowRun,
     WorkflowRunEvent,
 )
+from recruitment.services.sqlite_lifecycle import serialize_sqlite_lifecycle
 
 
 HUMAN_NODE_TYPES = {"human_screen", "human_approval", "human_review"}
@@ -23,6 +26,20 @@ RUN_TERMINAL_STATES = {WorkflowRun.Status.SUCCEEDED, WorkflowRun.Status.FAILED, 
 class WorkflowConflict(APIException):
     status_code = 409
     default_code = "workflow_state_conflict"
+
+
+def _lock_run_for_update(run):
+    snapshot = WorkflowRun.objects.filter(pk=run.pk).values(
+        "boss_account_id", "automation_plan_revision_id"
+    ).first()
+    if snapshot is None:
+        raise WorkflowRun.DoesNotExist
+    if snapshot["automation_plan_revision_id"] is not None:
+        BossAccount.objects.select_for_update().get(pk=snapshot["boss_account_id"])
+        RecruitmentAutomationPlan.objects.select_for_update().get(
+            revisions__pk=snapshot["automation_plan_revision_id"]
+        )
+    return WorkflowRun.objects.select_for_update().get(pk=run.pk)
 
 
 def _event(run, event, message, *, node=None, data=None, actor=None):
@@ -52,8 +69,19 @@ def _snapshot(version):
     return {"nodes": nodes, "edges": edges, "version_id": version.pk, "version": version.version}
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
-def create_run(*, version, actor, mode, idempotency_key, input_snapshot=None, job=None):
+def create_run(
+    *,
+    version,
+    actor,
+    mode,
+    idempotency_key,
+    input_snapshot=None,
+    job=None,
+    automation_plan_revision=None,
+    automation_generation=None,
+):
     existing = WorkflowRun.objects.filter(idempotency_key=idempotency_key).first()
     if existing:
         return existing
@@ -68,6 +96,8 @@ def create_run(*, version, actor, mode, idempotency_key, input_snapshot=None, jo
         version=version, boss_account=version.boss_account, job=job, actor=actor, mode=mode,
         status=WorkflowRun.Status.RUNNING, idempotency_key=idempotency_key,
         graph_snapshot=graph, input_snapshot=input_snapshot or {}, started_at=now,
+        automation_plan_revision=automation_plan_revision,
+        automation_generation=automation_generation,
     )
     for node in graph["nodes"]:
         disabled = node["config"].get("enabled") is False
@@ -98,9 +128,18 @@ def _condition_matches(condition, output):
     return all(matches(output.get(key), value) for key, value in (condition or {}).items())
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def advance_run(run, *, executor=None):
-    locked = WorkflowRun.objects.select_for_update().get(pk=run.pk)
+    locked = _lock_run_for_update(run)
+    if locked.automation_plan_revision_id:
+        from recruitment.services.automation_plans import plan_fence_is_current
+
+        if not plan_fence_is_current(
+            revision_id=locked.automation_plan_revision_id,
+            generation=locked.automation_generation,
+        ):
+            return locked
     previous_status = locked.status
     if locked.status in RUN_TERMINAL_STATES | {WorkflowRun.Status.PAUSED}:
         return locked
@@ -205,6 +244,7 @@ def advance_run(run, *, executor=None):
     return locked
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def decide_node(node, *, approved, actor, note=""):
     locked = WorkflowNodeRun.objects.select_for_update().select_related("run").get(pk=node.pk)
@@ -218,9 +258,10 @@ def decide_node(node, *, approved, actor, note=""):
     return locked
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def pause_run(run, *, actor):
-    locked = WorkflowRun.objects.select_for_update().get(pk=run.pk)
+    locked = _lock_run_for_update(run)
     if locked.status in RUN_TERMINAL_STATES:
         raise WorkflowConflict("已结束的流程不能暂停")
     locked.status = WorkflowRun.Status.PAUSED
@@ -229,9 +270,10 @@ def pause_run(run, *, actor):
     return locked
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def resume_run(run, *, actor):
-    locked = WorkflowRun.objects.select_for_update().get(pk=run.pk)
+    locked = _lock_run_for_update(run)
     if locked.status != WorkflowRun.Status.PAUSED:
         raise WorkflowConflict("只有暂停中的流程可以恢复")
     locked.status = WorkflowRun.Status.RUNNING
@@ -240,9 +282,10 @@ def resume_run(run, *, actor):
     return locked
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def cancel_run(run, *, actor):
-    locked = WorkflowRun.objects.select_for_update().get(pk=run.pk)
+    locked = _lock_run_for_update(run)
     if locked.status in RUN_TERMINAL_STATES:
         return locked
     now = timezone.now()
@@ -352,6 +395,7 @@ def cancel_run(run, *, actor):
     return locked
 
 
+@serialize_sqlite_lifecycle
 @transaction.atomic
 def retry_node(node, *, actor):
     locked = WorkflowNodeRun.objects.select_for_update().select_related("run").get(pk=node.pk)

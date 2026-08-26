@@ -1,7 +1,10 @@
+from datetime import timedelta
+import uuid
 from unittest.mock import Mock
 
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, override_settings
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
@@ -93,6 +96,9 @@ class CandidateWorkerApiTests(APITestCase):
             created_by=self.hr,
             worker=self.worker,
             status=RpaTask.Status.RUNNING,
+            lease_token=uuid.uuid4(),
+            lease_generation=1,
+            lease_expires_at=timezone.now() + timedelta(minutes=1),
             request_payload={"job": self.job.pk, "job_title": self.job.title, "criteria": {}},
         )
 
@@ -100,6 +106,8 @@ class CandidateWorkerApiTests(APITestCase):
             f"/api/recruitment/worker/tasks/{task.pk}/complete/",
             {
                 "worker_key": self.worker.key,
+                "lease_token": str(task.lease_token),
+                "lease_generation": task.lease_generation,
                 "status": "succeeded",
                 "result": {"candidates": [{
                     "display_name": "林晓",

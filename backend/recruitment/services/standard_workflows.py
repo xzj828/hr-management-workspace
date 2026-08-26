@@ -84,15 +84,22 @@ def _active_graph(config):
 
 
 @transaction.atomic
-def create_standard_workflow(*, kind, account, actor, config=None):
+def create_standard_workflow(*, kind, account, actor, config=None, template=None):
     if kind not in STANDARD_SCHEMES:
         raise ValueError("不支持的标准自动化方案")
     scheme = STANDARD_SCHEMES[kind]
-    template = WorkflowTemplate.objects.create(
-        name=scheme["name"],
-        description=scheme["description"],
-        created_by=actor,
-    )
+    if template is None:
+        template = WorkflowTemplate.objects.create(
+            name=scheme["name"],
+            description=scheme["description"],
+            created_by=actor,
+        )
+    else:
+        template = WorkflowTemplate.objects.select_for_update().get(pk=template.pk)
+        template.name = scheme["name"]
+        template.description = scheme["description"]
+        template.archived_at = None
+        template.save(update_fields=["name", "description", "archived_at", "updated_at"])
     nodes, edges = _passive_graph(config or {}) if kind == "passive_resume" else _active_graph(config or {})
     version = create_version(
         template=template,

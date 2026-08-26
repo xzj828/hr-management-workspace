@@ -381,21 +381,98 @@ def execute_send_interview(task, account, runner):
     }
 
 
-def execute_sync_conversations(task, account, runner):
+def execute_rejection_notice(task, account, runner):
+    payload, target, name = _safe_target(task)
+    external_id = str(target.get("external_id", "")).strip()
+    message = str(payload.get("message", "")).strip()
+    if not name or not external_id or not message:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "target_identity_missing",
+            "error_message": "候选人平台稳定 ID 或通知内容不足，请由 HR 人工处理",
+        }
+    refreshed = _verify_conversation_target(runner=runner, account=account, target=target)
+    if refreshed is None:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "target_identity_ambiguous",
+            "error_message": "刷新沟通列表后无法唯一确认候选人，已禁止发送未通过通知",
+        }
+    stable_action = getattr(runner, "send_text_by_external_id", None)
+    if not callable(stable_action):
+        return {
+            "status": "waiting_human",
+            "result": {"verified": True},
+            "error_code": "stable_identity_action_unavailable",
+            "error_message": "当前 BOSS 适配器不能按平台稳定 ID 发送通知，请由 HR 人工处理",
+        }
+    # Crossing this call boundary may have already changed the external
+    # platform even when the adapter raises (for example, a lost response).
+    # Such an outcome must never be classified as a retryable failure.
+    try:
+        receipt = stable_action(account, external_id, message)
+    except Exception:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "external_result_uncertain",
+            "error_message": "平台可能已接收通知，发送结果待人工核查，禁止自动重试",
+        }
+    receipt_confirmed = receipt is True or (
+        isinstance(receipt, dict)
+        and receipt.get("sent") is True
+        and receipt.get("verified") is True
+        and str(receipt.get("observed_external_id", "")).strip() == external_id
+    )
+    if not receipt_confirmed:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "external_result_uncertain",
+            "error_message": "发送回执未明确确认平台已接收，发送结果待人工核查，禁止自动重试",
+        }
+    return {
+        "status": "succeeded",
+        "result": {
+            "verified": True,
+            "expected_external_id": external_id,
+            "observed_external_id": str(refreshed.get("external_id", "")).strip(),
+        },
+    }
+
+
+def execute_sync_conversations(task, account, runner, checkpoint=None):
+    if checkpoint is not None and not checkpoint("before_list", 0):
+        return {
+            "status": "succeeded",
+            "result": {"conversations": [], "checkpoint_stopped": True},
+        }
     rows = parse_conversation_list(runner.conversations(account))
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     name_counts = {row["name"]: sum(1 for item in rows if item["name"] == row["name"]) for row in rows}
-    for row in rows[:50]:
+    checkpoint_stopped = False
+    for sequence, row in enumerate(rows[:50], start=1):
         if name_counts[row["name"]] != 1:
             row["sync_error"] = "同名候选人不唯一，未打开会话"
             continue
+        if checkpoint is not None and not checkpoint("before_open_chat", sequence):
+            checkpoint_stopped = True
+            break
         try:
             opened = runner.open_chat(account, row["name"])
             row["messages"] = parse_chat_messages(opened.stdout)
             row["attachments"] = BrowserInventory(account.cdp_port).download_resume_attachments(row["name"], incoming)
         except (BossCliError, BrowserConnectionError) as exc:
             row["sync_error"] = str(exc)
-    return {"status": "succeeded", "result": {"conversations": rows}}
+        if checkpoint is not None and not checkpoint("after_open_chat", sequence):
+            checkpoint_stopped = True
+            break
+    return {
+        "status": "succeeded",
+        "result": {"conversations": rows, "checkpoint_stopped": checkpoint_stopped},
+    }
 
 
 def execute_view_online_resume(task, account, runner):
@@ -457,7 +534,7 @@ def _preview_image_path(output):
     return path
 
 
-def execute_search_pull_resumes(task, account, runner):
+def execute_search_pull_resumes(task, account, runner, checkpoint=None):
     payload = task.get("request_payload") or {}
     source = str(payload.get("source", "recommend"))
     criteria = payload.get("criteria") if isinstance(payload.get("criteria"), dict) else {}
@@ -469,6 +546,20 @@ def execute_search_pull_resumes(task, account, runner):
             "result": {},
             "error_code": "approval_scope_missing",
             "error_message": "主动寻访缺少已确认的账号或简历查看额度",
+        }
+    if checkpoint is not None and not checkpoint("before_search", 0):
+        return {
+            "status": "succeeded",
+            "result": {
+                "candidates": [],
+                "resumes": [],
+                "scanned_count": 0,
+                "view_attempt_count": 0,
+                "resume_view_budget": budget,
+                "attempts": [],
+                "errors": [],
+                "checkpoint_stopped": True,
+            },
         }
     rows = _candidate_rows_for_verification(
         runner=runner,
@@ -488,6 +579,7 @@ def execute_search_pull_resumes(task, account, runner):
     seen_identities = set()
     view_attempt_count = 0
     manual_intervention_required = False
+    checkpoint_stopped = False
     stable_preview = getattr(runner, "preview_by_external_id", None)
     from recruitment.services.discovery import _fingerprint
 
@@ -498,6 +590,10 @@ def execute_search_pull_resumes(task, account, runner):
         if not name or fingerprint in seen_identities:
             continue
         seen_identities.add(fingerprint)
+        refresh_sequence = len(attempts) + 1
+        if checkpoint is not None and not checkpoint("before_refresh", refresh_sequence):
+            checkpoint_stopped = True
+            break
         refreshed_rows = _candidate_rows_for_verification(
             runner=runner,
             account=account,
@@ -568,6 +664,10 @@ def execute_search_pull_resumes(task, account, runner):
             continue
         if view_attempt_count >= budget:
             break
+        attempt_sequence = len(attempts) + 1
+        if checkpoint is not None and not checkpoint("before_preview", attempt_sequence):
+            checkpoint_stopped = True
+            break
         view_attempt_count += 1
         attempt = {
             "sequence": len(attempts) + 1,
@@ -602,13 +702,15 @@ def execute_search_pull_resumes(task, account, runner):
             })
             attempt["outcome"] = "preview_succeeded"
             attempt["error_code"] = ""
-            if len(pulled) >= target:
-                attempts.append(attempt)
-                break
         except Exception as exc:
             attempt["error"] = str(exc)[:1000]
             errors.append({"name": name, "error": attempt["error"]})
         attempts.append(attempt)
+        if checkpoint is not None and not checkpoint("after_preview", attempt["sequence"]):
+            checkpoint_stopped = True
+            break
+        if len(pulled) >= target:
+            break
     return {
         "status": "waiting_human" if manual_intervention_required and len(pulled) < target else "succeeded",
         "result": {
@@ -619,6 +721,7 @@ def execute_search_pull_resumes(task, account, runner):
             "resume_view_budget": budget,
             "attempts": attempts,
             "errors": errors,
+            "checkpoint_stopped": checkpoint_stopped,
         },
         **({
             "error_code": "stable_identity_action_unavailable",
@@ -636,6 +739,7 @@ EXECUTORS = {
     "greet": execute_greet,
     "request_resume": execute_request_resume,
     "send_interview": execute_send_interview,
+    "rejection_notice": execute_rejection_notice,
     "sync_conversations": execute_sync_conversations,
     "view_online_resume": execute_view_online_resume,
     "search_pull_resumes": execute_search_pull_resumes,
@@ -649,12 +753,31 @@ class WorkerEngine:
         self.worker_key = worker_key
 
     def _execute(self, task, account):
+        if task["action"] in {"sync_conversations", "search_pull_resumes"}:
+            def checkpoint(phase, sequence):
+                try:
+                    self.api.event(task["id"], {
+                        "event": "checkpoint",
+                        "message": "自动化循环安全检查点",
+                        "data": {"phase": phase, "sequence": sequence},
+                        "lease_token": task["lease_token"],
+                        "lease_generation": task["lease_generation"],
+                    })
+                    return True
+                except RuntimeError:
+                    return False
+
+            return EXECUTORS[task["action"]](task, account, self.runner, checkpoint=checkpoint)
         return EXECUTORS[task["action"]](task, account, self.runner)
 
     def execute_task(self, task):
         if task.get("action") not in EXECUTORS:
             outcome = {"status": "failed", "result": {}, "error_code": "unsupported_action", "error_message": "不支持的自动化动作"}
-            self.api.complete(task["id"], outcome)
+            self.api.complete(task["id"], {
+                **outcome,
+                "lease_token": task.get("lease_token"),
+                "lease_generation": task.get("lease_generation"),
+            })
             return outcome
         browser = task["browser"]
         account = CliAccountConfig(browser["executable"], browser["user_data_dir"], int(browser["cdp_port"]))
@@ -663,7 +786,12 @@ class WorkerEngine:
             and task.get("open_login") is True
         )
         try:
-            self.api.event(task["id"], {"event": "started", "message": "本机 Worker 开始执行"})
+            self.api.event(task["id"], {
+                "event": "started",
+                "message": "本机 Worker 开始执行",
+                "lease_token": task["lease_token"],
+                "lease_generation": task["lease_generation"],
+            })
             with ProfileLock(account.user_data_dir):
                 if not is_open_login and not managed_cdp_matches(account.cdp_port, account.user_data_dir):
                     outcome = {
@@ -700,7 +828,30 @@ class WorkerEngine:
             outcome = {"status": "waiting_human", "result": {}, "error_code": "browser_identity_check", "error_message": str(exc)}
         except Exception as exc:
             outcome = {"status": "failed", "result": {}, "error_code": "worker_error", "error_message": str(exc)}
-        self.api.complete(task["id"], outcome)
+        if task.get("action") == "rejection_notice" and outcome.get("error_code"):
+            controlled_messages = {
+                "cdp_identity_mismatch": "隔离浏览器与所选 BOSS 账号不一致，通知已停止",
+                "boss_account_not_ready": "BOSS 账号当前不可用，通知已停止",
+                "profile_locked": "隔离浏览器正在被占用，通知已停止",
+                "boss_cli_error": "BOSS 自动化适配器执行异常，通知结果需人工核查",
+                "browser_identity_check": "隔离浏览器身份无法确认，通知结果需人工核查",
+                "worker_error": "本机 Worker 执行异常，通知结果需人工核查",
+            }
+            if outcome.get("error_code") in controlled_messages:
+                outcome["result"] = {}
+                outcome["error_message"] = controlled_messages[outcome["error_code"]]
+            if outcome.get("error_code") in {"boss_cli_error", "worker_error"}:
+                outcome = {
+                    "status": "waiting_human",
+                    "result": {},
+                    "error_code": "external_result_uncertain",
+                    "error_message": "发送结果待人工核查，禁止自动重试",
+                }
+        self.api.complete(task["id"], {
+            **outcome,
+            "lease_token": task["lease_token"],
+            "lease_generation": task["lease_generation"],
+        })
         return outcome
 
     def run_once(self):

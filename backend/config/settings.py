@@ -73,7 +73,12 @@ else:
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": Path(os.getenv("DATABASE_PATH", BASE_DIR / "db.sqlite3")),
-            "OPTIONS": {"timeout": 20},
+            # SQLite ignores SELECT ... FOR UPDATE.  BEGIN IMMEDIATE acquires
+            # the database write reservation before lifecycle code reads its
+            # fence/version, so concurrent HTTP threads and Worker callbacks
+            # serialize instead of failing later with a stale snapshot or
+            # ``database is locked`` during the first write.
+            "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
         }
     }
 

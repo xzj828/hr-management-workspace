@@ -2,7 +2,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from recruitment.models import ApplicationStageHistory, JobApplication, RecruitmentAuditLog
+from recruitment.models import ApplicationStageHistory, BossAccount, JobApplication, RecruitmentAuditLog
 
 
 EVENT_STAGE = {
@@ -16,11 +16,25 @@ EVENT_STAGE = {
 
 @transaction.atomic
 def _change(*, application, to_stage, source, reason, actor=None, task=None):
-    locked = JobApplication.objects.select_for_update().get(pk=application.pk)
+    account_id = JobApplication.objects.values_list("job__boss_account_id", flat=True).get(pk=application.pk)
+    if account_id:
+        BossAccount.objects.select_for_update().get(pk=account_id)
+    locked = JobApplication.objects.select_for_update().select_related("job").get(pk=application.pk)
     if to_stage not in JobApplication.Stage.values:
         raise ValidationError("招聘阶段无效")
     if locked.stage == to_stage:
         return False
+    from recruitment.services.screening import (
+        FORBIDDEN_REJECTION_STAGES,
+        invalidate_rejection_work_for_application,
+    )
+
+    if to_stage in FORBIDDEN_REJECTION_STAGES:
+        invalidate_rejection_work_for_application(
+            application=locked,
+            actor=actor,
+            trigger="application_stage_changed",
+        )
     previous = locked.stage
     locked.stage = to_stage
     locked.last_interaction_at = timezone.now()

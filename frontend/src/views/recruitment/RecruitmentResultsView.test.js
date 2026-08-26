@@ -11,6 +11,7 @@ vi.mock('@/api', () => ({
 }))
 
 import RecruitmentResultsView from './RecruitmentResultsView.vue'
+import WorkflowRunPanel from '@/components/WorkflowRunPanel.vue'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
 const RouterLinkStub = { props: ['to'], template: '<a data-router-link><slot /></a>' }
@@ -46,8 +47,30 @@ const application = {
 
 const resume = {
   id: 31, application: 11, candidate: 21, candidate_name: '林溪', original_name: 'lin-xi.pdf',
-  processing_status: 'ready', intelligence_status: 'completed',
+  processing_status: 'ready', intelligence_status: 'completed', content_type: 'application/pdf',
+  preview_url: '/api/recruitment/resumes/31/file/', download_url: '/api/recruitment/resumes/31/file/?download=1',
 }
+const structure = { id: 41, resume: 31, version: 1, data: { basics: { name: '林溪', target_role: '产品经理', city: '上海' }, skills: ['用户研究'] }, warnings: [] }
+const assessment = { id: 51, resume: 31, structured_resume: 41, standard: 61, version: 1, total_score: 86, recommendation: 'advance', recommendation_label: '建议推进', confidence: 0.92, dimension_scores: [{ criterion_key: 'research', criterion_name: '用户研究', score: 24, max_score: 30, reason: '有完整研究项目', resume_evidence_block_ids: ['resume-31-block-2'] }], hard_failures: [], gaps: ['缺少国际化经历'], verification_questions: ['请核实英语沟通场景'] }
+const structureSummary = { id: 41, resume: 31, version: 1, warnings_count: 0, created_at: '2026-08-25T08:02:00Z' }
+const assessmentSummary = { id: 51, structured_resume: 41, standard: 61, standard_version: 1, version: 1, total_score: 86, recommendation: 'advance', recommendation_label: '建议推进', confidence: 0.92, auto_rejected: false, hard_failure_count: 0 }
+const screeningRow = {
+  rank: 1,
+  application: { id: 11, job: 1, stage: 'communicating', stage_label: '沟通', source: 'boss' },
+  candidate: application.candidate,
+  resume,
+  structure: structureSummary,
+  assessment: assessmentSummary,
+  ai_state: 'scored',
+  hr_decision: null,
+  notification: { status: 'not_requested' },
+}
+
+const screeningPayload = (results = [screeningRow], jobId = 1) => ({
+  job: { id: jobId, title: jobId === 1 ? '招聘产品经理' : 'Vue 前端工程师', boss_account: 7 },
+  standard: { id: 61, version: 1, status: 'published' },
+  results,
+})
 
 function installContext() {
   setActivePinia(createPinia())
@@ -93,10 +116,10 @@ function mockCompletePayload() {
     if (path === 'recruitment/workflow-runs/') return Promise.resolve({ results: [run()] })
     if (path === 'recruitment/search-campaigns/') return Promise.resolve({ results: [campaign] })
     if (path === 'recruitment/human-attentions/') return Promise.resolve({ results: [attention] })
-    if (path === 'recruitment/applications/?job=1') return Promise.resolve({ results: [application] })
-    if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [resume] })
-    if (path === 'recruitment/structured-resumes/?job=1') return Promise.resolve({ results: [{ id: 41, resume: 31, version: 1 }] })
-    if (path === 'recruitment/resume-assessments/?job=1') return Promise.resolve({ results: [{ id: 51, resume: 31, version: 1, total_score: 86, recommendation: 'advance', recommendation_label: '建议推进', confidence: 0.92 }] })
+    if (path === 'recruitment/screening-results/?job=1') return Promise.resolve(screeningPayload())
+    if (path === 'recruitment/structured-resumes/?resume=31') return Promise.resolve({ results: [structure] })
+    if (path === 'recruitment/resume-assessments/?resume=31') return Promise.resolve({ results: [assessment] })
+    if (path === 'recruitment/ai-tasks/?resume=31') return Promise.resolve({ results: [] })
     return Promise.reject(new Error(`unexpected path: ${path}`))
   })
 }
@@ -126,10 +149,7 @@ describe('RecruitmentResultsView', () => {
       'recruitment/workflow-runs/',
       'recruitment/search-campaigns/',
       'recruitment/human-attentions/',
-      'recruitment/applications/?job=1',
-      'recruitment/resumes/?job=1',
-      'recruitment/structured-resumes/?job=1',
-      'recruitment/resume-assessments/?job=1',
+      'recruitment/screening-results/?job=1',
     ]))
     expect(wrapper.get('[data-test="attention-view"]').text()).toContain('候选人希望先了解岗位')
     expect(wrapper.text()).toContain('想先了解一下团队规模和工作方式')
@@ -143,7 +163,8 @@ describe('RecruitmentResultsView', () => {
 
     await wrapper.get('[data-test="results-tab-candidates"]').trigger('click')
     expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('林溪')
-    expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('86 分 · 建议推进')
+    expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('86 分')
+    expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('AI 建议通过')
 
     await wrapper.get('[data-test="results-tab-pipeline"]').trigger('click')
     expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('招聘进度')
@@ -156,10 +177,7 @@ describe('RecruitmentResultsView', () => {
       if (path === 'recruitment/search-campaigns/') return Promise.reject(new Error('主动寻访服务暂不可用'))
       if (path === 'recruitment/workflow-runs/') return Promise.resolve({ results: [run()] })
       if (path === 'recruitment/human-attentions/') return Promise.resolve({ results: [attention] })
-      if (path === 'recruitment/applications/?job=1') return Promise.resolve({ results: [application] })
-      if (path === 'recruitment/resumes/?job=1') return Promise.resolve({ results: [resume] })
-      if (path === 'recruitment/structured-resumes/?job=1') return Promise.resolve({ results: [] })
-      if (path === 'recruitment/resume-assessments/?job=1') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/screening-results/?job=1') return Promise.resolve(screeningPayload())
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
     const { wrapper } = await mountView()
@@ -171,12 +189,12 @@ describe('RecruitmentResultsView', () => {
   })
 
   it('does not let a slow previous job response overwrite a quick job switch', async () => {
-    let resolveOldApplications
-    const oldApplications = new Promise((resolve) => { resolveOldApplications = resolve })
+    let resolveOldScreening
+    const oldScreening = new Promise((resolve) => { resolveOldScreening = resolve })
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/workflow-runs/' || path === 'recruitment/search-campaigns/' || path === 'recruitment/human-attentions/') return Promise.resolve({ results: [] })
-      if (path === 'recruitment/applications/?job=1') return oldApplications
-      if (path === 'recruitment/applications/?job=2') return Promise.resolve({ results: [{ ...application, id: 22, job: 2, candidate: { ...application.candidate, id: 32, name: '新岗位候选人' } }] })
+      if (path === 'recruitment/screening-results/?job=1') return oldScreening
+      if (path === 'recruitment/screening-results/?job=2') return Promise.resolve(screeningPayload([{ ...screeningRow, application: { ...screeningRow.application, id: 22, job: 2 }, candidate: { ...screeningRow.candidate, id: 32, name: '新岗位候选人' }, resume: { ...resume, id: 42, application: 22, candidate: 32 } }], 2))
       if (path.includes('?job=1') || path.includes('?job=2')) return Promise.resolve({ results: [] })
       return Promise.reject(new Error(`unexpected path: ${path}`))
     })
@@ -188,7 +206,7 @@ describe('RecruitmentResultsView', () => {
     await wrapper.get('[data-test="results-tab-candidates"]').trigger('click')
     expect(wrapper.text()).toContain('新岗位候选人')
 
-    resolveOldApplications({ results: [{ ...application, candidate: { ...application.candidate, name: '旧岗位候选人' } }] })
+    resolveOldScreening(screeningPayload([{ ...screeningRow, candidate: { ...screeningRow.candidate, name: '旧岗位候选人' } }]))
     await flushPromises()
     expect(wrapper.text()).toContain('新岗位候选人')
     expect(wrapper.text()).not.toContain('旧岗位候选人')
@@ -295,6 +313,42 @@ describe('RecruitmentResultsView', () => {
     expect(wrapper.get('[aria-label="流程运行状态"]').text()).toContain('已暂停')
   })
 
+  it('keeps plan-managed runs read-only for lifecycle controls and links back to their job workbench', async () => {
+    const managedRun = run({ automation_plan_revision: 402 })
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/workflow-runs/') return Promise.resolve({ results: [managedRun] })
+      if (path === 'recruitment/workflow-runs/run-1000/decision/') {
+        return Promise.resolve(run({ ...managedRun, status: 'running' }))
+      }
+      if (path === 'recruitment/search-campaigns/') return Promise.resolve({ results: [campaign] })
+      if (path === 'recruitment/human-attentions/') return Promise.resolve({ results: [attention] })
+      if (path === 'recruitment/screening-results/?job=1') return Promise.resolve(screeningPayload())
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'tasks' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="manage-run-run-1000"]').trigger('click')
+    await flushPromises()
+    const panel = wrapper.getComponent(WorkflowRunPanel)
+    expect(panel.get('[data-test="plan-managed-guidance"]').text()).toContain('请回招聘作业台停止/修改/重新开启')
+    expect(panel.text()).not.toContain('暂停')
+    expect(panel.text()).not.toContain('取消运行')
+    expect(panel.getComponent(RouterLinkStub).props('to')).toEqual({
+      name: 'recruitment-workbench',
+      query: { job: '1', step: 'plan' },
+    })
+
+    const approve = panel.findAll('button').find((button) => button.text() === '通过')
+    await approve.trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-runs/run-1000/decision/', {
+      method: 'POST',
+      body: JSON.stringify({ node_id: 2, approved: true, note: 'HR 在结果中心确认通过' }),
+    })
+    expect(apiMock.mock.calls.some(([path]) => path.endsWith('/pause/') || path.endsWith('/cancel/') || path.endsWith('/retry/'))).toBe(false)
+  })
+
   it('retries a failed workflow node from the same result-center panel', async () => {
     const failedRun = run({
       status: 'failed',
@@ -372,5 +426,210 @@ describe('RecruitmentResultsView', () => {
     expect(router.currentRoute.value.query.job).toBe('1')
     expect(wrapper.text()).toContain('招聘产品经理')
     expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-runs/run-1000/')
+  })
+
+  it('renders one authoritative native ranking with scored and unscored candidates without inferring HR decisions', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    const holdRow = {
+      ...screeningRow,
+      rank: 2,
+      application: { ...screeningRow.application, id: 12, stage: 'communicating' },
+      candidate: { id: 22, name: '陈沐', current_title: '产品运营', current_city: '杭州' },
+      resume: { ...resume, id: 32, application: 12, candidate: 22, candidate_name: '陈沐' },
+      structure: { ...structureSummary, id: 42, resume: 32 },
+      assessment: { ...assessmentSummary, id: 52, structured_resume: 42, total_score: 68, recommendation: 'hold', recommendation_label: '建议暂缓' },
+      hr_decision: { id: 71, decision: 'fail', reason: '岗位匹配度不足', version: 1 },
+      notification: { status: 'waiting_human', error_message: '需要人工核对会话身份' },
+    }
+    const unscoredRow = {
+      rank: null,
+      application: { id: 13, job: 1, stage: 'rejected', stage_label: '已淘汰' },
+      candidate: { id: 23, name: '许言', current_title: '产品助理', current_city: '苏州' },
+      resume: null, structure: null, assessment: null, ai_state: 'no_resume', hr_decision: null,
+      notification: { status: 'not_requested' },
+    }
+    apiMock.mockImplementation((path, options) => path === 'recruitment/screening-results/?job=1'
+      ? Promise.resolve(screeningPayload([screeningRow, holdRow, unscoredRow]))
+      : baseImplementation(path, options))
+
+    const { wrapper } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    const table = wrapper.get('table.candidate-ranking-table')
+    expect(table.get('th[aria-sort="descending"]').text()).toBe('排名')
+    expect(table.findAll('tbody tr').map((row) => row.attributes('data-application-id'))).toEqual(['11', '12', '13'])
+    expect(table.text()).toContain('AI 建议通过')
+    expect(table.text()).toContain('AI 建议未通过')
+    expect(table.text()).toContain('HR 已确认未通过')
+    expect(table.text()).toContain('HR 待确认')
+    expect(table.text()).toContain('不作为 0 分')
+    expect(table.text()).toContain('等待人工介入')
+    expect(wrapper.get('[data-test="candidate-filter-hr_pass"]').text()).toBe('HR 已通过')
+    expect(wrapper.get('[data-test="candidate-filter-hr_fail"]').text()).toBe('HR 未通过')
+    expect(wrapper.get('[data-test="notification-summary"]').text()).toContain('等待人工 1')
+  })
+
+  it('keeps selection stable while filtering and opens the resume report on the same result route', async () => {
+    mockCompletePayload()
+    const { wrapper, router } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('tr[data-application-id="11"] input[type="checkbox"]').setValue(true)
+    await wrapper.get('[data-test="candidate-filter-hold"]').trigger('click')
+    expect(wrapper.get('[data-test="candidate-batch-bar"]').text()).toContain('已选择 1 人')
+    expect(wrapper.find('tr[data-application-id="11"]').exists()).toBe(false)
+    await wrapper.get('[data-test="candidate-filter-all"]').trigger('click')
+
+    expect(apiMock.mock.calls.some(([path]) => path.includes('?resume=31'))).toBe(false)
+    await wrapper.get('[data-test="view-candidate-11"]').trigger('click')
+    await flushPromises()
+    expect(apiMock.mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining([
+      'recruitment/structured-resumes/?resume=31',
+      'recruitment/resume-assessments/?resume=31',
+      'recruitment/ai-tasks/?resume=31',
+    ]))
+    expect(router.currentRoute.value.query.application).toBe('11')
+    expect(router.currentRoute.value.query.resume).toBe('31')
+    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('林溪')
+    await wrapper.get('[data-test="tab-structured"]').trigger('click')
+    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('用户研究')
+    await wrapper.get('[data-test="tab-evidence"]').trigger('click')
+    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('有完整研究项目')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(router.currentRoute.value.query.application).toBeUndefined()
+    expect(router.currentRoute.value.query.resume).toBeUndefined()
+
+    await wrapper.get('[data-test="view-candidate-11"]').trigger('click')
+    await flushPromises()
+    router.back()
+    await flushPromises()
+    expect(wrapper.find('[role="dialog"][aria-label="简历智能分析"]').exists()).toBe(false)
+  })
+
+  it('saves an explicit HR fail decision and queues a separate rejection notice without claiming it was sent', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/screening-decisions/bulk/') {
+        return Promise.resolve({
+          decision_batch_id: 'decision-batch-1',
+          decisions: [{ id: 81, application: 11, decision: 'fail', reason: '当前岗位更需要企业产品经验', version: 1 }],
+        })
+      }
+      if (path === 'recruitment/rejection-notices/prepare/') return Promise.resolve({ approval_id: 'approval-1', status: 'draft', item_count: 1 })
+      if (path === 'recruitment/automation-approvals/approval-1/approve/') return Promise.resolve({ batch: { id: 'execution-1' } })
+      return baseImplementation(path, options)
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('tr[data-application-id="11"] input[type="checkbox"]').setValue(true)
+    await wrapper.get('[data-test="bulk-fail"]').trigger('click')
+    expect(wrapper.text()).not.toContain('立即发送')
+    await wrapper.get('[data-test="screening-reason"]').setValue('当前岗位更需要企业产品经验')
+    await wrapper.get('[data-test="screening-acknowledgement"]').setValue(true)
+    await wrapper.get('[data-test="queue-rejection-notice"]').trigger('click')
+    await flushPromises()
+
+    const decisionCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/screening-decisions/bulk/')
+    expect(JSON.parse(decisionCall[1].body)).toMatchObject({ job: 1, application_ids: [11], decision: 'fail', reason: '当前岗位更需要企业产品经验' })
+    const prepareCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/rejection-notices/prepare/')
+    expect(JSON.parse(prepareCall[1].body)).toMatchObject({ decision_batch_id: 'decision-batch-1' })
+    expect(apiMock).toHaveBeenCalledWith('recruitment/automation-approvals/approval-1/approve/', { method: 'POST' })
+    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('不代表消息已经发送')
+    expect(wrapper.find('[data-test="candidate-batch-bar"]').exists()).toBe(false)
+  })
+
+  it('keeps candidates and the editable form selected when the HR decision succeeds but notice preparation fails', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/screening-decisions/bulk/') return Promise.resolve({ decision_batch_id: 'decision-batch-2', decisions: [{ id: 82, application: 11, decision: 'fail', reason: '招聘名额调整', version: 1 }] })
+      if (path === 'recruitment/rejection-notices/prepare/') return Promise.reject(new Error('当前账号通知额度不足'))
+      return baseImplementation(path, options)
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('tr[data-application-id="11"] input[type="checkbox"]').setValue(true)
+    await wrapper.get('[data-test="bulk-fail"]').trigger('click')
+    await wrapper.get('[data-test="screening-reason"]').setValue('招聘名额调整')
+    await wrapper.get('[data-test="screening-acknowledgement"]').setValue(true)
+    const originalMessage = wrapper.get('[data-test="rejection-message"]').element.value
+    await wrapper.get('[data-test="queue-rejection-notice"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="decision-saved"]').text()).toContain('结论已保存')
+    expect(wrapper.get('[data-test="notification-error"]').text()).toContain('当前账号通知额度不足')
+    expect(wrapper.get('[data-test="rejection-message"]').element.value).toBe(originalMessage)
+    expect(wrapper.get('[data-test="candidate-batch-bar"]').text()).toContain('已选择 1 人')
+    expect(wrapper.get('[data-test="queue-rejection-notice"]').text()).toContain('重试加入通知队列')
+  })
+
+  it('allows an HR conclusion update but blocks the notification action for an already active notice', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options) => path === 'recruitment/screening-results/?job=1'
+      ? Promise.resolve(screeningPayload([{ ...screeningRow, notification: { status: 'running' } }]))
+      : baseImplementation(path, options))
+    const { wrapper } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('tr[data-application-id="11"] input[type="checkbox"]').setValue(true)
+    await wrapper.get('[data-test="bulk-fail"]').trigger('click')
+    await wrapper.get('[data-test="screening-reason"]').setValue('岗位匹配度不足')
+    await wrapper.get('[data-test="screening-acknowledgement"]').setValue(true)
+
+    expect(wrapper.get('[data-test="notice-duplicate-warning"]').text()).toContain('防止重复联系')
+    expect(wrapper.get('[data-test="queue-rejection-notice"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-test="save-fail-decision"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not let slow lazy detail responses overwrite a candidate selected afterwards', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    let resolveOldStructure
+    let resolveOldAssessments
+    let resolveOldTasks
+    const oldStructure = new Promise((resolve) => { resolveOldStructure = resolve })
+    const oldAssessments = new Promise((resolve) => { resolveOldAssessments = resolve })
+    const oldTasks = new Promise((resolve) => { resolveOldTasks = resolve })
+    const secondRow = {
+      ...screeningRow,
+      rank: 2,
+      application: { ...screeningRow.application, id: 12 },
+      candidate: { id: 22, name: '陈沐', current_title: '产品运营', current_city: '杭州' },
+      resume: { ...resume, id: 32, application: 12, candidate: 22, candidate_name: '陈沐' },
+      structure: { ...structureSummary, id: 42, resume: 32 },
+      assessment: { ...assessmentSummary, id: 52, structured_resume: 42, total_score: 79 },
+    }
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/screening-results/?job=1') return Promise.resolve(screeningPayload([screeningRow, secondRow]))
+      if (path === 'recruitment/structured-resumes/?resume=31') return oldStructure
+      if (path === 'recruitment/resume-assessments/?resume=31') return oldAssessments
+      if (path === 'recruitment/ai-tasks/?resume=31') return oldTasks
+      if (path === 'recruitment/structured-resumes/?resume=32') return Promise.resolve({ results: [{ ...structure, id: 42, resume: 32, data: { ...structure.data, summary: '快速切换后的新详情' } }] })
+      if (path === 'recruitment/resume-assessments/?resume=32') return Promise.resolve({ results: [{ ...assessment, id: 52, resume: 32, structured_resume: 42, total_score: 79 }] })
+      if (path === 'recruitment/ai-tasks/?resume=32') return Promise.resolve({ results: [] })
+      return baseImplementation(path, options)
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="view-candidate-11"]').trigger('click')
+    await Promise.resolve()
+    await wrapper.get('[data-test="view-candidate-12"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="tab-structured"]').trigger('click')
+    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('快速切换后的新详情')
+
+    resolveOldStructure({ results: [{ ...structure, data: { ...structure.data, summary: '不应覆盖的新旧冲突详情' } }] })
+    resolveOldAssessments({ results: [assessment] })
+    resolveOldTasks({ results: [] })
+    await flushPromises()
+    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('快速切换后的新详情')
+    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).not.toContain('不应覆盖的新旧冲突详情')
   })
 })
