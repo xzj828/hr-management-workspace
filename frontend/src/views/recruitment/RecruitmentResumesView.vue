@@ -3,7 +3,6 @@ import { computed, inject, onUnmounted, ref, watch } from 'vue'
 import { routeLocationKey } from 'vue-router'
 import { api, listItems } from '@/api'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
-import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { formatFileSize, formatRecruitmentDate } from '@/recruitment'
@@ -266,7 +265,7 @@ async function toggleArchiveView() {
         <h2>简历中心</h2>
         <p>{{ currentJob ? `${currentJob.title} · 统一管理 BOSS 在线简历与候选人 PDF 附件` : '选择职位后查看对应简历资产' }}</p>
       </div>
-      <div v-if="currentJob" class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-resumes" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前简历' : '归档记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="loadResumes" /></div>
+      <div v-if="currentJob" class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-resumes" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前简历' : '归档记录' }}</button></div>
     </header>
 
     <section v-if="!currentJob" class="panel job-context-required"><AppIcon name="document" :size="25" /><div><strong>请先选择在招职位</strong><p>简历按候选人的应聘职位归档，选择职位后才能预览和管理。</p></div></section>

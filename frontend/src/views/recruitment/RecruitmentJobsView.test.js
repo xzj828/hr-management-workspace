@@ -9,7 +9,6 @@ vi.mock('@/api', () => ({
   listItems: (payload) => Array.isArray(payload) ? payload : payload?.results || [],
 }))
 
-import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 import RecruitmentJobsView from './RecruitmentJobsView.vue'
@@ -59,14 +58,12 @@ describe('RecruitmentJobsView', () => {
     expect(wrapper.text()).toContain('内部演示数据')
   })
 
-  it('reloads jobs after demo data changes', async () => {
+  it('does not expose demo data controls', async () => {
     const wrapper = mount(RecruitmentJobsView)
     await flushPromises()
 
-    wrapper.getComponent(RecruitmentDemoMenu).vm.$emit('changed')
-    await flushPromises()
-
-    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/jobs/')).toHaveLength(2)
+    expect(wrapper.find('[data-test="demo-trigger"]').exists()).toBe(false)
+    expect(apiMock.mock.calls.some(([path]) => path === 'recruitment/demo-data/')).toBe(false)
   })
 
   it('runs one-click position sync and shows persisted counts', async () => {

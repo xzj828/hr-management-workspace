@@ -3,7 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api, listItems } from '@/api'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
-import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import ModalPanel from '@/components/ModalPanel.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -95,7 +94,6 @@ watch(
         <h2>招聘流程</h2>
         <p>{{ currentJob ? `${currentJob.title} · ${applications.length} 位候选人 / 招聘目标 ${currentJob.headcount || '未设置'} 人` : '选择职位后查看对应招聘流程' }}</p>
       </div>
-      <RecruitmentDemoMenu v-if="currentJob" @changed="loadApplications" />
     </header>
 
     <section v-if="!currentJob" class="panel job-context-required"><AppIcon name="workflow" :size="25" /><div><strong>请先选择在招职位</strong><p>招聘流程按职位独立推进，不再混合展示全部候选人。</p></div></section>
