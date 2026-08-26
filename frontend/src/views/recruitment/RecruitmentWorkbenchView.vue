@@ -817,7 +817,7 @@ onMounted(loadWorkbench)
       <div>
         <span class="eyebrow">Recruitment Workbench</span>
         <h2>招聘作业台</h2>
-        <p>在一个页面准备岗位依据、招聘要求和执行方案，确认无阻塞后发起自动化。</p>
+        <p>按步骤确认职位、补充岗位依据并设置执行方案，最后统一检查后发起自动化。</p>
       </div>
       <span :class="['workbench-runtime', { 'is-ready': runtimeReady }]">
         <i></i>{{ runtimeReady ? '自动化服务已就绪' : '自动化服务待检查' }}
@@ -832,11 +832,37 @@ onMounted(loadWorkbench)
     </section>
 
     <template v-else>
-      <div class="workbench-layout">
+      <nav class="workbench-wizard" aria-label="招聘作业步骤">
+        <button
+          v-for="step in wizardSteps"
+          :key="step.key"
+          :class="['workbench-wizard__step', { 'is-current': currentStep === step.key, 'is-complete': completedSteps[step.key] }]"
+          :data-test="`wizard-step-${step.key}`"
+          type="button"
+          :disabled="!step.reachable || uploading || submitting"
+          :aria-current="currentStep === step.key ? 'step' : undefined"
+          @click="navigateWizardStep(step.key)"
+        >
+          <span>{{ step.number }}</span>
+          <strong>{{ step.label }}</strong>
+          <small v-if="completedSteps[step.key]">已完成</small>
+          <small v-else-if="currentStep === step.key">进行中</small>
+          <small v-else>{{ step.reachable ? '可查看' : '完成上一步后开放' }}</small>
+        </button>
+      </nav>
+
+      <p v-if="wizardError" class="workbench-error" role="alert">{{ wizardError }}</p>
+
+      <div :class="['workbench-layout', { 'workbench-layout--single': currentStep !== 'plan' }]">
         <main class="panel workbench-main">
-          <section class="workbench-section workbench-section--context" aria-labelledby="workbench-context-title">
+          <section
+            v-if="currentStep === 'context'"
+            class="workbench-section workbench-section--context"
+            data-test="workbench-step-context"
+            aria-labelledby="workbench-context-title"
+          >
             <header class="workbench-section-heading">
-              <div><span>STEP 01</span><h3 id="workbench-context-title">选择本次作业</h3></div>
+              <div><span>STEP 01</span><h3 id="workbench-context-title" ref="stepHeading" tabindex="-1">选择本次作业</h3></div>
               <p>职位与 BOSS 账号必须属于同一授权范围。</p>
             </header>
             <div class="workbench-context-grid">
@@ -868,28 +894,59 @@ onMounted(loadWorkbench)
                 前往管理后台处理 <AppIcon name="arrow-right" :size="14" />
               </router-link>
             </div>
+            <footer class="workbench-step-actions workbench-step-actions--forward">
+              <span>确认职位与执行账号后，进入岗位依据和招聘要求。</span>
+              <button
+                class="secondary-button workbench-next"
+                data-test="complete-context-step"
+                type="button"
+                :disabled="!contextStepComplete || uploading || submitting"
+                @click="completeContextStep"
+              >
+                下一步：招聘标准 <AppIcon name="arrow-right" :size="16" />
+              </button>
+            </footer>
           </section>
 
-          <section class="workbench-section" aria-labelledby="workbench-standard-title">
+          <section
+            v-else-if="currentStep === 'standard'"
+            class="workbench-section"
+            data-test="workbench-step-standard"
+            aria-labelledby="workbench-standard-title"
+          >
             <header class="workbench-section-heading">
-              <div><span>STEP 02</span><h3 id="workbench-standard-title">招聘标准</h3></div>
+              <div><span>STEP 02</span><h3 id="workbench-standard-title" ref="stepHeading" tabindex="-1">招聘标准</h3></div>
               <p>画像与需求文件将归档到当前职位；文字要求同时用于主动寻访。</p>
             </header>
 
-            <div class="workbench-upload">
-              <div class="workbench-upload__copy">
-                <i><AppIcon name="document" :size="21" /></i>
-                <div><strong>岗位依据文件</strong><small>支持一次选择多个 DOC、DOCX 或 XLSX，系统按文件逐个归档。</small></div>
+            <div class="workbench-upload-kind">
+              <div>
+                <strong>岗位依据文件</strong>
+                <small>文件会归档到“{{ selectedJob?.title }}”，并作为下一阶段标准提取与简历评分的依据。</small>
               </div>
-              <div class="workbench-upload__actions">
-                <label>
-                  <span class="sr-only">文档用途</span>
-                  <select v-model="documentCategory" data-test="document-category" :disabled="uploading || submitting">
-                    <option value="persona">候选人画像</option>
-                    <option value="requirement">招聘需求</option>
-                    <option value="other">其他标准</option>
-                  </select>
-                </label>
+              <label>
+                <span>本批文件用途</span>
+                <select v-model="documentCategory" data-test="document-category" :disabled="uploading || submitting">
+                  <option value="persona">候选人画像</option>
+                  <option value="requirement">招聘需求</option>
+                  <option value="other">其他标准</option>
+                </select>
+              </label>
+            </div>
+
+            <label
+              :class="['workbench-drop-zone', { 'is-dragging': dragging, 'is-uploading': uploading }]"
+              data-test="workbench-drop-zone"
+              @dragenter.prevent="dragging = true"
+              @dragover.prevent="dragging = true"
+              @dragleave.prevent="dragging = false"
+              @drop.prevent="dropDocuments"
+            >
+              <span class="workbench-drop-zone__icon"><AppIcon name="upload" :size="24" /></span>
+              <strong data-test="workbench-upload">
+                {{ uploading ? `正在上传 ${uploadProgress.completed}/${uploadProgress.total}` : '拖入文件，或点击选择' }}
+              </strong>
+              <small>支持 DOC、DOCX、XLSX，可一次选择多个；单文件最大 25MB</small>
                 <input
                   ref="fileInput"
                   data-test="workbench-file-input"
@@ -897,14 +954,23 @@ onMounted(loadWorkbench)
                   accept=".doc,.docx,.xlsx"
                   multiple
                   hidden
-                  @change="uploadDocuments"
+                  :disabled="!selectedJob || uploading || submitting"
+                  @change="selectDocuments"
                 />
-                <button class="secondary-button" data-test="workbench-upload" type="button" :disabled="!selectedJob || uploading || submitting" @click="fileInput?.click()">
-                  <AppIcon name="upload" :size="16" />
-                  {{ uploading ? `上传中 ${uploadProgress.completed}/${uploadProgress.total}` : '添加依据文件' }}
-                </button>
-              </div>
-            </div>
+            </label>
+
+            <ul v-if="uploadQueue.length" class="workbench-upload-queue" aria-live="polite" aria-label="文件上传状态">
+              <li v-for="item in uploadQueue" :key="item.id" :class="`is-${item.status}`" :data-test="`upload-file-${item.status}`">
+                <i><AppIcon :name="item.status === 'succeeded' ? 'check-circle' : (item.status === 'failed' ? 'alert-circle' : 'document')" :size="17" /></i>
+                <span>
+                  <strong>{{ item.name }}</strong>
+                  <small v-if="item.status === 'pending'">等待上传</small>
+                  <small v-else-if="item.status === 'uploading'">正在上传…</small>
+                  <small v-else-if="item.status === 'succeeded'">已上传</small>
+                  <small v-else>{{ item.error }}</small>
+                </span>
+              </li>
+            </ul>
 
             <p v-if="documentError" class="workbench-inline-error" role="alert">{{ documentError }}</p>
             <div class="workbench-documents" aria-live="polite">
@@ -934,11 +1000,32 @@ onMounted(loadWorkbench)
                 <small>已识别 {{ bonusItems.length }}/10 项。</small>
               </label>
             </div>
+
+            <footer class="workbench-step-actions">
+              <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="uploading || submitting" @click="previousStep">
+                上一步
+              </button>
+              <span>文件可稍后补充；确认文字要求后进入执行方案。</span>
+              <button
+                class="secondary-button workbench-next"
+                data-test="complete-standard-step"
+                type="button"
+                :disabled="uploading || submitting"
+                @click="completeStandardStep"
+              >
+                下一步：执行方案 <AppIcon name="arrow-right" :size="16" />
+              </button>
+            </footer>
           </section>
 
-          <section class="workbench-section" aria-labelledby="workbench-scheme-title">
+          <section
+            v-else
+            class="workbench-section"
+            data-test="workbench-step-plan"
+            aria-labelledby="workbench-scheme-title"
+          >
             <header class="workbench-section-heading">
-              <div><span>STEP 03</span><h3 id="workbench-scheme-title">执行方案</h3></div>
+              <div><span>STEP 03</span><h3 id="workbench-scheme-title" ref="stepHeading" tabindex="-1">执行方案</h3></div>
               <p>选择一个业务目标，再设置本次运行参数。</p>
             </header>
 
@@ -1010,10 +1097,17 @@ onMounted(loadWorkbench)
                 <small>必须不少于目标简历数，最多 100 人。</small>
               </label>
             </div>
+
+            <footer class="workbench-step-actions workbench-step-actions--previous-only">
+              <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="submitting" @click="previousStep">
+                上一步
+              </button>
+              <span>回到招聘标准不会提交任务；正式执行只会由右侧按钮触发。</span>
+            </footer>
           </section>
         </main>
 
-        <aside class="panel workbench-review" aria-labelledby="workbench-review-title">
+        <aside v-if="currentStep === 'plan'" class="panel workbench-review" aria-labelledby="workbench-review-title">
           <header class="workbench-section-heading">
             <div><span>FINAL CHECK</span><h3 id="workbench-review-title">执行前检查</h3></div>
           </header>
