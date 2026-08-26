@@ -23,6 +23,42 @@ SENSITIVE_CRITERIA_KEYS = {"age", "ethnicity", "gender", "marital_status", "preg
 SENSITIVE_CRITERIA_TERMS = ("性别", "年龄", "民族", "婚育", "婚姻", "怀孕", "生育")
 
 
+def normalize_priority_scoring_weights(dimensions, hard_requirements):
+    """把重点项适配为评分维度，重点项权重按普通维度平均权重的 2 倍计算，
+    再与普通维度一起等比例归一化为总计 100 分。
+
+    返回与 ``[*dimensions, *hard_requirements]`` 对齐的整数权重列表（合计精确为 100）。
+    无重点项时，普通维度按原比例归一化到 100。
+    """
+    ordinary = []
+    for item in dimensions or []:
+        try:
+            weight = Decimal(str(item.get("weight")))
+        except (InvalidOperation, TypeError, ValueError):
+            weight = Decimal("0")
+        ordinary.append(max(weight, Decimal("0")))
+    priorities = list(hard_requirements or [])
+    ordinary_total = sum(ordinary)
+    if not priorities:
+        raw_weights = ordinary
+    elif ordinary_total == 0:
+        raw_weights = [Decimal("1")] * len(priorities)
+    else:
+        average = ordinary_total / len(ordinary)
+        raw_weights = ordinary + [average * 2] * len(priorities)
+
+    total = sum(raw_weights)
+    if total == 0:
+        return [0] * (len(ordinary) + len(priorities))
+    exact = [weight * Decimal("100") / total for weight in raw_weights]
+    floored = [int(value) for value in exact]
+    remainder = 100 - sum(floored)
+    order = sorted(range(len(exact)), key=lambda index: exact[index] - floored[index], reverse=True)
+    for position in range(remainder):
+        floored[order[position % len(order)]] += 1
+    return floored
+
+
 def _contains_sensitive_criterion(*values) -> bool:
     text = " ".join(str(value or "") for value in values).lower()
     return any(term in text for term in SENSITIVE_CRITERIA_TERMS) or bool(
@@ -47,7 +83,8 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
         "summary": str(criteria.get("summary") or "").strip(),
         "dimensions": criteria.get("dimensions") or [],
         "hard_requirements": criteria.get("hard_requirements") or [],
-        "auto_reject_on_hard_fail": auto_reject,
+        # 自动淘汰已停用：即使历史标准曾开启，运行时也一律视为关闭。
+        "auto_reject_on_hard_fail": False,
         "required": criteria.get("required") or [],
         "preferred": criteria.get("preferred") or [],
         "risks": criteria.get("risks") or [],
@@ -113,11 +150,6 @@ def validate_criteria(criteria: dict, *, allowed_evidence_ids: set[str], require
                 raise ValueError("硬性指标自动判定规则不完整或不受支持")
             item["rule"] = {"field": field, "operator": operator, "value": rule["value"]}
         hard_keys.add(key)
-    if normalized["auto_reject_on_hard_fail"] and any(not item.get("rule") for item in normalized["hard_requirements"]):
-        raise ValueError(
-            "启用确定性硬性条件冲突标记前，每个硬性指标都必须配置可确定判定的字段、条件和阈值；"
-            "冲突仅供 HR 确认，不改变招聘阶段"
-        )
     for group in ("required", "preferred", "risks"):
         for item in normalized[group]:
             if _contains_sensitive_criterion(*item.values()):

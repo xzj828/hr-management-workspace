@@ -14,6 +14,7 @@ from recruitment.models import (
 )
 from recruitment.services.job_standards import (
     create_standard_draft,
+    normalize_priority_scoring_weights,
     publish_standard,
     update_standard_draft,
     validate_criteria,
@@ -158,7 +159,7 @@ class JobStandardServiceTests(TestCase):
         normalized = validate_criteria(
             criteria, allowed_evidence_ids={self.block_id}, require_publishable=True,
         )
-        self.assertTrue(normalized["auto_reject_on_hard_fail"])
+        self.assertFalse(normalized["auto_reject_on_hard_fail"])
         self.assertEqual(normalized["hard_requirements"][0]["key"], "degree")
 
         criteria["hard_requirements"][0]["key"] = "age"
@@ -175,6 +176,24 @@ class JobStandardServiceTests(TestCase):
         criteria["auto_reject_on_hard_fail"] = "false"
         with self.assertRaisesRegex(ValueError, "确定性硬性条件核验"):
             validate_criteria(criteria, allowed_evidence_ids={self.block_id}, require_publishable=True)
+
+    def test_priority_scoring_weights_are_double_and_normalized_to_100(self):
+        dimensions = [
+            {"key": "a", "weight": 30},
+            {"key": "b", "weight": 70},
+        ]
+        priorities = [{"key": "priority", "text": "重点项"}]
+        weights = normalize_priority_scoring_weights(dimensions, priorities)
+        self.assertEqual(weights, [15, 35, 50])
+        self.assertEqual(sum(weights), 100)
+
+    def test_priority_scoring_weights_without_priorities_keeps_ratio(self):
+        weights = normalize_priority_scoring_weights(
+            [{"key": "a", "weight": 60}, {"key": "b", "weight": 40}],
+            [],
+        )
+        self.assertEqual(weights, [60, 40])
+        self.assertEqual(sum(weights), 100)
 
 
 class JobStandardApiTests(APITestCase):

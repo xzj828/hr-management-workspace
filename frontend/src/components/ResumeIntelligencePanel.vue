@@ -105,7 +105,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <template v-if="assessment">
             <header class="assessment-summary"><div><span>综合得分</span><strong>{{ Number(assessment.total_score) }}</strong><small>/ 100</small></div><div><span class="recommendation-note">AI 建议，需 HR 复核</span><h3>{{ assessment.recommendation_label }}</h3><p>置信度 {{ Math.round(Number(assessment.confidence) * 100) }}%</p></div></header>
             <div class="assessment-dimensions">
-              <article v-for="failure in assessment.hard_failures || []" :key="`hard-${failure.criterion_key}`" class="hard-failure-card"><header><strong>硬性指标未满足 · {{ failure.text }}</strong><span>需 HR 复核</span></header><p>{{ failure.reason }}</p><div class="evidence-chips"><button v-for="blockId in failure.resume_evidence_block_ids" :key="blockId" :data-test="`evidence-${blockId}`" @click="showEvidence(blockId)">{{ blockId }}</button></div></article>
+              <article v-for="failure in assessment.hard_failures || []" :key="`hard-${failure.criterion_key}`" class="hard-failure-card"><header><strong>重点项差距 · {{ failure.text }}</strong><span>重点评分项</span></header><p>{{ failure.reason }}</p><div class="evidence-chips"><button v-for="blockId in failure.resume_evidence_block_ids" :key="blockId" :data-test="`evidence-${blockId}`" @click="showEvidence(blockId)">{{ blockId }}</button></div></article>
               <article v-for="dimension in assessment.dimension_scores" :key="dimension.criterion_key">
                 <header><strong>{{ dimension.criterion_name || dimension.criterion_key }}</strong><span>{{ dimension.score }} / {{ dimension.max_score }}</span></header>
                 <div class="score-track"><i :style="{ width: `${Math.min(100, (Number(dimension.score) / Math.max(1, Number(dimension.max_score))) * 100)}%` }"></i></div>
@@ -124,7 +124,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <div v-if="!assessment" class="intelligence-empty"><h3>暂无评分历史</h3><p>每次重新评分都会保留独立版本。</p></div>
         </section>
       </main>
-      <footer class="intelligence-panel__footer"><span>{{ assessment?.auto_rejected ? '历史记录含硬性条件冲突，仍需 HR 人工确认' : '不会自动淘汰或推进候选人' }}</span><button v-if="assessment" class="secondary-button" @click="emit('rescore')">重新评分</button><a v-if="resume.file_available !== false && resume.download_url" class="ghost-button" :href="resume.download_url">下载原文件</a></footer>
+      <footer class="intelligence-panel__footer"><span>评分仅作参考，不会自动淘汰或推进候选人</span><button v-if="assessment" class="secondary-button" @click="emit('rescore')">重新评分</button><a v-if="resume.file_available !== false && resume.download_url" class="ghost-button" :href="resume.download_url">下载原文件</a></footer>
     </aside>
   </div>
 </template>

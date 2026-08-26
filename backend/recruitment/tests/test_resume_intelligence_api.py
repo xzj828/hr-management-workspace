@@ -393,7 +393,7 @@ class ResumeAssessmentServiceTests(TestCase):
         self.assertEqual(first.pk, second.pk)
         self.assertEqual(ResumeAssessment.objects.count(), 1)
 
-    def test_explicit_hard_requirement_failure_remains_hr_review_evidence(self):
+    def test_explicit_hard_requirement_failure_never_rejects_or_forces_hold(self):
         criteria = scoring_criteria()
         criteria["hard_requirements"] = [
             {"key": "experience", "text": "至少 6 年工作经验", "evidence_block_ids": [],
@@ -403,6 +403,7 @@ class ResumeAssessmentServiceTests(TestCase):
         JobStandardVersion.objects.filter(pk=self.standard.pk).update(criteria=criteria)
         self.standard.refresh_from_db()
         payload = assessment_payload(self.block_id)
+        payload["recommendation"] = "advance"
         payload["hard_requirement_results"] = [{
             "criterion_key": "experience",
             "status": "not_met",
@@ -419,8 +420,8 @@ class ResumeAssessmentServiceTests(TestCase):
         )
 
         self.structured.resume.application.refresh_from_db()
-        self.assertEqual(assessment.recommendation, "hold")
         self.assertFalse(assessment.auto_rejected)
+        self.assertEqual(assessment.recommendation, "advance")
         self.assertEqual(self.structured.resume.application.stage, JobApplication.Stage.NEW)
         self.assertEqual(assessment.hard_failures[0]["criterion_key"], "experience")
 
