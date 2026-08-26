@@ -9,22 +9,20 @@ const props = defineProps({
   documents: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['close', 'saved', 'published', 'retry'])
-const form = reactive({ summary: '', dimensions: [], hard_requirements: [], auto_reject_on_hard_fail: false, required: [], preferred: [], risks: [], unresolved_questions: [] })
+const form = reactive({ summary: '', dimensions: [], hard_requirements: [], required: [], preferred: [], risks: [], unresolved_questions: [] })
 const saving = ref(false)
 const error = ref('')
 const confirmPublish = ref(false)
 const menuOpen = ref(false)
 const isDraft = computed(() => props.standard?.status === 'draft')
 const totalWeight = computed(() => form.dimensions.reduce((sum, item) => sum + Number(item.weight || 0), 0))
-const hardRulesComplete = computed(() => !form.auto_reject_on_hard_fail || form.hard_requirements.every((item) => item.rule?.field && item.rule?.operator && String(item.rule?.value ?? '').trim()))
-const canPublish = computed(() => isDraft.value && form.dimensions.length > 0 && Math.abs(totalWeight.value - 100) < 0.001 && hardRulesComplete.value)
+const canPublish = computed(() => isDraft.value && form.dimensions.length > 0 && Math.abs(totalWeight.value - 100) < 0.001)
 
 function hydrate() {
   const criteria = props.standard?.criteria || {}
   form.summary = criteria.summary || ''
   form.dimensions = (criteria.dimensions || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])] }))
   form.hard_requirements = (criteria.hard_requirements || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])], rule: item.rule ? { ...item.rule } : { field: 'total_experience_months', operator: 'gte', value: '' } }))
-  form.auto_reject_on_hard_fail = criteria.auto_reject_on_hard_fail === true
   form.required = [...(criteria.required || [])]
   form.preferred = [...(criteria.preferred || [])]
   form.risks = [...(criteria.risks || [])]
@@ -51,7 +49,6 @@ function payload() {
     criteria: {
       summary: form.summary.trim(), dimensions: form.dimensions.map((item) => ({ ...item, weight: Number(item.weight || 0) })),
       hard_requirements: form.hard_requirements.map((item) => ({ ...item, text: item.text.trim(), rule: normalizeRule(item.rule) })),
-      auto_reject_on_hard_fail: form.auto_reject_on_hard_fail,
       required: form.required, preferred: form.preferred, risks: form.risks,
     },
     unresolved_questions: form.unresolved_questions,
@@ -92,9 +89,8 @@ async function publish() {
           <div class="standard-status-line"><span :class="['standard-state', `standard-state--${standard.status}`]">{{ standard.status_label }}</span><span>{{ documents.length }} 份来源文档</span><span>{{ standard.model_name || '待模型生成' }}</span></div>
           <label class="standard-field standard-field--summary"><span>岗位目标摘要</span><textarea v-model="form.summary" rows="3" :disabled="!isDraft" placeholder="说明这个岗位真正要解决的问题" /></label>
           <section class="hard-requirements">
-            <header><div><span class="panel-kicker">HARD GATES</span><h3>硬性指标</h3><p>只有简历出现明确反证才视为不满足；没有写明会交给 HR 核实。</p></div><button v-if="isDraft" class="secondary-button" data-test="add-hard-requirement" @click="addHardRequirement">添加指标</button></header>
-            <article v-for="(item, index) in form.hard_requirements" :key="item.key"><span>{{ String(index + 1).padStart(2, '0') }}</span><label><small>指标标识</small><input v-model.trim="item.key" :disabled="!isDraft" placeholder="例如 degree" /></label><label><small>淘汰条件</small><input v-model.trim="item.text" :disabled="!isDraft" placeholder="例如：学历低于本科" /></label><button v-if="isDraft" :data-test="`remove-hard-requirement-${index}`" aria-label="删除硬性指标" @click="removeHardRequirement(index)">×</button><div v-if="form.auto_reject_on_hard_fail" class="hard-rule"><label><small>自动判定字段</small><select v-model="item.rule.field" :disabled="!isDraft" @change="item.rule.operator = ruleOperators(item.rule.field)[0].value; item.rule.value = ''"><option value="total_experience_months">工作经验（月）</option><option value="highest_degree">最高学历</option><option value="skills">技能</option><option value="city">所在城市</option></select></label><label><small>条件</small><select v-model="item.rule.operator" :disabled="!isDraft"><option v-for="operator in ruleOperators(item.rule.field)" :key="operator.value" :value="operator.value">{{ operator.label }}</option></select></label><label><small>阈值（多个用逗号）</small><input v-model="item.rule.value" :disabled="!isDraft" placeholder="例如 36 / 本科 / Java,Vue" /></label></div></article>
-            <label v-if="form.hard_requirements.length" class="hard-reject-toggle"><input v-model="form.auto_reject_on_hard_fail" type="checkbox" :disabled="!isDraft" /><span><strong>明确不满足时自动淘汰</strong><small>会改变招聘阶段并记录触发指标与原文证据；信息不足不会触发。</small></span></label>
+            <header><div><span class="panel-kicker">PRIORITY SCORING</span><h3>重点评分项</h3><p>重点项默认按普通维度平均权重的 2 倍权重评分；不满足只影响得分，不淘汰候选人。</p></div><button v-if="isDraft" class="secondary-button" data-test="add-hard-requirement" @click="addHardRequirement">添加重点项</button></header>
+            <article v-for="(item, index) in form.hard_requirements" :key="item.key"><span>{{ String(index + 1).padStart(2, '0') }}</span><label><small>重点项标识</small><input v-model.trim="item.key" :disabled="!isDraft" placeholder="例如 degree" /></label><label><small>重点项要求</small><input v-model.trim="item.text" :disabled="!isDraft" placeholder="例如：学历不低于本科" /></label><button v-if="isDraft" :data-test="`remove-hard-requirement-${index}`" aria-label="删除重点项" @click="removeHardRequirement(index)">×</button><div class="hard-rule"><label><small>结构化判定字段</small><select v-model="item.rule.field" :disabled="!isDraft" @change="item.rule.operator = ruleOperators(item.rule.field)[0].value; item.rule.value = ''"><option value="total_experience_months">工作经验（月）</option><option value="highest_degree">最高学历</option><option value="skills">技能</option><option value="city">所在城市</option></select></label><label><small>条件</small><select v-model="item.rule.operator" :disabled="!isDraft"><option v-for="operator in ruleOperators(item.rule.field)" :key="operator.value" :value="operator.value">{{ operator.label }}</option></select></label><label><small>阈值（多个用逗号）</small><input v-model="item.rule.value" :disabled="!isDraft" placeholder="例如 36 / 本科 / Java,Vue" /></label></div></article>
           </section>
           <section class="standard-dimensions">
             <header><div><span class="panel-kicker">SCORING DIMENSIONS</span><h3>评分维度</h3></div><strong data-test="weight-total" :class="{ invalid: totalWeight !== 100 }">{{ totalWeight }} / 100</strong></header>
@@ -113,13 +109,13 @@ async function publish() {
 
       <footer v-if="standard" class="standard-drawer__footer">
         <div class="standard-more"><button class="ghost-button" aria-label="更多操作" @click="menuOpen = !menuOpen">···</button><div v-if="menuOpen"><button @click="emit('retry')">重新生成草稿</button><button disabled>查看历史版本</button></div></div>
-        <span v-if="isDraft && totalWeight !== 100">权重合计必须为 100 才能启用</span><span v-else-if="isDraft && !hardRulesComplete">自动淘汰需补全每项确定性规则</span>
+        <span v-if="isDraft && totalWeight !== 100">权重合计必须为 100 才能启用</span>
         <button v-if="isDraft" class="secondary-button" data-test="save-standard" :disabled="saving" @click="save">保存草稿</button>
         <button v-if="isDraft" class="primary-button" data-test="publish-standard" :disabled="saving || !canPublish" @click="confirmPublish = true">确认并启用</button>
       </footer>
 
       <div v-if="confirmPublish" class="standard-confirm" data-test="publish-confirm">
-        <div><span class="eyebrow">FINAL CHECK</span><h3>启用这份评分标准？</h3><p>启用后内容将锁定，后续简历评分会严格引用此版本。{{ form.auto_reject_on_hard_fail ? '明确违反硬性指标时将自动淘汰，并写入审计记录。' : 'AI 建议不会自动改变候选人阶段。' }}</p><div><button class="ghost-button" @click="confirmPublish = false">返回检查</button><button class="primary-button" data-test="confirm-publish-standard" :disabled="saving" @click="publish">确认启用</button></div></div>
+        <div><span class="eyebrow">FINAL CHECK</span><h3>启用这份评分标准？</h3><p>启用后内容将锁定，后续简历评分会严格引用此版本。AI 建议不会自动改变候选人阶段。</p><div><button class="ghost-button" @click="confirmPublish = false">返回检查</button><button class="primary-button" data-test="confirm-publish-standard" :disabled="saving" @click="publish">确认启用</button></div></div>
       </div>
     </aside>
   </div>

@@ -37,7 +37,9 @@ describe('JobStandardDrawer', () => {
     await wrapper.get('[data-test="add-dimension"]').trigger('click')
     expect(wrapper.find('[data-test="dimension-weight-1"]').exists()).toBe(true)
     await wrapper.get('[data-test="add-hard-requirement"]').trigger('click')
-    expect(wrapper.text()).toContain('明确不满足时自动淘汰')
+    expect(wrapper.text()).toContain('重点评分项')
+    expect(wrapper.text()).toContain('2 倍权重')
+    expect(wrapper.text()).not.toContain('明确不满足时自动淘汰')
   })
 
   it('saves a draft and requires explicit publish confirmation', async () => {

@@ -372,8 +372,6 @@ def validate_assessment_payload(*, payload: dict, standard: JobStandardVersion, 
     if recommendation not in ResumeAssessment.Recommendation.values:
         raise ValueError("筛选建议无效")
     hard_failures = [item for item in normalized_hard if item["status"] == "not_met"]
-    if hard_failures:
-        recommendation = ResumeAssessment.Recommendation.HOLD
     gaps = payload.get("gaps") or []
     questions = payload.get("verification_questions") or []
     if not isinstance(gaps, list) or not isinstance(questions, list):
@@ -402,7 +400,7 @@ def build_assessment_prompt(*, standard, structured):
             "resume_blocks": _redact_for_scoring(structured.extraction.blocks),
             "allowed_recommendations": list(ResumeAssessment.Recommendation.values),
             "hard_requirements": standard.criteria.get("hard_requirements", []),
-            "hard_requirement_rule": "只有简历原文明确证明不满足时返回 not_met；没写或无法判断必须返回 information_missing",
+            "hard_requirement_rule": "这些是重点评分项，只用于记录差距，不是淘汰门槛，绝不据此改变筛选建议。只有简历原文明确证明不满足时返回 not_met；没写或无法判断必须返回 information_missing",
             "required_dimension_fields": [
                 "criterion_key", "score", "max_score", "status", "reason", "resume_evidence_block_ids"
             ],
@@ -454,26 +452,9 @@ def create_assessment(*, structured, standard, gateway, request_id, actor=None) 
         standard=standard, structured=structured, model_results=assessment.hard_failures
     )
     if deterministic_failures:
+        # 重点项差距只用于记录与展示，不强制改为暂缓，也不自动改变候选人阶段。
         assessment.hard_failures = deterministic_failures
-        assessment.recommendation = ResumeAssessment.Recommendation.HOLD
-        assessment.save(update_fields=["hard_failures", "recommendation"])
-    if (
-        deterministic_failures
-        and standard.criteria.get("auto_reject_on_hard_fail") is True
-        and structured.resume.application_id
-    ):
-        from recruitment.services.stages import reject_for_hard_requirements
-        assessment.auto_rejected = reject_for_hard_requirements(
-            application=structured.resume.application,
-            actor=actor,
-            failure_keys=[item["criterion_key"] for item in deterministic_failures],
-        )
-        assessment.save(update_fields=["auto_rejected"])
-        RecruitmentAuditLog.objects.create(
-            actor=actor, boss_account=standard.job.boss_account,
-            action="hard_requirement_auto_rejected", target_id=str(assessment.pk),
-            detail={"failures": deterministic_failures},
-        )
+        assessment.save(update_fields=["hard_failures"])
     RecruitmentAuditLog.objects.create(
         actor=actor,
         boss_account=standard.job.boss_account,

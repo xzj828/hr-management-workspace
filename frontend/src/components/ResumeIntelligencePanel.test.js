@@ -12,6 +12,7 @@ const structure = {
 const assessment = {
   id: 21, version: 1, total_score: '78.00', confidence: '0.820', recommendation: 'review', recommendation_label: '建议人工复核',
   dimension_scores: [{ criterion_key: 'experience', score: 38, max_score: 50, status: 'supported', reason: '相关经验明确', resume_evidence_block_ids: ['resume-1-block-2'] }],
+  hard_failures: [{ criterion_key: 'degree', text: '本科及以上', reason: '学历信息不足', resume_evidence_block_ids: ['resume-1-block-2'] }],
   gaps: ['缺少团队规模'], verification_questions: ['请核实团队规模'], evidence: [],
 }
 
@@ -29,6 +30,9 @@ describe('ResumeIntelligencePanel', () => {
     await wrapper.get('[data-test="tab-evidence"]').trigger('click')
     expect(wrapper.text()).toContain('78')
     expect(wrapper.text()).toContain('AI 建议，需 HR 复核')
+    expect(wrapper.text()).toContain('重点评分项')
+    expect(wrapper.text()).toContain('重点项差距')
+    expect(wrapper.text()).not.toContain('淘汰条件')
     await wrapper.get('[data-test="evidence-resume-1-block-2"]').trigger('click')
     expect(wrapper.get('[data-test="tab-original"]').attributes('aria-selected')).toBe('true')
     expect(wrapper.text()).toContain('resume-1-block-2')
