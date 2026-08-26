@@ -6,7 +6,6 @@ import AppIcon from '@/components/AppIcon.vue'
 import CandidateDiscoveryCard from '@/components/CandidateDiscoveryCard.vue'
 import CommunicationConfirmDrawer from '@/components/CommunicationConfirmDrawer.vue'
 import DeepMatchConfirmDrawer from '@/components/DeepMatchConfirmDrawer.vue'
-import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import TaskProgressBar from '@/components/TaskProgressBar.vue'
 import ModalPanel from '@/components/ModalPanel.vue'
@@ -82,11 +81,6 @@ async function loadWorkspace() {
   if (!currentJob.value) return
   error.value = ''
   await Promise.all([loadApplications(), loadDiscoveries()])
-}
-
-async function handleDemoChanged() {
-  await context.loadJobs({ userId: context.loadedUserId, force: true })
-  await loadWorkspace()
 }
 
 function stopPolling() { if (pollTimer) window.clearTimeout(pollTimer); pollTimer = null }
@@ -252,7 +246,7 @@ onUnmounted(stopPolling)
   <div class="page-stack candidate-workspace">
     <header class="page-hero page-hero--compact recruitment-toolbar">
       <div><span class="eyebrow">Candidate Workspace</span><h2>候选人</h2><p>{{ currentJob ? `${currentJob.title} · 按应聘记录推进候选人` : '选择职位后查看和发现候选人' }}</p></div>
-      <div v-if="currentJob" class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-applications" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前职位' : '移出记录' }}</button><RecruitmentDemoMenu v-if="!showArchived" @changed="handleDemoChanged" /></div>
+      <div v-if="currentJob" class="recruitment-toolbar__actions"><button class="text-button" data-test="toggle-archived-applications" type="button" @click="toggleArchiveView">{{ showArchived ? '返回当前职位' : '移出记录' }}</button></div>
     </header>
 
     <section v-if="!currentJob" class="panel job-context-required">

@@ -450,16 +450,6 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .account-menu__panel button:hover, .account-menu__panel button:focus-visible { color: var(--ink); background: #f3f6f8; outline: none; }
 
 .recruitment-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-.recruitment-demo-menu { position: relative; z-index: 25; }
-.recruitment-demo-menu__trigger { white-space: nowrap; }
-.recruitment-demo-menu__popover { position: absolute; right: 0; top: calc(100% + 8px); width: 280px; padding: 14px; background: var(--paper); border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 16px 42px rgba(15,23,42,.14); }
-.recruitment-demo-menu__summary { display: grid; gap: 4px; }
-.recruitment-demo-menu__summary strong { color: var(--ink); font-size: 12px; }
-.recruitment-demo-menu__summary span { color: var(--muted); font-size: 10px; }
-.recruitment-demo-menu__actions { display: flex; gap: 8px; margin-top: 13px; }
-.recruitment-demo-menu__actions button { flex: 1; min-height: 34px; padding: 0 10px; color: var(--slate); background: #f7fafb; border: 1px solid var(--line); border-radius: 7px; font-size: 10px; }
-.recruitment-demo-menu__actions button:hover:not(:disabled) { color: #087d70; border-color: #9fd6ce; }
-.recruitment-demo-menu__actions button:disabled { cursor: not-allowed; opacity: .5; }
 .recruitment-inline-error { margin: 9px 0 0; color: #b45309; font-size: 10px; }
 .recruitment-data-shell { overflow: hidden; background: var(--paper); border: 1px solid var(--line); border-radius: 15px; }
 .recruitment-drawer-backdrop { position: fixed; inset: 0; z-index: 90; display: flex; justify-content: flex-end; background: rgba(15,23,42,.3); backdrop-filter: blur(2px); }

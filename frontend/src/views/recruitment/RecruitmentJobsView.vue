@@ -2,7 +2,6 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
-import RecruitmentDemoMenu from '@/components/RecruitmentDemoMenu.vue'
 import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import TaskProgressBar from '@/components/TaskProgressBar.vue'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
@@ -164,7 +163,6 @@ onUnmounted(stopPolling)
           :disabled="syncing || !selectedAccountId"
           @click="syncPositions"
         ><AppIcon name="refresh" :size="16" /><span>{{ syncing ? '同步中…' : '同步职位' }}</span></button>
-        <RecruitmentDemoMenu @changed="loadJobs" />
       </div>
     </header>
 
@@ -197,7 +195,7 @@ onUnmounted(stopPolling)
               <td>{{ job.owner_name }}</td>
               <td><span class="recruitment-chip">{{ statusLabels[job.status] || job.status }}</span></td>
             </tr>
-            <tr v-if="!loading && !jobs.length"><td colspan="6" class="table-empty">{{ showArchived ? '暂无已归档职位' : '暂无职位，可从“演示数据”加载示例。' }}</td></tr>
+            <tr v-if="!loading && !jobs.length"><td colspan="6" class="table-empty">{{ showArchived ? '暂无已归档职位' : '暂无职位，请先同步 BOSS 职位。' }}</td></tr>
           </tbody>
         </table>
       </div>
