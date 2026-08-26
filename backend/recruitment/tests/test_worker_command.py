@@ -10,6 +10,7 @@ from django.test import SimpleTestCase
 from recruitment.management.commands.run_rpa_worker import (
     AccountStatusObserver,
     Command,
+    OPEN_LOGIN_MAX_POLLS,
     WorkerEngine,
     WorkerHeartbeat,
     execute_check_status,
@@ -27,6 +28,7 @@ class BossStatusTests(SimpleTestCase):
         status = classify_boss_pages([{"url": "https://www.zhipin.com/web/user/?ka=header-login", "title": "登录BOSS直聘"}])
 
         self.assertEqual(status.login_status, "waiting_login")
+        self.assertTrue(status.target_page_ready)
 
     def test_invalid_qr_token_requires_human(self):
         status = classify_boss_pages([{"url": "https://www.zhipin.com/web/user/", "title": "Token 无效"}])
@@ -53,6 +55,7 @@ class BossStatusTests(SimpleTestCase):
         ])
 
         self.assertEqual(status.login_status, "waiting_login")
+        self.assertFalse(status.target_page_ready)
 
     def test_unrelated_page_cannot_smuggle_host_in_query(self):
         status = classify_boss_pages([
@@ -346,7 +349,7 @@ class WorkerEngineTests(SimpleTestCase):
     def test_open_login_waits_for_browser_debugging(self, inspect, record, sleep):
         inspect.side_effect = [
             BossBrowserStatus("browser_stopped", detail="starting"),
-            BossBrowserStatus("waiting_login", detail="ready"),
+            BossBrowserStatus("waiting_login", detail="ready", target_page_ready=True),
         ]
         runner = type("Runner", (), {"login": lambda self, account: None})()
         account = CliAccountConfig("edge.exe", "C:/profiles/a", 53470)
@@ -367,7 +370,9 @@ class WorkerEngineTests(SimpleTestCase):
     @patch("recruitment.management.commands.run_rpa_worker.cdp_is_running", side_effect=[False, True])
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_open_login_releases_cli_after_cdp_is_ready(self, inspect, running, record):
-        inspect.return_value = BossBrowserStatus("waiting_login", detail="等待人工登录")
+        inspect.return_value = BossBrowserStatus(
+            "waiting_login", detail="等待人工登录", target_page_ready=True,
+        )
         process = SimpleNamespace(poll=lambda: None)
 
         class Runner:
@@ -396,7 +401,9 @@ class WorkerEngineTests(SimpleTestCase):
     @patch("recruitment.management.commands.run_rpa_worker.cdp_is_running", side_effect=[False, False])
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_open_login_records_identity_when_browser_becomes_ready_between_probes(self, inspect, running, record):
-        inspect.return_value = BossBrowserStatus("waiting_login", detail="等待人工登录")
+        inspect.return_value = BossBrowserStatus(
+            "waiting_login", detail="等待人工登录", target_page_ready=True,
+        )
         runner = type("Runner", (), {"login": lambda self, account: None})()
         account = CliAccountConfig("edge.exe", "C:/profiles/a", 53470)
 
@@ -404,6 +411,69 @@ class WorkerEngineTests(SimpleTestCase):
 
         record.assert_called_once_with(53470, "C:/profiles/a")
         self.assertEqual(outcome["status"], "succeeded")
+
+    @patch("recruitment.management.commands.run_rpa_worker.time.sleep")
+    @patch("recruitment.management.commands.run_rpa_worker.record_managed_cdp")
+    @patch("recruitment.management.commands.run_rpa_worker.managed_cdp_matches", return_value=True)
+    @patch("recruitment.management.commands.run_rpa_worker.cdp_is_running", return_value=True)
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    def test_open_login_waits_for_target_page_after_cdp_is_ready(
+        self, inspect, running, matches, record, sleep,
+    ):
+        inspect.side_effect = [
+            BossBrowserStatus("waiting_login", detail="未检测到已登录的 BOSS 页面"),
+            BossBrowserStatus("waiting_login", detail="等待人工登录", target_page_ready=True),
+        ]
+        process = SimpleNamespace(poll=lambda: None)
+
+        class Runner:
+            def start_login(self, account):
+                return process
+
+            def stop_login(self, value):
+                self.stopped = value
+
+        runner = Runner()
+        outcome = execute_check_status(
+            {"open_login": True},
+            CliAccountConfig("edge.exe", "C:/profiles/a", 53470),
+            runner,
+        )
+
+        self.assertEqual(inspect.call_count, 2)
+        sleep.assert_called_once()
+        self.assertIs(runner.stopped, process)
+        self.assertEqual(outcome["status"], "succeeded")
+
+    @patch("recruitment.management.commands.run_rpa_worker.record_managed_cdp")
+    @patch("recruitment.management.commands.run_rpa_worker.managed_cdp_matches", return_value=True)
+    @patch("recruitment.management.commands.run_rpa_worker.cdp_is_running", return_value=True)
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    def test_open_login_fails_when_cli_exits_before_target_page_opens(
+        self, inspect, running, matches, record,
+    ):
+        inspect.return_value = BossBrowserStatus(
+            "waiting_login", detail="未检测到已登录的 BOSS 页面",
+        )
+        process = SimpleNamespace(poll=lambda: 0)
+
+        class Runner:
+            def start_login(self, account):
+                return process
+
+            def stop_login(self, value):
+                self.stopped = value
+
+        runner = Runner()
+        outcome = execute_check_status(
+            {"open_login": True},
+            CliAccountConfig("edge.exe", "C:/profiles/a", 53470),
+            runner,
+        )
+
+        self.assertIs(runner.stopped, process)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_code"], "boss_login_page_not_opened")
 
     @patch("recruitment.management.commands.run_rpa_worker.time.sleep")
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
@@ -423,7 +493,7 @@ class WorkerEngineTests(SimpleTestCase):
 
         self.assertEqual(outcome["status"], "failed")
         self.assertEqual(outcome["error_code"], "browser_login_unavailable")
-        self.assertEqual(inspect.call_count, 20)
+        self.assertEqual(inspect.call_count, OPEN_LOGIN_MAX_POLLS)
 
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_risk_control_is_the_only_human_task_state(self, inspect):

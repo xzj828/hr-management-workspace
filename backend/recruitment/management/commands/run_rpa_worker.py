@@ -30,6 +30,8 @@ from recruitment.rpa.playwright_adapter import BrowserConnectionError, BrowserIn
 
 HEARTBEAT_INTERVAL_SECONDS = 15
 MAX_API_RETRY_SECONDS = 30
+OPEN_LOGIN_POLL_INTERVAL_SECONDS = 0.5
+OPEN_LOGIN_MAX_POLLS = 130
 
 
 class WorkerApiClient:
@@ -160,7 +162,7 @@ def execute_check_status(task, account, runner):
             else:
                 runner.login(account)
             observed = None
-            for attempt in range(20):
+            for attempt in range(OPEN_LOGIN_MAX_POLLS):
                 if cdp_is_running(account.cdp_port) and not browser_was_running:
                     try:
                         record_managed_cdp(account.cdp_port, account.user_data_dir)
@@ -177,11 +179,14 @@ def execute_check_status(task, account, runner):
                         browser_was_running = True
                     except BrowserUnavailableError:
                         pass
-                if (observed.login_status != "browser_stopped" and browser_was_running) or attempt == 19:
+                login_process_finished = login_process is not None and login_process.poll() is not None
+                if (
+                    observed.target_page_ready
+                    or login_process_finished
+                    or attempt == OPEN_LOGIN_MAX_POLLS - 1
+                ):
                     break
-                if login_process is not None and login_process.poll() is not None:
-                    break
-                time.sleep(0.5)
+                time.sleep(OPEN_LOGIN_POLL_INTERVAL_SECONDS)
         finally:
             if login_process is not None:
                 runner.stop_login(login_process)
@@ -200,6 +205,13 @@ def execute_check_status(task, account, runner):
             "result": result,
             "error_code": "browser_login_unavailable",
             "error_message": observed.detail or "隔离浏览器登录状态不可用",
+        }
+    if task.get("open_login") and not observed.target_page_ready:
+        return {
+            "status": "failed",
+            "result": result,
+            "error_code": "boss_login_page_not_opened",
+            "error_message": "隔离浏览器已启动，但 BOSS 登录页面未能打开，请重试",
         }
     return {"status": "succeeded", "result": result}
 
