@@ -55,6 +55,7 @@ const keyword = ref('')
 const candidateFilters = ref(defaultCandidateFilters())
 const targetResumeCount = ref(3)
 const maxScanCount = ref(20)
+const autoStartRequested = ref(false)
 const submitting = ref(false)
 const submitStage = ref('')
 const currentPlan = ref(null)
@@ -163,7 +164,7 @@ const currentStepCopy = computed(() => ({
   },
   review: {
     title: '执行前检查',
-    description: '确认全部运行条件；只有本页的开始执行会发起正式动作。',
+    description: '确认全部运行条件；从执行方案继续时，全部通过后会自动开始执行。',
   },
 }[currentStep.value]))
 
@@ -482,6 +483,7 @@ function wizardStorageKey(jobId = selectedJob.value?.id) {
 }
 
 function resetWizardFields() {
+  autoStartRequested.value = false
   schemeKind.value = 'passive_resume'
   workflowChoice.value = 'standard'
   coreText.value = ''
@@ -637,6 +639,7 @@ function resolveWizardStep({ replaceInvalid = true } = {}) {
 
 function navigateWizardStep(step, { replace = false } = {}) {
   const guarded = guardedWizardStep(step)
+  if (guarded !== 'review') autoStartRequested.value = false
   currentStep.value = guarded
   restoredWizardStep.value = guarded
   wizardError.value = ''
@@ -673,6 +676,7 @@ function completeStandardStep() {
 function completePlanStep() {
   wizardError.value = ''
   completedSteps.plan = true
+  autoStartRequested.value = true
   persistWizardDraft()
   navigateWizardStep('review')
 }
@@ -1232,9 +1236,30 @@ async function startExecution({ busyAction = '' } = {}) {
   }
 }
 
+function attemptRequestedAutoStart() {
+  if (!autoStartRequested.value) return
+  if (currentStep.value !== 'review') {
+    autoStartRequested.value = false
+    return
+  }
+  if (loading.value || planLoading.value || submitting.value || planAction.value) return
+  if (planError.value || firstBlockingCheck.value || !canSubmit.value) {
+    autoStartRequested.value = false
+    return
+  }
+  autoStartRequested.value = false
+  startExecution({ busyAction: currentPlan.value ? 'restart' : '' })
+}
+
 watch(currentStep, (step, previousStep) => {
   if (step !== previousStep) focusCurrentStep({ resetScroll: true })
 }, { flush: 'sync' })
+
+watch(
+  [currentStep, loading, planLoading, currentPlan, firstBlockingCheck, canSubmit],
+  () => attemptRequestedAutoStart(),
+  { flush: 'post' },
+)
 
 watch(
   () => selectedJob.value?.id,
@@ -1630,7 +1655,7 @@ onUnmounted(() => {
                 :disabled="submitting"
                 @click="completePlanStep"
               >
-                下一步：执行前检查 <AppIcon name="arrow-right" :size="16" />
+                检查并开始执行 <AppIcon name="arrow-right" :size="16" />
               </button>
             </footer>
           </section>
@@ -1662,7 +1687,9 @@ onUnmounted(() => {
                   以最新版本继续编辑
                 </button>
               </div>
-              <p v-if="planLoading" class="workbench-submit-hint" data-test="plan-loading" aria-live="polite">正在同步任务状态…</p>
+              <p v-if="planLoading" class="workbench-submit-hint" data-test="plan-loading" aria-live="polite">
+                {{ autoStartRequested ? '正在执行前检查，全部通过后将自动开始执行…' : '正在同步任务状态…' }}
+              </p>
               <p v-else-if="planError && !currentPlan" class="workbench-inline-error" role="alert">{{ planError }}</p>
               <button
                 v-if="!currentPlan && !planLoading"

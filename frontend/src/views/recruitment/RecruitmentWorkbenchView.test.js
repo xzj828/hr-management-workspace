@@ -169,6 +169,10 @@ describe('RecruitmentWorkbenchView', () => {
 
   it('presents four guarded pages and keeps execution controls exclusively on the review step', async () => {
     let router
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') return Promise.resolve(planFixture())
+      return baseApi(path)
+    })
     ;({ wrapper, router } = await mountView())
 
     expect(wrapper.get('[data-test="wizard-step-context"]').attributes('aria-current')).toBe('step')
@@ -207,9 +211,10 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="wizard-step-review"]').attributes('aria-current')).toBe('step')
     expect(router.currentRoute.value.query).toMatchObject({ job: '51', step: 'review' })
     expect(wrapper.find('.workbench-review').exists()).toBe(true)
-    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
     expect(wrapper.find('[data-test="precheck-job"]').exists()).toBe(true)
-    expect(apiMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(writesBeforeReview)
+    expect(apiMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(writesBeforeReview + 1)
 
     await wrapper.get('[data-test="previous-step"]').trigger('click')
     await flushPromises()
@@ -399,6 +404,34 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(true)
   })
 
+  it('does not auto-start when a completed review step is restored by a refresh or deep link', async () => {
+    sessionStorage.setItem('ximing-hr:recruitment-workbench-draft:v1:9:51', JSON.stringify({
+      version: 1,
+      jobId: '51',
+      selectedAccountId: '7',
+      step: 'review',
+      completed: { context: true, standard: true, plan: true },
+      documentCategory: 'persona',
+      draft: {
+        schemeKind: 'active_resume_search',
+        workflowChoice: 'standard',
+        coreText: '刷新后保留的核心要求',
+        bonusText: '',
+        interval: 2,
+        source: 'search',
+        keyword: 'Python',
+        targetResumeCount: 4,
+        maxScanCount: 20,
+      },
+    }))
+
+    ;({ wrapper } = await mountView({ job: '51', step: 'review' }))
+
+    expect(wrapper.find('[data-test="workbench-step-review"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(true)
+    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/automation-plans/start/')).toHaveLength(0)
+  })
+
   it('removes a schema-invalid wizard draft and never treats a legacy operation receipt as truth', async () => {
     const wizardKey = 'ximing-hr:recruitment-workbench-draft:v1:9:51'
     const operationKey = 'ximing-hr:recruitment-operation:9:51'
@@ -567,7 +600,7 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.text()).toContain('单个文件不能超过 25MB')
   })
 
-  it('starts an active search with one atomic command containing the complete revision config', async () => {
+  it('automatically starts an active search with one atomic command after prechecks pass', async () => {
     apiMock.mockImplementation((path, options) => {
       if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') return Promise.resolve(planFixture())
       return baseApi(path)
@@ -581,10 +614,8 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="filter-keyword-data_analysis"]').trigger('click')
     await wrapper.get('[data-test="target-resume-count"]').setValue('5')
     await wrapper.get('[data-test="max-scan-count"]').setValue('30')
+    expect(wrapper.get('[data-test="complete-plan-step"]').text()).toContain('检查并开始执行')
     await completePlanAndReview(wrapper)
-
-    await wrapper.get('[data-test="start-execution"]').trigger('click')
-    await flushPromises()
 
     const startCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')
     const command = JSON.parse(startCall[1].body)
@@ -697,6 +728,7 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="precheck-browser"]').text()).toContain('隔离浏览器尚未启动')
     expect(wrapper.get('[data-test="precheck-browser"]').text()).toContain('处理')
     expect(wrapper.text()).toContain('请先处理：隔离浏览器')
+    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/automation-plans/start/')).toHaveLength(0)
   })
 
   it('passes an enabled custom workflow to the same atomic start command', async () => {
@@ -714,9 +746,6 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
     await wrapper.get('[data-test="workflow-choice"]').setValue('custom:91')
     await completePlanAndReview(wrapper)
-
-    await wrapper.get('[data-test="start-execution"]').trigger('click')
-    await flushPromises()
 
     const startCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')
     expect(JSON.parse(startCall[1].body)).toMatchObject({ workflow_version: 91 })
@@ -743,15 +772,14 @@ describe('RecruitmentWorkbenchView', () => {
     await flushPromises()
     expect(wrapper.get('[data-test="workflow-choice"]').element.value).toBe('standard')
     expect(wrapper.text()).not.toContain('当前任务使用的高级流程')
-    await completePlanAndReview(wrapper)
+    await wrapper.get('[data-test="wizard-step-review"]').trigger('click')
+    await flushPromises()
     await wrapper.get('[data-test="modify-operation"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-test="core-requirements"]').setValue('修改后的托管标准')
     await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
     await completePlanAndReview(wrapper)
-    await wrapper.get('[data-test="restart-operation"]').trigger('click')
-    await flushPromises()
 
     const startBody = JSON.parse(apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')[1].body)
     expect(startBody.config.core).toEqual(['修改后的托管标准'])
@@ -778,8 +806,6 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="workflow-choice"]').element.value).toBe('custom:91')
     expect(wrapper.text()).toContain('当前任务使用的高级流程')
     await completePlanAndReview(wrapper)
-    await wrapper.get('[data-test="restart-operation"]').trigger('click')
-    await flushPromises()
 
     const startBody = JSON.parse(apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')[1].body)
     expect(startBody.workflow_version).toBe(91)
@@ -837,8 +863,6 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
     await completePlanAndReview(wrapper)
-    await wrapper.get('[data-test="start-execution"]').trigger('click')
-    await flushPromises()
     expect(wrapper.text()).toContain('network lost')
 
     await wrapper.get('[data-test="previous-step"]').trigger('click')
@@ -856,8 +880,6 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
     await completePlanAndReview(wrapper)
-    await wrapper.get('[data-test="start-execution"]').trigger('click')
-    await flushPromises()
 
     const startCalls = apiMock.mock.calls.filter(([path]) => path === 'recruitment/automation-plans/start/')
     expect(startCalls).toHaveLength(2)
@@ -887,9 +909,6 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
     await completePlanAndReview(wrapper)
-
-    await wrapper.get('[data-test="start-execution"]').trigger('click')
-    await flushPromises()
     expect(wrapper.text()).toContain('network lost')
 
     await wrapper.get('[data-test="start-execution"]').trigger('click')
@@ -1066,8 +1085,6 @@ describe('RecruitmentWorkbenchView', () => {
     ;({ wrapper } = await mountView({ job: '51', step: 'plan' }))
     await completePlanAndReview(wrapper)
     expect(wrapper.get('[data-test="plan-version-notice"]').text()).toContain('V2 更新为 V3')
-    await wrapper.get('[data-test="restart-operation"]').trigger('click')
-    await flushPromises()
 
     expect(startBodies[0].expected_control_version).toBe(4)
     expect(wrapper.text()).toContain('已为你刷新')
