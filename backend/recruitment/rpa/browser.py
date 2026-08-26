@@ -2,6 +2,7 @@ import os
 import re
 import socket
 import threading
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import URLError
@@ -40,6 +41,7 @@ BROWSER_CANDIDATES = {
 _PROFILE_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _locked_profiles: set[Path] = set()
 _locked_profiles_guard = threading.Lock()
+_MANAGED_CDP_MARKER = ".ximing-managed-cdp.json"
 
 
 def browser_configuration(browser_type, profile_slug, port, *, exists=None):
@@ -67,6 +69,58 @@ def cdp_is_running(port, *, timeout=0.3):
             return response.status == 200
     except (OSError, URLError):
         return False
+
+
+def _managed_profile_dir(user_data_dir):
+    profile_root = Path(settings.RPA_PROFILE_ROOT).resolve()
+    profile_dir = Path(user_data_dir).resolve()
+    if not profile_dir.is_relative_to(profile_root):
+        raise BrowserUnavailableError("隔离浏览器目录不在受管范围内")
+    return profile_dir
+
+
+def read_cdp_identity(port, *, timeout=0.5):
+    try:
+        with urlopen(f"http://127.0.0.1:{int(port)}/json/version", timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return None
+    websocket_url = str(payload.get("webSocketDebuggerUrl", "")).strip()
+    if not websocket_url:
+        return None
+    return {
+        "port": int(port),
+        "websocket_url": websocket_url,
+        "browser": str(payload.get("Browser", ""))[:200],
+    }
+
+
+def record_managed_cdp(port, user_data_dir):
+    identity = read_cdp_identity(port)
+    if identity is None:
+        raise BrowserUnavailableError("隔离浏览器调试端口尚未就绪")
+    profile_dir = _managed_profile_dir(user_data_dir)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    marker = profile_dir / _MANAGED_CDP_MARKER
+    temporary = marker.with_suffix(".tmp")
+    temporary.write_text(json.dumps(identity, ensure_ascii=True), encoding="utf-8")
+    temporary.replace(marker)
+    return identity
+
+
+def managed_cdp_matches(port, user_data_dir):
+    identity = read_cdp_identity(port)
+    if identity is None:
+        return False
+    try:
+        marker = _managed_profile_dir(user_data_dir) / _MANAGED_CDP_MARKER
+        expected = json.loads(marker.read_text(encoding="utf-8"))
+    except (BrowserUnavailableError, OSError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        expected.get("port") == identity["port"]
+        and expected.get("websocket_url") == identity["websocket_url"]
+    )
 
 
 def port_is_available(port):
@@ -127,4 +181,3 @@ class ProfileLock:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self._release()
-

@@ -1,3 +1,7 @@
+from io import StringIO
+from contextlib import nullcontext
+import threading
+import time
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -5,12 +9,16 @@ from django.test import SimpleTestCase
 
 from recruitment.management.commands.run_rpa_worker import (
     AccountStatusObserver,
+    Command,
     WorkerEngine,
+    WorkerHeartbeat,
     execute_check_status,
     execute_sync_conversations,
+    run_worker_loop,
 )
 from recruitment.rpa.cli import CliAccountConfig
 from recruitment.rpa.status import BossBrowserStatus, classify_boss_pages
+from recruitment.rpa.status import inspect_boss_status
 
 
 class BossStatusTests(SimpleTestCase):
@@ -30,6 +38,42 @@ class BossStatusTests(SimpleTestCase):
 
         self.assertEqual(status.login_status, "waiting_human")
         self.assertEqual(status.verification_status, "risk_control")
+
+    def test_authenticated_recruiter_chat_page_is_ready(self):
+        status = classify_boss_pages([
+            {"url": "https://www.zhipin.com/web/chat/index", "title": "沟通"},
+        ])
+
+        self.assertEqual(status.login_status, "ready")
+
+    def test_public_homepage_is_not_treated_as_authenticated(self):
+        status = classify_boss_pages([
+            {"url": "https://www.zhipin.com/", "title": "BOSS直聘"},
+        ])
+
+        self.assertEqual(status.login_status, "waiting_login")
+
+    def test_unrelated_page_cannot_smuggle_host_in_query(self):
+        status = classify_boss_pages([
+            {"url": "https://example.com/?next=https://www.zhipin.com/web/chat/index", "title": "unknown"},
+        ])
+
+        self.assertEqual(status.login_status, "waiting_login")
+
+    def test_error_page_fails_closed(self):
+        status = classify_boss_pages([
+            {"url": "https://www.zhipin.com/web/common/error", "title": "页面出错"},
+        ])
+
+        self.assertEqual(status.login_status, "error")
+
+    @patch("recruitment.rpa.status.managed_cdp_matches", return_value=False)
+    @patch("recruitment.rpa.status.cdp_is_running", return_value=True)
+    def test_wrong_managed_profile_fails_closed_before_page_classification(self, running, matches):
+        status = inspect_boss_status(53470, user_data_dir="C:/profiles/expected")
+
+        self.assertEqual(status.login_status, "error")
+        self.assertEqual(status.verification_status, "cdp_identity_mismatch")
 
 
 class WorkerEngineTests(SimpleTestCase):
@@ -67,8 +111,8 @@ class WorkerEngineTests(SimpleTestCase):
 
             def status_targets(self):
                 return {"accounts": [
-                    {"id": 1, "browser": {"cdp_port": 53470}},
-                    {"id": 2, "browser": {"cdp_port": 53471}},
+                    {"id": 1, "browser": {"cdp_port": 53470, "user_data_dir": "profile-1"}},
+                    {"id": 2, "browser": {"cdp_port": 53471, "user_data_dir": "profile-2"}},
                 ]}
 
             def submit_status_observations(self, observations):
@@ -84,6 +128,20 @@ class WorkerEngineTests(SimpleTestCase):
         self.assertEqual(api.submitted[0]["login_status"], "ready")
         self.assertEqual(api.submitted[1]["login_status"], "browser_stopped")
 
+    @patch("recruitment.management.commands.run_rpa_worker.managed_cdp_matches", return_value=False)
+    @patch("recruitment.management.commands.run_rpa_worker.cdp_is_running", return_value=True)
+    def test_open_login_rejects_cdp_owned_by_another_profile(self, running, matches):
+        runner = type("Runner", (), {"login": lambda self, account: (_ for _ in ()).throw(AssertionError("must not launch"))})()
+
+        outcome = execute_check_status(
+            {"open_login": True},
+            CliAccountConfig("edge.exe", "C:/profiles/expected", 53470),
+            runner,
+        )
+
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_code"], "cdp_identity_mismatch")
+
     def test_unknown_action_is_not_executed(self):
         api = type("Api", (), {"complete": lambda self, task_id, payload: payload})()
         engine = WorkerEngine(api=api, runner=object(), worker_key="local-worker")
@@ -95,6 +153,67 @@ class WorkerEngineTests(SimpleTestCase):
         self.assertEqual(outcome["status"], "failed")
         self.assertEqual(outcome["error_code"], "unsupported_action")
 
+    @patch("recruitment.management.commands.run_rpa_worker.managed_cdp_matches", return_value=False)
+    def test_formal_task_rechecks_managed_cdp_before_executor(self, matches):
+        completed = []
+        api = type("Api", (), {
+            "event": lambda self, task_id, payload: payload,
+            "complete": lambda self, task_id, payload: completed.append(payload),
+        })()
+        engine = WorkerEngine(api=api, runner=object(), worker_key="local-worker")
+        task = {
+            "id": "task-identity-check",
+            "action": "sync_positions",
+            "browser": {
+                "executable": "edge.exe",
+                "user_data_dir": "C:/profiles/expected",
+                "cdp_port": 53470,
+            },
+        }
+
+        with patch(
+            "recruitment.management.commands.run_rpa_worker.ProfileLock",
+            side_effect=lambda path: nullcontext(),
+        ), patch.object(engine, "_execute") as execute:
+            outcome = engine.execute_task(task)
+
+        execute.assert_not_called()
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_code"], "cdp_identity_mismatch")
+        self.assertEqual(completed[0]["error_code"], "cdp_identity_mismatch")
+
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    @patch("recruitment.management.commands.run_rpa_worker.managed_cdp_matches", return_value=True)
+    def test_formal_task_rechecks_current_login_before_executor(self, matches, inspect):
+        inspect.return_value = BossBrowserStatus("waiting_login", detail="等待人工登录")
+        completed = []
+        api = type("Api", (), {
+            "event": lambda self, task_id, payload: payload,
+            "complete": lambda self, task_id, payload: completed.append(payload),
+        })()
+        engine = WorkerEngine(api=api, runner=object(), worker_key="local-worker")
+        task = {
+            "id": "task-current-login-check",
+            "action": "sync_positions",
+            "browser": {
+                "executable": "edge.exe",
+                "user_data_dir": "C:/profiles/expected",
+                "cdp_port": 53470,
+            },
+        }
+
+        with patch(
+            "recruitment.management.commands.run_rpa_worker.ProfileLock",
+            side_effect=lambda path: nullcontext(),
+        ), patch.object(engine, "_execute") as execute:
+            outcome = engine.execute_task(task)
+
+        execute.assert_not_called()
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_code"], "boss_account_not_ready")
+        self.assertEqual(outcome["result"]["login_status"], "waiting_login")
+        self.assertEqual(completed[0]["error_code"], "boss_account_not_ready")
+
     @patch("recruitment.management.commands.run_rpa_worker.time.sleep")
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_open_login_waits_for_browser_debugging(self, inspect, sleep):
@@ -105,8 +224,151 @@ class WorkerEngineTests(SimpleTestCase):
         runner = type("Runner", (), {"login": lambda self, account: None})()
         account = CliAccountConfig("edge.exe", "C:/profiles/a", 53470)
 
-        outcome = execute_check_status({"open_login": True}, account, runner)
+        with patch(
+            "recruitment.management.commands.run_rpa_worker.cdp_is_running",
+            return_value=False,
+        ):
+            outcome = execute_check_status({"open_login": True}, account, runner)
 
         self.assertEqual(inspect.call_count, 2)
         sleep.assert_called_once()
+        self.assertEqual(outcome["status"], "succeeded")
         self.assertEqual(outcome["result"]["login_status"], "waiting_login")
+
+    @patch("recruitment.management.commands.run_rpa_worker.record_managed_cdp")
+    @patch("recruitment.management.commands.run_rpa_worker.cdp_is_running", side_effect=[False, True])
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    def test_open_login_releases_cli_after_cdp_is_ready(self, inspect, running, record):
+        inspect.return_value = BossBrowserStatus("waiting_login", detail="等待人工登录")
+        process = SimpleNamespace(poll=lambda: None)
+
+        class Runner:
+            started = None
+            stopped = None
+
+            def start_login(self, account):
+                self.started = account
+                return process
+
+            def stop_login(self, value):
+                self.stopped = value
+
+        runner = Runner()
+        account = CliAccountConfig("edge.exe", "C:/profiles/a", 53470)
+
+        outcome = execute_check_status({"open_login": True}, account, runner)
+
+        self.assertIs(runner.started, account)
+        self.assertIs(runner.stopped, process)
+        record.assert_called_once_with(53470, "C:/profiles/a")
+        self.assertEqual(outcome["status"], "succeeded")
+        self.assertEqual(outcome["result"]["login_status"], "waiting_login")
+
+    @patch("recruitment.management.commands.run_rpa_worker.time.sleep")
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    def test_open_login_browser_failure_is_task_failure(self, inspect, sleep):
+        inspect.return_value = BossBrowserStatus("browser_stopped", detail="未启动")
+        runner = type("Runner", (), {"login": lambda self, account: None})()
+
+        with patch(
+            "recruitment.management.commands.run_rpa_worker.cdp_is_running",
+            return_value=False,
+        ):
+            outcome = execute_check_status(
+                {"open_login": True},
+                CliAccountConfig("edge.exe", "C:/profiles/a", 53470),
+                runner,
+            )
+
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_code"], "browser_login_unavailable")
+        self.assertEqual(inspect.call_count, 20)
+
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    def test_risk_control_is_the_only_human_task_state(self, inspect):
+        inspect.return_value = BossBrowserStatus(
+            "waiting_human", verification_status="risk_control", detail="安全验证",
+        )
+
+        outcome = execute_check_status(
+            {}, CliAccountConfig("edge.exe", "C:/profiles/a", 53470), object(),
+        )
+
+        self.assertEqual(outcome["status"], "waiting_human")
+
+
+class WorkerCommandReliabilityTests(SimpleTestCase):
+    @patch("recruitment.management.commands.run_rpa_worker.AccountStatusObserver")
+    @patch("recruitment.management.commands.run_rpa_worker.WorkerApiClient")
+    @patch("recruitment.management.commands.run_rpa_worker.probe_boss_cli")
+    def test_cli_unavailable_still_heartbeats_without_leasing(self, probe, client_class, observer_class):
+        probe.return_value = (
+            None,
+            "",
+            {"code": "boss_cli_unavailable", "message": "未安装"},
+        )
+
+        Command().handle(once=True)
+
+        api = client_class.return_value
+        heartbeat = api.heartbeat.call_args.args[0]
+        self.assertFalse(heartbeat["capabilities"]["boss_cli"])
+        self.assertEqual(heartbeat["capabilities"]["boss_cli_error"]["code"], "boss_cli_unavailable")
+        api.lease.assert_not_called()
+        observer_class.return_value.run_once.assert_called_once_with()
+
+    def test_runtime_api_errors_back_off_and_continue(self):
+        class Engine:
+            calls = 0
+
+            def run_once(self):
+                self.calls += 1
+                if self.calls <= 2:
+                    raise RuntimeError("temporary")
+
+        class Stop:
+            waits = []
+
+            def is_set(self):
+                return len(self.waits) >= 3
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+
+        engine = Engine()
+        stop = Stop()
+        stderr = StringIO()
+
+        run_worker_loop(
+            engine=engine,
+            stop=stop,
+            poll_seconds=3,
+            stderr=stderr,
+        )
+
+        self.assertEqual(engine.calls, 3)
+        self.assertEqual(stop.waits[:3], [1, 2, 3])
+        self.assertIn("Worker API 暂时不可用", stderr.getvalue())
+
+    def test_heartbeat_continues_while_engine_is_blocked(self):
+        stop = threading.Event()
+
+        class Api:
+            calls = 0
+
+            def heartbeat(self, payload):
+                self.calls += 1
+
+        class Engine:
+            def run_once(self):
+                time.sleep(0.08)
+                stop.set()
+
+        api = Api()
+        heartbeat = WorkerHeartbeat(api, {"hostname": "test"}, interval=0.01)
+        thread = threading.Thread(target=heartbeat.run, args=(stop,), daemon=True)
+        thread.start()
+        run_worker_loop(engine=Engine(), stop=stop, poll_seconds=0.01, stderr=StringIO())
+        thread.join(timeout=1)
+
+        self.assertGreaterEqual(api.calls, 3)

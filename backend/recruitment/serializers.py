@@ -51,7 +51,7 @@ class BossAccountSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "browser_profile", "browser_executable", "user_data_dir", "cdp_port", "status",
-            "login_status", "verification_status", "last_checked_at",
+            "login_status", "verification_status", "last_checked_at", "archived_at",
         ]
 
     @transaction.atomic
@@ -105,6 +105,7 @@ class RecruitmentJobSerializer(serializers.ModelSerializer):
             "is_demo", "created_at", "updated_at",
             "archived_at",
         ]
+        read_only_fields = ["id", "candidate_count", "created_at", "updated_at", "archived_at"]
 
 
 class JobRequirementDocumentVersionSerializer(serializers.ModelSerializer):
@@ -426,7 +427,7 @@ class WorkflowTemplateSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkflowTemplate
         fields = ["id", "name", "description", "active_version", "active_version_number", "archived_at", "created_at", "updated_at"]
-        read_only_fields = ["id", "active_version", "active_version_number", "created_at", "updated_at"]
+        read_only_fields = ["id", "active_version", "active_version_number", "archived_at", "created_at", "updated_at"]
 
 
 class WorkflowVersionSerializer(serializers.ModelSerializer):
@@ -521,6 +522,7 @@ class RpaTaskSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RpaTask
+        validators = []
         fields = [
             "id", "boss_account", "account_name", "action", "status", "created_by_name",
             "worker", "approval", "execution_batch", "idempotency_key", "request_payload",
@@ -530,7 +532,7 @@ class RpaTaskSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "status", "worker", "result", "error_code", "error_message", "lease_expires_at",
-            "started_at", "completed_at", "created_at", "updated_at",
+            "started_at", "completed_at", "created_at", "updated_at", "archived_at",
         ]
         extra_kwargs = {
             "idempotency_key": {"validators": [], "allow_blank": True, "allow_null": True},

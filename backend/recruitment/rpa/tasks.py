@@ -1,6 +1,11 @@
+from datetime import timedelta
+from functools import wraps
+import threading
+
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 
 from attendance.permissions import is_hr_user
 from recruitment.models import (
@@ -10,6 +15,7 @@ from recruitment.models import (
     RecruitmentAuditLog,
     RpaTask,
     RpaTaskEvent,
+    RpaWorker,
     SearchCampaign,
     WorkflowNodeRun,
     WorkflowRun,
@@ -47,6 +53,52 @@ APPROVAL_CREATION_PATHS = {
     RpaTask.Action.DEEP_MATCH: "deep_match_approval",
     RpaTask.Action.SEARCH_AND_PULL_RESUMES: "search_campaign",
 }
+_creation_locks = {}
+_creation_locks_guard = threading.Lock()
+
+
+def _serialize_account_task_creation(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        account = kwargs.get("account")
+        account_id = getattr(account, "pk", None)
+        with _creation_locks_guard:
+            lock = _creation_locks.setdefault(account_id, threading.Lock())
+        with lock:
+            return function(*args, **kwargs)
+
+    return wrapped
+
+
+class RpaRuntimeUnavailable(APIException):
+    status_code = 409
+    default_code = "rpa_runtime_unavailable"
+    default_detail = "本机自动化运行时不可用"
+
+
+def latest_rpa_worker():
+    worker = RpaWorker.objects.filter(last_seen_at__isnull=False).order_by("-last_seen_at").first()
+    return worker or RpaWorker.objects.order_by("-updated_at").first()
+
+
+def rpa_worker_is_online(worker, *, now=None):
+    if worker is None or worker.status != RpaWorker.Status.ONLINE or worker.last_seen_at is None:
+        return False
+    ttl_seconds = max(int(getattr(settings, "RPA_WORKER_HEARTBEAT_TTL_SECONDS", 45)), 1)
+    return worker.last_seen_at >= (now or timezone.now()) - timedelta(seconds=ttl_seconds)
+
+
+def _require_open_login_runtime():
+    worker = latest_rpa_worker()
+    if not rpa_worker_is_online(worker):
+        raise RpaRuntimeUnavailable("本机 RPA Worker 未连接或心跳已过期，请先启动 Worker")
+    capabilities = worker.capabilities if isinstance(worker.capabilities, dict) else {}
+    if capabilities.get("boss_cli") is not True:
+        message = "BOSS CLI 不可用，请检查 Worker 安装与配置"
+        cli_error = capabilities.get("boss_cli_error")
+        if isinstance(cli_error, dict) and cli_error.get("message"):
+            message = f"{message}：{str(cli_error['message'])[:300]}"
+        raise RpaRuntimeUnavailable(message)
 
 
 def append_event(*, task, event, message, data=None, level="info"):
@@ -200,6 +252,7 @@ def _validate_canonical_approval_linkage(
         raise ValidationError("该确认记录已生成执行任务，不能重复使用")
 
 
+@_serialize_account_task_creation
 @transaction.atomic
 def create_task(
     *,
@@ -310,6 +363,16 @@ def create_task(
             ):
                 raise ValidationError("幂等请求标识已被不同范围的任务使用")
             return (existing, False) if return_created else existing
+
+    if action == RpaTask.Action.CHECK_STATUS:
+        existing = locked.rpa_tasks.filter(
+            action=RpaTask.Action.CHECK_STATUS,
+            status__in=[RpaTask.Status.PENDING, RpaTask.Status.LEASED, RpaTask.Status.RUNNING],
+        ).order_by("created_at").first()
+        if existing:
+            return (existing, False) if return_created else existing
+    if action in GENERIC_CREATE_ACTIONS:
+        _require_open_login_runtime()
 
     if locked.rpa_tasks.filter(status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING]).exists():
         raise ValidationError("该账号已有任务正在执行")

@@ -411,6 +411,41 @@ class ModelProfileApiTests(GatewayNetworkMixin, APITestCase):
             self.client.post(f"/api/account/model-profiles/{foreign.pk}/test/", {}, format="json").status_code,
             404,
         )
+        self.assertEqual(self.client.delete(f"/api/account/model-profiles/{foreign.pk}/").status_code, 404)
+
+    def test_deleting_inactive_profile_erases_only_that_profile(self):
+        active = self.create_profile()
+        inactive = self.create_profile(
+            name="待删除备用模型",
+            model="chat-backup",
+            api_key="sk-backup-delete-5678",
+        )
+
+        response = self.client.delete(f"/api/account/model-profiles/{inactive.data['id']}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(UserModelProfile.objects.filter(pk=inactive.data["id"]).exists())
+        self.assertTrue(UserModelProfile.objects.filter(pk=active.data["id"], is_active=True).exists())
+        self.assertEqual(UserModelCredential.objects.get(user=self.user).model, "chat-primary")
+
+    def test_deleting_active_profile_clears_projection_without_auto_switching(self):
+        active = self.create_profile()
+        inactive = self.create_profile(
+            name="保留备用模型",
+            model="chat-backup",
+            api_key="sk-backup-keep-5678",
+        )
+
+        response = self.client.delete(f"/api/account/model-profiles/{active.data['id']}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(UserModelProfile.objects.filter(pk=active.data["id"]).exists())
+        self.assertTrue(UserModelProfile.objects.filter(pk=inactive.data["id"], is_active=False).exists())
+        self.assertFalse(UserModelCredential.objects.filter(user=self.user).exists())
+        listed = self.client.get("/api/account/model-profiles/")
+        self.assertEqual(len(listed.data), 1)
+        self.assertFalse(listed.data[0]["is_active"])
+        self.assertNotIn("encrypted_api_key", str(listed.data))
 
     def test_new_profile_requires_complete_validated_configuration(self):
         missing_key = self.create_profile(api_key=None)

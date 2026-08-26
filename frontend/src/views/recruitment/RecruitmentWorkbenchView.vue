@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
@@ -10,6 +10,11 @@ const auth = useAuthStore()
 const context = useRecruitmentContextStore()
 const route = useRoute()
 const router = useRouter()
+
+const WIZARD_DRAFT_VERSION = 1
+const WIZARD_STEPS = ['context', 'standard', 'plan']
+const MAX_JOB_DOCUMENT_SIZE = 25 * 1024 * 1024
+const JOB_DOCUMENT_SUFFIX = /\.(doc|docx|xlsx)$/i
 
 const accounts = ref([])
 const policies = ref([])
@@ -24,6 +29,15 @@ const submitError = ref('')
 const selectedAccountId = ref('')
 const documentCategory = ref('persona')
 const fileInput = ref(null)
+const stepHeading = ref(null)
+const currentStep = ref('context')
+const completedSteps = reactive({ context: false, standard: false })
+const wizardError = ref('')
+const wizardReady = ref(false)
+const wizardHydrating = ref(false)
+const restoredWizardStep = ref('context')
+const dragging = ref(false)
+const uploadQueue = ref([])
 const uploading = ref(false)
 const uploadProgress = reactive({ completed: 0, total: 0, failed: 0 })
 const schemeKind = ref('passive_resume')
@@ -78,6 +92,16 @@ const selectedCustomWorkflow = computed(() => {
   const id = String(workflowChoice.value).slice(7)
   return enabledWorkflowOptions.value.find((item) => String(item.id) === id) || null
 })
+const contextStepComplete = computed(() => Boolean(
+  selectedJob.value
+  && selectedAccount.value
+  && String(selectedJob.value.boss_account) === String(selectedAccount.value.id),
+))
+const wizardSteps = computed(() => [
+  { key: 'context', number: '01', label: '职位与账号', reachable: true },
+  { key: 'standard', number: '02', label: '画像与要求', reachable: completedSteps.context },
+  { key: 'plan', number: '03', label: '方案与执行', reachable: completedSteps.context && completedSteps.standard },
+])
 
 const checks = computed(() => [
   {
@@ -124,6 +148,9 @@ const checks = computed(() => [
       ? passiveIntervalValid.value
       : activeCountValid.value && activeQueryValid.value,
     detail: parameterCheckMessage(),
+    link: schemeKind.value === 'active_resume_search' && !coreItems.value.length
+      ? { name: 'recruitment-workbench', query: { ...route.query, job: String(selectedJob.value?.id || ''), step: 'standard' } }
+      : null,
   },
 ])
 const firstBlockingCheck = computed(() => checks.value.find((item) => !item.ok) || null)
@@ -132,6 +159,7 @@ const canSubmit = computed(() => (
   && !uploading.value
   && !submitting.value
   && !receipt.value
+  && currentStep.value === 'plan'
   && checks.value.every((item) => item.ok)
 ))
 const resultsLink = computed(() => receipt.value ? {
@@ -220,6 +248,153 @@ function persistOperation(state = operationState.value) {
   sessionStorage.setItem(key, JSON.stringify(state))
 }
 
+function wizardStorageKey(jobId = selectedJob.value?.id) {
+  if (!jobId) return ''
+  return `ximing-hr:recruitment-workbench-draft:v${WIZARD_DRAFT_VERSION}:${auth.user?.id || 'unknown'}:${jobId}`
+}
+
+function resetWizardFields() {
+  documentCategory.value = 'persona'
+  schemeKind.value = 'passive_resume'
+  workflowChoice.value = 'standard'
+  coreText.value = ''
+  bonusText.value = ''
+  interval.value = 2
+  source.value = 'search'
+  keyword.value = ''
+  targetResumeCount.value = 3
+  maxScanCount.value = 20
+  completedSteps.context = false
+  completedSteps.standard = false
+  restoredWizardStep.value = 'context'
+  currentStep.value = 'context'
+  wizardError.value = ''
+  dragging.value = false
+  uploadQueue.value = []
+}
+
+function persistWizardDraft(jobId = selectedJob.value?.id) {
+  if (!wizardReady.value || wizardHydrating.value || !jobId) return
+  const key = wizardStorageKey(jobId)
+  if (!key) return
+  sessionStorage.setItem(key, JSON.stringify({
+    version: WIZARD_DRAFT_VERSION,
+    jobId: String(jobId),
+    selectedAccountId: String(selectedAccountId.value || ''),
+    step: currentStep.value,
+    completed: {
+      context: completedSteps.context,
+      standard: completedSteps.standard,
+    },
+    documentCategory: documentCategory.value,
+    draft: operationDraft(),
+  }))
+}
+
+function restoreWizardDraft(jobId = selectedJob.value?.id) {
+  const key = wizardStorageKey(jobId)
+  if (!key) return false
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(key) || 'null')
+    if (
+      !stored
+      || stored.version !== WIZARD_DRAFT_VERSION
+      || String(stored.jobId) !== String(jobId)
+    ) return false
+    applyOperationDraft(stored.draft)
+    documentCategory.value = ['persona', 'requirement', 'other'].includes(stored.documentCategory)
+      ? stored.documentCategory
+      : 'persona'
+    completedSteps.context = stored.completed?.context === true
+    completedSteps.standard = stored.completed?.standard === true
+    restoredWizardStep.value = WIZARD_STEPS.includes(stored.step) ? stored.step : 'context'
+    return true
+  } catch {
+    sessionStorage.removeItem(key)
+    return false
+  }
+}
+
+function guardedWizardStep(requested) {
+  const normalized = WIZARD_STEPS.includes(requested) ? requested : 'context'
+  if (normalized === 'standard' && !completedSteps.context) return 'context'
+  if (normalized === 'plan') {
+    if (!completedSteps.context) return 'context'
+    if (!completedSteps.standard) return 'standard'
+  }
+  return normalized
+}
+
+async function focusCurrentStep() {
+  await nextTick()
+  stepHeading.value?.focus?.()
+}
+
+function resolveWizardStep({ replaceInvalid = true } = {}) {
+  if (!wizardReady.value) return
+  const requested = WIZARD_STEPS.includes(String(route.query.step || ''))
+    ? String(route.query.step)
+    : restoredWizardStep.value
+  const guarded = guardedWizardStep(requested)
+  currentStep.value = guarded
+  const jobId = selectedJob.value?.id
+  const queryStep = String(route.query.step || '')
+  const queryJob = String(route.query.job || '')
+  if (replaceInvalid && (queryStep !== guarded || (jobId && queryJob !== String(jobId)))) {
+    const query = { ...route.query, step: guarded }
+    if (jobId) query.job = String(jobId)
+    router.replace({ name: route.name, query }).catch(() => {})
+  }
+  persistWizardDraft()
+  focusCurrentStep()
+}
+
+function navigateWizardStep(step, { replace = false } = {}) {
+  const guarded = guardedWizardStep(step)
+  currentStep.value = guarded
+  restoredWizardStep.value = guarded
+  wizardError.value = ''
+  persistWizardDraft()
+  const query = { ...route.query, step: guarded }
+  if (selectedJob.value?.id) query.job = String(selectedJob.value.id)
+  const navigation = replace ? router.replace : router.push
+  navigation.call(router, { name: route.name, query }).catch(() => {})
+  focusCurrentStep()
+}
+
+function completeContextStep() {
+  wizardError.value = ''
+  if (!contextStepComplete.value) {
+    wizardError.value = '请选择属于同一授权范围的在招职位和 BOSS 账号'
+    return
+  }
+  completedSteps.context = true
+  persistWizardDraft()
+  navigateWizardStep('standard')
+}
+
+function completeStandardStep() {
+  wizardError.value = ''
+  if (uploading.value) {
+    wizardError.value = '文件仍在上传，请等待全部文件处理完成'
+    return
+  }
+  completedSteps.standard = true
+  persistWizardDraft()
+  navigateWizardStep('plan')
+}
+
+function previousStep() {
+  const index = WIZARD_STEPS.indexOf(currentStep.value)
+  if (index > 0) navigateWizardStep(WIZARD_STEPS[index - 1])
+}
+
+function markStandardDirty() {
+  if (!wizardReady.value || wizardHydrating.value) return
+  completedSteps.standard = false
+  persistWizardDraft()
+}
+
 function applyOperationDraft(draft) {
   if (!draft) return
   schemeKind.value = draft.schemeKind || 'passive_resume'
@@ -256,12 +431,14 @@ function beginNewTask() {
   receipt.value = null
   submitError.value = ''
   submitStage.value = ''
+  persistWizardDraft()
 }
 
-function replaceJobQuery(jobId) {
+function replaceJobQuery(jobId, { step } = {}) {
   const query = { ...route.query }
   if (jobId) query.job = String(jobId)
   else delete query.job
+  if (step) query.step = step
   router.replace({ name: route.name, query }).catch(() => {})
 }
 
@@ -269,9 +446,10 @@ function chooseJob(jobId, { updateRoute = true } = {}) {
   const normalized = jobId === null || jobId === undefined ? '' : String(jobId)
   const job = context.jobs.find((item) => String(item.id) === normalized)
   if (!job) return
+  const changed = String(selectedJob.value?.id || '') !== String(job.id)
   context.selectJob(job.id, { userId: auth.user?.id || context.loadedUserId })
   selectedAccountId.value = job.boss_account ? String(job.boss_account) : ''
-  if (updateRoute) replaceJobQuery(job.id)
+  if (updateRoute) replaceJobQuery(job.id, { step: changed ? 'context' : currentStep.value })
 }
 
 function chooseAccount() {
@@ -312,6 +490,7 @@ function alignInitialSelection() {
 async function loadWorkbench() {
   loading.value = true
   loadError.value = ''
+  wizardHydrating.value = true
   try {
     if (!context.loaded) {
       await context.loadJobs({ userId: auth.user?.id })
@@ -331,11 +510,20 @@ async function loadWorkbench() {
     if (summaryResult.status === 'fulfilled') Object.assign(summary, summaryResult.value)
     else loadError.value = `自动化服务状态读取失败：${summaryResult.reason?.message || '请稍后重试'}`
     alignInitialSelection()
+    restoreWizardDraft(selectedJob.value?.id)
     restoreOperation(selectedJob.value?.id)
+    if (receipt.value) {
+      completedSteps.context = true
+      completedSteps.standard = true
+      restoredWizardStep.value = 'plan'
+    }
   } catch (error) {
     loadError.value = error.message || '招聘作业台加载失败'
   } finally {
+    wizardHydrating.value = false
     loading.value = false
+    wizardReady.value = true
+    resolveWizardStep()
   }
 }
 
@@ -357,34 +545,80 @@ async function loadDocuments(jobId) {
   }
 }
 
-async function uploadDocuments(event) {
+function validateDocumentFile(file) {
+  if (!JOB_DOCUMENT_SUFFIX.test(file.name || '')) return '仅支持 DOC、DOCX 或 XLSX'
+  if (!Number(file.size)) return '文件不能为空'
+  if (file.size > MAX_JOB_DOCUMENT_SIZE) return '单个文件不能超过 25MB'
+  return ''
+}
+
+function selectDocuments(event) {
   const files = [...(event.target.files || [])]
   event.target.value = ''
+  handleDocumentFiles(files)
+}
+
+function dropDocuments(event) {
+  dragging.value = false
+  handleDocumentFiles([...(event.dataTransfer?.files || [])])
+}
+
+async function handleDocumentFiles(files) {
   if (!files.length || !selectedJob.value || uploading.value) return
-  uploading.value = true
+  markStandardDirty()
   documentError.value = ''
-  uploadProgress.completed = 0
-  uploadProgress.total = files.length
-  uploadProgress.failed = 0
-  const failedFiles = []
+  const batchId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const queue = files.map((file, index) => {
+    const validationError = validateDocumentFile(file)
+    return {
+      id: `${batchId}-${index}`,
+      file: validationError ? null : file,
+      name: file.name || `未命名文件 ${index + 1}`,
+      size: Number(file.size || 0),
+      status: validationError ? 'failed' : 'pending',
+      error: validationError,
+    }
+  })
+  uploadQueue.value = queue
+  uploadProgress.completed = queue.filter((item) => item.status === 'failed').length
+  uploadProgress.total = queue.length
+  uploadProgress.failed = uploadProgress.completed
+  const validItems = queue.filter((item) => item.status === 'pending')
+  if (!validItems.length) {
+    documentError.value = '所选文件均未通过上传校验'
+    return
+  }
+
+  uploading.value = true
+  const failedFiles = queue
+    .filter((item) => item.status === 'failed')
+    .map((item) => `${item.name}：${item.error}`)
+  let succeeded = 0
   const jobId = selectedJob.value.id
   try {
-    for (const file of files) {
+    for (const item of validItems) {
+      item.status = 'uploading'
       const body = new FormData()
       body.append('job', String(jobId))
       body.append('category', documentCategory.value)
-      body.append('title', file.name.replace(/\.(docx?|xlsx)$/i, ''))
-      body.append('file', file)
+      body.append('title', item.name.replace(/\.(doc|docx|xlsx)$/i, ''))
+      body.append('file', item.file)
       try {
         await api('recruitment/job-documents/', { method: 'POST', body })
+        item.status = 'succeeded'
+        item.file = null
+        succeeded += 1
       } catch (error) {
+        item.status = 'failed'
+        item.error = error.message || '上传失败'
+        item.file = null
         uploadProgress.failed += 1
-        failedFiles.push(`${file.name}：${error.message}`)
+        failedFiles.push(`${item.name}：${item.error}`)
       } finally {
         uploadProgress.completed += 1
       }
     }
-    await loadDocuments(jobId)
+    if (succeeded) await loadDocuments(jobId)
     if (failedFiles.length) documentError.value = `部分文件未上传：${failedFiles.join('；')}`
   } finally {
     uploading.value = false
@@ -515,19 +749,32 @@ async function startExecution() {
 watch(
   () => selectedJob.value?.id,
   (jobId, previousJobId) => {
+    if (previousJobId && String(previousJobId) !== String(jobId)) persistWizardDraft(previousJobId)
+    wizardHydrating.value = true
     documentLoadSequence += 1
     documents.value = []
     operationState.value = null
     receipt.value = null
     submitError.value = ''
-    if (previousJobId && jobId !== previousJobId) {
-      coreText.value = ''
-      bonusText.value = ''
-    }
+    resetWizardFields()
     if (jobId) {
+      const job = context.jobs.find((item) => String(item.id) === String(jobId))
+      selectedAccountId.value = job?.boss_account ? String(job.boss_account) : ''
       loadDocuments(jobId)
+      restoreWizardDraft(jobId)
       restoreOperation(jobId)
+      if (receipt.value) {
+        completedSteps.context = true
+        completedSteps.standard = true
+        restoredWizardStep.value = 'plan'
+      }
     }
+    wizardHydrating.value = false
+    if (previousJobId && String(previousJobId) !== String(jobId)) {
+      currentStep.value = 'context'
+      restoredWizardStep.value = 'context'
+      replaceJobQuery(jobId, { step: 'context' })
+    } else if (wizardReady.value) resolveWizardStep()
   },
   { immediate: true },
 )
@@ -535,6 +782,25 @@ watch(
 watch(schemeKind, () => {
   submitError.value = ''
 })
+
+watch(
+  () => route.query.step,
+  () => resolveWizardStep(),
+)
+
+watch([coreText, bonusText], () => {
+  if (currentStep.value === 'standard') markStandardDirty()
+}, { flush: 'sync' })
+
+watch(
+  [schemeKind, workflowChoice, interval, source, keyword, targetResumeCount, maxScanCount, documentCategory, selectedAccountId],
+  () => persistWizardDraft(),
+)
+
+watch(
+  () => [completedSteps.context, completedSteps.standard, currentStep.value],
+  () => persistWizardDraft(),
+)
 
 watch(enabledWorkflowOptions, (options) => {
   if (workflowChoice.value !== 'standard' && !options.some((item) => `custom:${item.id}` === workflowChoice.value)) {
@@ -566,45 +832,45 @@ onMounted(loadWorkbench)
     </section>
 
     <template v-else>
-      <section class="panel workbench-context" aria-labelledby="workbench-context-title">
-        <header class="workbench-section-heading">
-          <div><span>STEP 01</span><h3 id="workbench-context-title">选择本次作业</h3></div>
-          <p>职位与 BOSS 账号必须属于同一授权范围。</p>
-        </header>
-        <div class="workbench-context-grid">
-          <label>
-            <span>在招职位</span>
-            <select v-model="selectedJobValue" data-test="workbench-job" :disabled="uploading || submitting || !context.jobs.length">
-              <option value="">请选择在招职位</option>
-              <option v-for="job in context.jobs" :key="job.id" :value="String(job.id)">
-                {{ job.title }}{{ job.department ? ` · ${job.department}` : '' }}
-              </option>
-            </select>
-            <small v-if="!context.jobs.length">暂无职位，请先到管理后台同步 BOSS 已发布职位。</small>
-            <small v-else>{{ selectedJob?.jd ? '已归档职位描述，可继续补充画像与要求。' : '职位已同步，可补充岗位依据。' }}</small>
-          </label>
-          <label>
-            <span>执行账号</span>
-            <select v-model="selectedAccountId" data-test="workbench-account" :disabled="uploading || submitting || !accounts.length" @change="chooseAccount">
-              <option value="">请选择 BOSS 账号</option>
-              <option v-for="account in accounts" :key="account.id" :value="String(account.id)">
-                {{ account.name }} · {{ account.login_status_label || accountReadinessMessage(account) }}
-              </option>
-            </select>
-            <small v-if="selectedAccount">账号环境：{{ selectedAccount.browser_type === 'edge' ? 'Edge' : 'Chrome' }} · CDP {{ selectedAccount.cdp_port }}</small>
-            <small v-else>没有可用账号时，请先在管理后台添加并登录。</small>
-          </label>
-        </div>
-        <div v-if="!context.jobs.length || !accounts.length" class="workbench-empty-actions">
-          <router-link :to="{ path: '/recruitment/admin', query: { section: !accounts.length ? 'accounts' : 'jobs' } }">
-            前往管理后台处理 <AppIcon name="arrow-right" :size="14" />
-          </router-link>
-        </div>
-      </section>
-
       <div class="workbench-layout">
-        <main class="workbench-main">
-          <section class="panel workbench-section" aria-labelledby="workbench-standard-title">
+        <main class="panel workbench-main">
+          <section class="workbench-section workbench-section--context" aria-labelledby="workbench-context-title">
+            <header class="workbench-section-heading">
+              <div><span>STEP 01</span><h3 id="workbench-context-title">选择本次作业</h3></div>
+              <p>职位与 BOSS 账号必须属于同一授权范围。</p>
+            </header>
+            <div class="workbench-context-grid">
+              <label>
+                <span>在招职位</span>
+                <select v-model="selectedJobValue" data-test="workbench-job" :disabled="uploading || submitting || !context.jobs.length">
+                  <option value="">请选择在招职位</option>
+                  <option v-for="job in context.jobs" :key="job.id" :value="String(job.id)">
+                    {{ job.title }}{{ job.department ? ` · ${job.department}` : '' }}
+                  </option>
+                </select>
+                <small v-if="!context.jobs.length">暂无职位，请先到管理后台同步 BOSS 已发布职位。</small>
+                <small v-else>{{ selectedJob?.jd ? '已归档职位描述，可继续补充画像与要求。' : '职位已同步，可补充岗位依据。' }}</small>
+              </label>
+              <label>
+                <span>执行账号</span>
+                <select v-model="selectedAccountId" data-test="workbench-account" :disabled="uploading || submitting || !accounts.length" @change="chooseAccount">
+                  <option value="">请选择 BOSS 账号</option>
+                  <option v-for="account in accounts" :key="account.id" :value="String(account.id)">
+                    {{ account.name }} · {{ account.login_status_label || accountReadinessMessage(account) }}
+                  </option>
+                </select>
+                <small v-if="selectedAccount">账号环境：{{ selectedAccount.browser_type === 'edge' ? 'Edge' : 'Chrome' }} · CDP {{ selectedAccount.cdp_port }}</small>
+                <small v-else>没有可用账号时，请先在管理后台添加并登录。</small>
+              </label>
+            </div>
+            <div v-if="!context.jobs.length || !accounts.length" class="workbench-empty-actions">
+              <router-link :to="{ path: '/recruitment/admin', query: { section: !accounts.length ? 'accounts' : 'jobs' } }">
+                前往管理后台处理 <AppIcon name="arrow-right" :size="14" />
+              </router-link>
+            </div>
+          </section>
+
+          <section class="workbench-section" aria-labelledby="workbench-standard-title">
             <header class="workbench-section-heading">
               <div><span>STEP 02</span><h3 id="workbench-standard-title">招聘标准</h3></div>
               <p>画像与需求文件将归档到当前职位；文字要求同时用于主动寻访。</p>
@@ -670,7 +936,7 @@ onMounted(loadWorkbench)
             </div>
           </section>
 
-          <section class="panel workbench-section" aria-labelledby="workbench-scheme-title">
+          <section class="workbench-section" aria-labelledby="workbench-scheme-title">
             <header class="workbench-section-heading">
               <div><span>STEP 03</span><h3 id="workbench-scheme-title">执行方案</h3></div>
               <p>选择一个业务目标，再设置本次运行参数。</p>
@@ -803,12 +1069,67 @@ onMounted(loadWorkbench)
 
 <style scoped>
 .recruitment-workbench {
-  --workbench-ink: #0f172a;
-  --workbench-muted: #64748b;
-  --workbench-line: #e2e8f0;
-  --workbench-teal: #0f9f8f;
-  --workbench-teal-soft: #ecfdf9;
-  --workbench-amber: #d97706;
+  --wb-color-canvas: #f3f6f8;
+  --wb-color-surface: #ffffff;
+  --wb-color-ink: #0f172a;
+  --wb-color-secondary: #334155;
+  --wb-color-muted: #64748b;
+  --wb-color-line: #e2e8f0;
+  --wb-color-primary: #0f9f8f;
+  --wb-color-primary-dark: #087f73;
+  --wb-color-warning: #d97706;
+  --wb-color-danger: #dc4a4a;
+  --wb-font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --wb-font-size-meta: 10px;
+  --wb-font-size-small: 11px;
+  --wb-font-size-control: 12px;
+  --wb-font-size-body: 13px;
+  --wb-font-size-section: 17px;
+  --wb-font-weight-medium: 500;
+  --wb-font-weight-semibold: 600;
+  --wb-font-weight-bold: 700;
+  --wb-font-weight-heavy: 800;
+  --wb-line-height-compact: 1.45;
+  --wb-line-height-body: 1.6;
+  --wb-letter-spacing-kicker: .14em;
+  --wb-space-1: 4px;
+  --wb-space-2: 8px;
+  --wb-space-3: 12px;
+  --wb-space-4: 16px;
+  --wb-space-5: 22px;
+  --wb-space-6: 28px;
+  --wb-radius-control: 9px;
+  --wb-radius-panel: 15px;
+  --wb-radius-status: 6px;
+  --wb-radius-pill: 999px;
+  --wb-border-width: 1px;
+  --wb-focus-width: 2px;
+  --wb-control-min-height: 42px;
+  --wb-status-dot-size: 8px;
+  --wb-upload-icon-size: 34px;
+  --wb-check-icon-column: 20px;
+  --wb-aside-min-width: 304px;
+  --wb-aside-max-width: 320px;
+  --wb-sticky-offset: 82px;
+  --wb-loading-min-height: 220px;
+  --wb-loading-line-height: 14px;
+  --wb-copy-max-width: 520px;
+  --wb-passive-max-width: 420px;
+  --wb-textarea-min-height: 116px;
+  --wb-document-min-width: 180px;
+  --wb-upload-select-min-width: 116px;
+  --wb-shadow-panel: 0 1px 2px rgba(15, 23, 42, .025);
+  --wb-transition: 180ms ease;
+  min-width: 0;
+  max-width: 100%;
+  container-name: workbench-page;
+  container-type: inline-size;
+  font-family: var(--wb-font-family);
+}
+
+.recruitment-workbench,
+.recruitment-workbench * {
+  box-sizing: border-box;
 }
 
 .workbench-hero {
@@ -818,96 +1139,125 @@ onMounted(loadWorkbench)
 .workbench-runtime {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 11px;
-  border: 1px solid #f1d4aa;
-  border-radius: 999px;
-  color: #9a5a08;
-  background: #fffaf2;
-  font-size: 12px;
-  font-weight: 700;
+  gap: var(--wb-space-2);
+  padding: 0;
+  border: 0;
+  color: var(--wb-color-warning);
+  background: transparent;
+  font-size: var(--wb-font-size-control);
+  font-weight: var(--wb-font-weight-bold);
 }
 
 .workbench-runtime i {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #f59e0b;
+  width: var(--wb-status-dot-size);
+  height: var(--wb-status-dot-size);
+  flex: 0 0 var(--wb-status-dot-size);
+  border-radius: var(--wb-radius-pill);
+  background: var(--wb-color-warning);
 }
 
 .workbench-runtime.is-ready {
-  border-color: #bce8df;
-  color: #087f73;
-  background: var(--workbench-teal-soft);
+  color: var(--wb-color-primary-dark);
+  background: transparent;
 }
 
 .workbench-runtime.is-ready i {
-  background: var(--workbench-teal);
+  background: var(--wb-color-primary);
 }
 
 .workbench-error,
 .workbench-inline-error {
   margin: 0;
-  color: #b42318;
-  background: #fff5f4;
-  border: 1px solid #ffd4d0;
-  border-radius: 9px;
-  padding: 10px 12px;
-  font-size: 12px;
+  padding: var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-danger);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-danger);
+  background: var(--wb-color-surface);
+  font-size: var(--wb-font-size-control);
+  line-height: var(--wb-line-height-compact);
 }
 
 .workbench-loading {
-  min-height: 220px;
+  min-height: var(--wb-loading-min-height);
   display: grid;
   place-items: center;
   align-content: center;
-  gap: 9px;
-  color: var(--workbench-muted);
+  gap: var(--wb-space-2);
+  color: var(--wb-color-muted);
+  box-shadow: var(--wb-shadow-panel);
 }
 
 .workbench-loading > span {
-  width: min(520px, 78%);
-  height: 14px;
-  border-radius: 6px;
-  background: linear-gradient(90deg, #eef2f5, #f8fafc, #eef2f5);
+  width: min(var(--wb-copy-max-width), 78%);
+  height: var(--wb-loading-line-height);
+  border-radius: var(--wb-radius-status);
+  background: var(--wb-color-canvas);
 }
 
-.workbench-loading > span:nth-child(2) { width: min(440px, 68%); }
-.workbench-loading > span:nth-child(3) { width: min(360px, 56%); }
+.workbench-loading > span:nth-child(2) {
+  width: min(var(--wb-passive-max-width), 68%);
+}
 
-.workbench-context,
-.workbench-section,
-.workbench-review {
-  padding: 22px;
+.workbench-loading > span:nth-child(3) {
+  width: min(var(--wb-document-min-width), 56%);
+}
+
+.workbench-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(var(--wb-aside-min-width), var(--wb-aside-max-width));
+  gap: var(--wb-space-5);
+  align-items: start;
+  min-width: 0;
+}
+
+.workbench-main {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--wb-radius-panel);
+  background: var(--wb-color-surface);
+  box-shadow: var(--wb-shadow-panel);
+}
+
+.workbench-section {
+  min-width: 0;
+  padding: var(--wb-space-5);
+}
+
+.workbench-section + .workbench-section {
+  border-top: var(--wb-border-width) solid var(--wb-color-line);
 }
 
 .workbench-section-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 18px;
+  gap: var(--wb-space-4);
+  margin-bottom: var(--wb-space-4);
 }
 
 .workbench-section-heading div > span {
   display: block;
-  color: var(--workbench-teal);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: .14em;
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-meta);
+  font-weight: var(--wb-font-weight-heavy);
+  letter-spacing: var(--wb-letter-spacing-kicker);
 }
 
 .workbench-section-heading h3 {
-  margin: 3px 0 0;
-  color: var(--workbench-ink);
-  font-size: 17px;
+  margin: var(--wb-space-1) 0 0;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-section);
+  font-weight: var(--wb-font-weight-bold);
 }
 
 .workbench-section-heading p {
-  margin: 3px 0 0;
-  max-width: 520px;
-  color: var(--workbench-muted);
-  font-size: 12px;
+  max-width: var(--wb-copy-max-width);
+  margin: var(--wb-space-1) 0 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-control);
+  line-height: var(--wb-line-height-body);
   text-align: right;
 }
 
@@ -916,7 +1266,8 @@ onMounted(loadWorkbench)
 .workbench-settings {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: var(--wb-space-4);
+  min-width: 0;
 }
 
 .workbench-context-grid label,
@@ -924,179 +1275,203 @@ onMounted(loadWorkbench)
 .workbench-settings label,
 .workbench-upload__actions label {
   display: grid;
-  gap: 7px;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 700;
+  gap: var(--wb-space-2);
+  min-width: 0;
+  color: var(--wb-color-secondary);
+  font-size: var(--wb-font-size-control);
+  font-weight: var(--wb-font-weight-bold);
 }
 
 .workbench-context-grid select,
 .workbench-requirements textarea,
 .workbench-settings select,
 .workbench-settings input,
-.workbench-upload__actions select {
+.workbench-upload__actions select,
+.workbench-workflow-choice select {
   width: 100%;
-  border: 1px solid #d7e0e7;
-  border-radius: 9px;
-  color: var(--workbench-ink);
-  background: #fff;
-  padding: 10px 11px;
+  min-width: 0;
+  padding: var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-ink);
+  background: var(--wb-color-surface);
   font: inherit;
-  font-weight: 500;
+  font-size: var(--wb-font-size-body);
+  font-weight: var(--wb-font-weight-medium);
 }
 
 .workbench-context-grid select:focus,
 .workbench-requirements textarea:focus,
 .workbench-settings select:focus,
 .workbench-settings input:focus,
-.workbench-upload__actions select:focus {
-  outline: 2px solid rgba(15, 159, 143, .18);
-  border-color: var(--workbench-teal);
+.workbench-upload__actions select:focus,
+.workbench-workflow-choice select:focus {
+  outline: var(--wb-focus-width) solid var(--wb-color-primary);
+  border-color: var(--wb-color-primary);
 }
 
 .workbench-context-grid small,
 .workbench-requirements small,
-.workbench-settings small {
-  color: var(--workbench-muted);
-  font-weight: 500;
-  line-height: 1.45;
+.workbench-settings small,
+.workbench-workflow-choice small {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  font-weight: var(--wb-font-weight-medium);
+  line-height: var(--wb-line-height-compact);
 }
 
 .workbench-empty-actions {
-  margin-top: 12px;
+  margin-top: var(--wb-space-3);
 }
 
 .workbench-empty-actions a,
 .workbench-receipt a {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: #087f73;
-  font-size: 12px;
-  font-weight: 800;
+  gap: var(--wb-space-1);
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-control);
+  font-weight: var(--wb-font-weight-bold);
   text-decoration: none;
-}
-
-.workbench-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 348px;
-  gap: 18px;
-  align-items: start;
-}
-
-.workbench-main {
-  display: grid;
-  gap: 18px;
-  min-width: 0;
 }
 
 .workbench-upload {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 15px;
-  border: 1px dashed #cbd8df;
-  border-radius: 12px;
-  background: #f8fbfc;
+  gap: var(--wb-space-4);
+  min-width: 0;
+  padding: var(--wb-space-3) 0;
+  border-top: var(--wb-border-width) solid var(--wb-color-line);
+  border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  background: var(--wb-color-surface);
 }
 
 .workbench-upload__copy,
 .workbench-upload__actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--wb-space-3);
+  min-width: 0;
 }
 
 .workbench-upload__copy > i {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  color: #087f73;
-  background: #e8f8f4;
+  width: var(--wb-upload-icon-size);
+  height: var(--wb-upload-icon-size);
+  flex: 0 0 var(--wb-upload-icon-size);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-primary-dark);
+  background: var(--wb-color-canvas);
 }
 
 .workbench-upload__copy div {
   display: grid;
-  gap: 3px;
+  gap: var(--wb-space-1);
+  min-width: 0;
 }
 
 .workbench-upload__copy strong {
-  color: var(--workbench-ink);
-  font-size: 13px;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-body);
 }
 
 .workbench-upload__copy small {
-  color: var(--workbench-muted);
-  font-size: 11px;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
 }
 
 .workbench-upload__actions select {
-  min-width: 116px;
-  padding: 8px 9px;
+  min-width: var(--wb-upload-select-min-width);
+  padding: var(--wb-space-2);
 }
 
 .workbench-upload__actions button {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--wb-space-2);
   white-space: nowrap;
+}
+
+.workbench-upload__actions .secondary-button {
+  border-color: var(--wb-color-line);
+  color: var(--wb-color-secondary);
+  background: var(--wb-color-surface);
+  box-shadow: none;
+  font-size: var(--wb-font-size-control);
+  font-weight: var(--wb-font-weight-semibold);
+}
+
+.workbench-upload__actions .secondary-button:hover:not(:disabled) {
+  border-color: var(--wb-color-muted);
+  color: var(--wb-color-ink);
+  background: var(--wb-color-canvas);
 }
 
 .workbench-documents {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0 18px;
+  gap: var(--wb-space-2);
+  min-width: 0;
+  margin: var(--wb-space-3) 0 var(--wb-space-4);
 }
 
 .workbench-documents > p {
   margin: 0;
-  color: var(--workbench-muted);
-  font-size: 11px;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
 }
 
 .workbench-documents a {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 180px;
-  padding: 8px 10px;
-  border: 1px solid var(--workbench-line);
-  border-radius: 9px;
-  color: #334155;
-  background: #fff;
+  gap: var(--wb-space-2);
+  min-width: min(var(--wb-document-min-width), 100%);
+  padding: var(--wb-space-1) var(--wb-space-2);
+  border-left: var(--wb-focus-width) solid var(--wb-color-line);
+  color: var(--wb-color-secondary);
+  background: transparent;
   text-decoration: none;
 }
 
 .workbench-documents a > span {
   display: grid;
-  gap: 2px;
+  gap: var(--wb-space-1);
+  min-width: 0;
 }
 
-.workbench-documents a strong { font-size: 11px; }
-.workbench-documents a small { color: var(--workbench-muted); font-size: 9px; }
+.workbench-documents a strong {
+  overflow-wrap: anywhere;
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-documents a small {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-meta);
+}
 
 .workbench-requirements label > span em {
-  margin-left: 5px;
-  color: var(--workbench-muted);
+  margin-left: var(--wb-space-1);
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-meta);
   font-style: normal;
-  font-size: 10px;
-  font-weight: 500;
+  font-weight: var(--wb-font-weight-medium);
 }
 
 .workbench-requirements textarea {
+  min-height: var(--wb-textarea-min-height);
   resize: vertical;
-  min-height: 116px;
-  line-height: 1.65;
+  line-height: var(--wb-line-height-body);
 }
 
 .workbench-schemes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--wb-space-3);
+  min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
@@ -1106,22 +1481,28 @@ onMounted(loadWorkbench)
   position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 11px;
-  padding: 15px;
-  border: 1px solid var(--workbench-line);
-  border-radius: 12px;
+  gap: var(--wb-space-3);
+  min-width: 0;
+  padding: var(--wb-space-4);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface);
   cursor: pointer;
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition: border-color var(--wb-transition), background-color var(--wb-transition);
 }
 
 .workbench-schemes > label:hover {
-  border-color: #9dcfc7;
+  border-color: var(--wb-color-primary);
+}
+
+.workbench-schemes > label:focus-within {
+  outline: var(--wb-focus-width) solid var(--wb-color-primary);
 }
 
 .workbench-schemes > label.is-selected {
-  border-color: var(--workbench-teal);
-  background: #f4fffc;
-  box-shadow: 0 0 0 2px rgba(15, 159, 143, .09);
+  border-color: var(--wb-color-primary);
+  background: var(--wb-color-surface);
+  box-shadow: none;
 }
 
 .workbench-schemes input {
@@ -1133,243 +1514,406 @@ onMounted(loadWorkbench)
 .workbench-schemes label > i {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  color: #087f73;
-  background: #e8f8f4;
+  width: var(--wb-upload-icon-size);
+  height: var(--wb-upload-icon-size);
+  flex: 0 0 var(--wb-upload-icon-size);
+  color: var(--wb-color-primary-dark);
+  background: transparent;
 }
 
 .workbench-schemes label > span {
   display: grid;
-  gap: 3px;
+  gap: var(--wb-space-1);
+  min-width: 0;
 }
 
 .workbench-schemes small {
-  color: var(--workbench-teal);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: .08em;
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-meta);
+  font-weight: var(--wb-font-weight-heavy);
+  letter-spacing: var(--wb-letter-spacing-kicker);
 }
 
 .workbench-schemes strong {
-  color: var(--workbench-ink);
-  font-size: 13px;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-body);
 }
 
 .workbench-schemes em {
-  color: var(--workbench-muted);
-  font-size: 10px;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
   font-style: normal;
-  line-height: 1.45;
+  line-height: var(--wb-line-height-compact);
 }
 
 .workbench-settings {
-  margin-top: 16px;
-  padding: 16px;
-  border-radius: 12px;
-  background: #f8fafc;
+  margin-top: var(--wb-space-4);
+  padding: var(--wb-space-4) 0 0;
+  border-top: var(--wb-border-width) solid var(--wb-color-line);
+  background: transparent;
 }
 
 .workbench-settings--passive {
-  grid-template-columns: minmax(240px, 420px);
+  grid-template-columns: minmax(0, var(--wb-passive-max-width));
 }
 
 .workbench-workflow-choice {
   display: flex;
   align-items: flex-end;
-  gap: 14px;
-  margin-top: 14px;
-  padding: 14px 16px;
-  border: 1px solid var(--workbench-line);
-  border-radius: 12px;
-  background: #fbfcfd;
+  gap: var(--wb-space-4);
+  min-width: 0;
+  margin-top: var(--wb-space-4);
+  padding-top: var(--wb-space-4);
+  border-top: var(--wb-border-width) solid var(--wb-color-line);
+  background: transparent;
 }
 
-.workbench-workflow-choice label { display: grid; flex: 1; gap: 6px; color: #334155; font-size: 12px; font-weight: 700; }
-.workbench-workflow-choice select { width: 100%; padding: 10px 11px; border: 1px solid #d7e0e7; border-radius: 9px; color: var(--workbench-ink); background: #fff; }
-.workbench-workflow-choice small { color: var(--workbench-muted); font-weight: 500; }
-.workbench-workflow-choice a { flex: 0 0 auto; padding-bottom: 7px; color: #087f73; font-size: 11px; font-weight: 800; text-decoration: none; }
+.workbench-workflow-choice label {
+  display: grid;
+  flex: 1;
+  gap: var(--wb-space-2);
+  min-width: 0;
+  color: var(--wb-color-secondary);
+  font-size: var(--wb-font-size-control);
+  font-weight: var(--wb-font-weight-bold);
+}
+
+.workbench-workflow-choice a {
+  flex: 0 0 auto;
+  padding-bottom: var(--wb-space-2);
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  font-weight: var(--wb-font-weight-semibold);
+  text-decoration: underline;
+  text-underline-offset: var(--wb-space-1);
+}
+
+.workbench-workflow-choice a:hover {
+  color: var(--wb-color-primary-dark);
+}
 
 .workbench-review {
   position: sticky;
-  top: 82px;
+  top: var(--wb-sticky-offset);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--wb-space-4);
+  border-radius: var(--wb-radius-panel);
+  background: var(--wb-color-surface);
+  box-shadow: var(--wb-shadow-panel);
 }
 
 .workbench-review .workbench-section-heading {
-  margin-bottom: 12px;
+  order: 0;
+  margin-bottom: var(--wb-space-2);
+}
+
+.workbench-review .workbench-section-heading div > span {
+  display: none;
+}
+
+.workbench-review .workbench-section-heading h3 {
+  margin: 0;
+  font-size: var(--wb-font-size-section);
+}
+
+.workbench-summary {
+  order: 1;
+  display: grid;
+  gap: var(--wb-space-1);
+  margin: 0;
+  padding: var(--wb-space-3) 0 var(--wb-space-4);
+  border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  background: transparent;
+}
+
+.workbench-summary span,
+.workbench-summary small {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-summary strong {
+  overflow-wrap: anywhere;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-body);
 }
 
 .workbench-checks {
+  order: 2;
   display: grid;
   gap: 0;
+  min-width: 0;
   margin: 0;
-  padding: 0;
+  padding: var(--wb-space-2) 0;
   list-style: none;
 }
 
 .workbench-checks li {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  gap: 8px;
+  grid-template-columns: var(--wb-check-icon-column) minmax(0, 1fr) auto;
+  gap: var(--wb-space-2);
   align-items: start;
-  padding: 10px 0;
-  border-bottom: 1px solid #edf1f4;
+  min-width: 0;
+  padding: var(--wb-space-2) 0;
+  border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+}
+
+.workbench-checks li:last-child {
+  border-bottom: 0;
 }
 
 .workbench-checks li > i {
-  color: var(--workbench-amber);
+  color: var(--wb-color-warning);
 }
 
 .workbench-checks li.is-ready > i {
-  color: var(--workbench-teal);
+  color: var(--wb-color-primary);
 }
 
 .workbench-checks li > span {
   display: grid;
-  gap: 3px;
+  gap: var(--wb-space-1);
+  min-width: 0;
 }
 
 .workbench-checks strong {
-  color: var(--workbench-ink);
-  font-size: 11px;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-small);
 }
 
 .workbench-checks small {
-  color: var(--workbench-muted);
-  font-size: 10px;
-  line-height: 1.45;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-meta);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-checks li.is-ready small {
+  display: none;
+}
+
+.workbench-checks li.is-ready strong {
+  color: var(--wb-color-secondary);
+  font-weight: var(--wb-font-weight-semibold);
 }
 
 .workbench-checks a {
-  color: #087f73;
-  font-size: 10px;
-  font-weight: 800;
-  text-decoration: none;
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-meta);
+  font-weight: var(--wb-font-weight-bold);
+  text-decoration: underline;
+  text-underline-offset: var(--wb-space-1);
 }
 
-.workbench-summary {
-  display: grid;
-  gap: 4px;
-  margin: 15px 0 12px;
-  padding: 12px;
-  border-radius: 10px;
-  background: #f6f8fa;
-}
-
-.workbench-summary span,
-.workbench-summary small {
-  color: var(--workbench-muted);
-  font-size: 10px;
-}
-
-.workbench-summary strong {
-  color: var(--workbench-ink);
-  font-size: 13px;
+.workbench-review > .workbench-inline-error {
+  order: 3;
+  margin-bottom: var(--wb-space-2);
 }
 
 .workbench-start {
+  order: 4;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--wb-space-2);
   width: 100%;
-  min-height: 42px;
-  margin-top: 10px;
+  min-height: var(--wb-control-min-height);
+  margin-top: var(--wb-space-1);
+  border-color: var(--wb-color-ink);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-ink);
+  box-shadow: none;
+  transform: none;
+}
+
+.recruitment-workbench .workbench-start:hover:not(:disabled) {
+  border-color: var(--wb-color-secondary);
+  background: var(--wb-color-secondary);
+  transform: none;
+}
+
+.workbench-start:disabled {
+  border-color: var(--wb-color-line);
+  color: var(--wb-color-muted);
+  background: var(--wb-color-canvas);
+  cursor: not-allowed;
+  opacity: 1;
 }
 
 .workbench-submit-hint {
+  order: 5;
   display: block;
-  margin-top: 8px;
-  color: var(--workbench-muted);
-  font-size: 10px;
-  line-height: 1.45;
-  text-align: center;
+  margin-top: var(--wb-space-2);
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-meta);
+  line-height: var(--wb-line-height-compact);
+  text-align: left;
 }
 
 .workbench-receipt {
+  order: 6;
   display: flex;
-  gap: 9px;
-  margin-top: 14px;
-  padding: 12px;
-  border: 1px solid #bce8df;
-  border-radius: 11px;
-  color: #087f73;
-  background: var(--workbench-teal-soft);
+  gap: var(--wb-space-2);
+  margin-top: var(--wb-space-3);
+  padding: var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-primary);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-primary-dark);
+  background: var(--wb-color-surface);
 }
 
 .workbench-receipt > div {
   display: grid;
-  gap: 3px;
+  gap: var(--wb-space-1);
   min-width: 0;
 }
 
 .workbench-receipt span,
 .workbench-receipt small {
-  font-size: 10px;
+  font-size: var(--wb-font-size-meta);
 }
 
 .workbench-receipt strong {
   overflow-wrap: anywhere;
-  color: var(--workbench-ink);
-  font-size: 11px;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-small);
 }
 
 .workbench-receipt a {
-  margin-top: 4px;
+  margin-top: var(--wb-space-1);
 }
 
 .workbench-new-task {
   width: fit-content;
-  margin-top: 5px;
+  margin-top: var(--wb-space-1);
   padding: 0;
   border: 0;
-  color: #6b7280;
+  color: var(--wb-color-muted);
   background: transparent;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--wb-font-size-meta);
+  font-weight: var(--wb-font-weight-semibold);
   text-decoration: underline;
+  text-underline-offset: var(--wb-space-1);
 }
 
 .workbench-safety {
+  order: 7;
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  margin: 14px 0 0;
-  color: var(--workbench-muted);
-  font-size: 9px;
-  line-height: 1.5;
+  gap: var(--wb-space-2);
+  margin: var(--wb-space-3) 0 0;
+  padding-top: var(--wb-space-3);
+  border-top: var(--wb-border-width) solid var(--wb-color-line);
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-meta);
+  line-height: var(--wb-line-height-compact);
 }
 
 .sr-only {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  width: var(--wb-border-width);
+  height: var(--wb-border-width);
   padding: 0;
-  margin: -1px;
+  margin: calc(var(--wb-border-width) * -1);
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
 }
 
-@media (max-width: 1199px) {
+@media (max-width: 1700px) {
   .workbench-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .workbench-review {
     position: static;
-    order: -1;
+    order: 0;
+    width: 100%;
+    max-width: 100%;
   }
 
   .workbench-checks {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 18px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: var(--wb-space-5);
+  }
+
+  .workbench-checks li:nth-last-child(-n + 3) {
+    border-bottom: 0;
   }
 }
 
-@media (max-width: 767px) {
+@container workbench-page (max-width: 1320px) {
+  .workbench-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-review {
+    position: static;
+    order: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .workbench-checks {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: var(--wb-space-5);
+  }
+
+  .workbench-checks li {
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-checks li:nth-last-child(-n + 3) {
+    border-bottom: 0;
+  }
+}
+
+@container workbench-page (max-width: 900px) {
+  .workbench-checks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workbench-checks li {
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-checks li:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+}
+
+@container workbench-page (max-width: 620px) {
+  .workbench-checks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-checks li {
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-checks li:last-child {
+    border-bottom: 0;
+  }
+}
+
+@media (max-width: 1050px) {
+  .workbench-checks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workbench-checks li {
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
+
+  .workbench-checks li:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+}
+
+@media (max-width: 720px) {
   .workbench-hero,
   .workbench-section-heading,
   .workbench-upload {
@@ -1377,14 +1921,17 @@ onMounted(loadWorkbench)
     flex-direction: column;
   }
 
+  .workbench-runtime {
+    align-self: flex-start;
+  }
+
   .workbench-section-heading p {
     text-align: left;
   }
 
-  .workbench-context,
   .workbench-section,
   .workbench-review {
-    padding: 16px;
+    padding: var(--wb-space-4);
   }
 
   .workbench-context-grid,
@@ -1392,20 +1939,40 @@ onMounted(loadWorkbench)
   .workbench-settings,
   .workbench-schemes,
   .workbench-checks {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .workbench-workflow-choice { align-items: stretch; flex-direction: column; }
-  .workbench-workflow-choice a { padding-bottom: 0; }
+  .workbench-checks li {
+    border-bottom: var(--wb-border-width) solid var(--wb-color-line);
+  }
 
+  .workbench-checks li:last-child {
+    border-bottom: 0;
+  }
+
+  .workbench-workflow-choice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workbench-workflow-choice a {
+    align-self: flex-start;
+    padding-bottom: 0;
+  }
+
+  .workbench-upload__copy,
   .workbench-upload__actions {
     width: 100%;
+  }
+
+  .workbench-upload__actions {
     align-items: stretch;
     flex-direction: column;
   }
 
   .workbench-upload__actions button {
     justify-content: center;
+    width: 100%;
   }
 }
 

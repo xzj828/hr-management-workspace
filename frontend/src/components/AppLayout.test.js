@@ -49,9 +49,9 @@ describe('AppLayout navigation hierarchy', () => {
     })
 
     expect(wrapper.findAll('.module-nav .nav-item__label').map((item) => item.text())).toEqual(['招聘管理', '考勤管理'])
-    expect(wrapper.findAll('.top-navigation__link').map((item) => item.text())).toEqual(['招聘作业台', '结果中心', '管理后台'])
+    expect(wrapper.findAll('.top-navigation__link').map((item) => item.text())).toEqual(['招聘看板', '招聘作业台', '结果中心', '管理后台'])
     expect(wrapper.findAll('.module-nav .app-icon')).toHaveLength(2)
-    expect(wrapper.findAll('.top-navigation__link .app-icon')).toHaveLength(3)
+    expect(wrapper.findAll('.top-navigation__link .app-icon')).toHaveLength(4)
     expect(wrapper.find('.collapse-button .app-icon').exists()).toBe(true)
     expect(wrapper.find('.model-switcher').text()).toBe('切换模型')
     expect(wrapper.text()).not.toContain('Copilot')
@@ -74,6 +74,7 @@ describe('AppLayout navigation hierarchy', () => {
     })
     const links = wrapper.findAllComponents(RouterLink).map((link) => link.props('to'))
 
+    expect(links).toContainEqual({ name: 'recruitment-dashboard' })
     expect(links).toContainEqual({ name: 'recruitment-workbench', query: { job: '12' } })
     expect(links).toContainEqual({ name: 'recruitment-results', query: { job: '12' } })
     expect(links).toContainEqual({ name: 'recruitment-admin' })
@@ -91,7 +92,7 @@ describe('AppLayout navigation hierarchy', () => {
       },
     })
 
-    expect(wrapper.findAll('.top-navigation__link').map((item) => item.text())).toEqual(['招聘作业台', '结果中心'])
+    expect(wrapper.findAll('.top-navigation__link').map((item) => item.text())).toEqual(['招聘看板', '招聘作业台', '结果中心'])
   })
 
   it('clears personal model metadata when the signed-in user changes', async () => {

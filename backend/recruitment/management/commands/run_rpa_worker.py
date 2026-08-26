@@ -13,12 +13,23 @@ from urllib.request import Request, urlopen
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from recruitment.rpa.browser import ProfileLock, ProfileLockedError
+from recruitment.rpa.browser import (
+    BrowserUnavailableError,
+    ProfileLock,
+    ProfileLockedError,
+    cdp_is_running,
+    managed_cdp_matches,
+    record_managed_cdp,
+)
 from recruitment.rpa.capabilities import capability_payload
 from recruitment.rpa.cli import BossCliError, BossCliRunner, CliAccountConfig
 from recruitment.rpa.status import inspect_boss_status
 from recruitment.rpa.conversations import parse_chat_messages, parse_conversation_list
 from recruitment.rpa.playwright_adapter import BrowserConnectionError, BrowserInventory
+
+
+HEARTBEAT_INTERVAL_SECONDS = 15
+MAX_API_RETRY_SECONDS = 30
 
 
 class WorkerApiClient:
@@ -81,7 +92,10 @@ class AccountStatusObserver:
     def run_once(self):
         observations = []
         for target in self.api.status_targets().get("accounts", []):
-            observed = inspect_boss_status(target["browser"]["cdp_port"])
+            observed = inspect_boss_status(
+                target["browser"]["cdp_port"],
+                user_data_dir=target["browser"]["user_data_dir"],
+            )
             observations.append({
                 "account_id": target["id"],
                 "login_status": observed.login_status,
@@ -101,24 +115,81 @@ class AccountStatusObserver:
             stop.wait(self.interval)
 
 
+class WorkerHeartbeat:
+    def __init__(self, api, payload, *, interval=HEARTBEAT_INTERVAL_SECONDS, stderr=None):
+        self.api = api
+        self.payload = payload
+        self.interval = interval
+        self.stderr = stderr
+
+    def run(self, stop):
+        retry_seconds = 1
+        while not stop.is_set():
+            try:
+                self.api.heartbeat(self.payload)
+            except RuntimeError as exc:
+                if self.stderr is not None:
+                    self.stderr.write(f"Worker 心跳暂时失败，{retry_seconds} 秒后重试：{exc}")
+                stop.wait(retry_seconds)
+                retry_seconds = min(retry_seconds * 2, MAX_API_RETRY_SECONDS)
+                continue
+            retry_seconds = 1
+            stop.wait(self.interval)
+
+
 def execute_check_status(task, account, runner):
     if task.get("open_login"):
-        runner.login(account)
-        observed = None
-        for attempt in range(10):
-            observed = inspect_boss_status(account.cdp_port)
-            if observed.login_status != "browser_stopped" or attempt == 9:
-                break
-            time.sleep(0.5)
+        browser_was_running = cdp_is_running(account.cdp_port)
+        if browser_was_running and not managed_cdp_matches(account.cdp_port, account.user_data_dir):
+            return {
+                "status": "failed",
+                "result": {"login_status": "error", "verification_status": "cdp_identity_mismatch", "detail": "调试端口不属于该账号的隔离浏览器"},
+                "error_code": "cdp_identity_mismatch",
+                "error_message": "调试端口不属于该账号的隔离浏览器",
+            }
+        login_process = None
+        try:
+            if hasattr(runner, "start_login"):
+                login_process = runner.start_login(account)
+            else:
+                runner.login(account)
+            observed = None
+            for attempt in range(20):
+                if cdp_is_running(account.cdp_port) and not browser_was_running:
+                    try:
+                        record_managed_cdp(account.cdp_port, account.user_data_dir)
+                        browser_was_running = True
+                    except BrowserUnavailableError:
+                        pass
+                observed = inspect_boss_status(
+                    account.cdp_port,
+                    user_data_dir=account.user_data_dir,
+                )
+                if observed.login_status != "browser_stopped" or attempt == 19:
+                    break
+                if login_process is not None and login_process.poll() is not None:
+                    break
+                time.sleep(0.5)
+        finally:
+            if login_process is not None:
+                runner.stop_login(login_process)
     else:
-        observed = inspect_boss_status(account.cdp_port)
+        observed = inspect_boss_status(account.cdp_port, user_data_dir=account.user_data_dir)
     result = {
         "login_status": observed.login_status,
         "verification_status": observed.verification_status,
         "detail": observed.detail,
     }
-    task_status = "succeeded" if observed.login_status == "ready" else "waiting_human"
-    return {"status": task_status, "result": result}
+    if observed.login_status == "waiting_human":
+        return {"status": "waiting_human", "result": result}
+    if task.get("open_login") and observed.login_status in {"browser_stopped", "error"}:
+        return {
+            "status": "failed",
+            "result": result,
+            "error_code": "browser_login_unavailable",
+            "error_message": observed.detail or "隔离浏览器登录状态不可用",
+        }
+    return {"status": "succeeded", "result": result}
 
 
 def execute_sync_positions(task, account, runner):
@@ -587,10 +658,40 @@ class WorkerEngine:
             return outcome
         browser = task["browser"]
         account = CliAccountConfig(browser["executable"], browser["user_data_dir"], int(browser["cdp_port"]))
+        is_open_login = (
+            task.get("action") == "check_status"
+            and task.get("open_login") is True
+        )
         try:
             self.api.event(task["id"], {"event": "started", "message": "本机 Worker 开始执行"})
             with ProfileLock(account.user_data_dir):
-                outcome = self._execute(task, account)
+                if not is_open_login and not managed_cdp_matches(account.cdp_port, account.user_data_dir):
+                    outcome = {
+                        "status": "failed",
+                        "result": {},
+                        "error_code": "cdp_identity_mismatch",
+                        "error_message": "隔离浏览器实例与任务账号不匹配，请重新打开该账号登录窗口",
+                    }
+                elif task.get("action") != "check_status":
+                    observed = inspect_boss_status(
+                        account.cdp_port,
+                        user_data_dir=account.user_data_dir,
+                    )
+                    if observed.login_status != "ready":
+                        outcome = {
+                            "status": "failed",
+                            "result": {
+                                "login_status": observed.login_status,
+                                "verification_status": observed.verification_status,
+                                "detail": observed.detail,
+                            },
+                            "error_code": "boss_account_not_ready",
+                            "error_message": observed.detail or "BOSS 账号当前未登录，请重新打开登录窗口",
+                        }
+                    else:
+                        outcome = self._execute(task, account)
+                else:
+                    outcome = self._execute(task, account)
         except ProfileLockedError as exc:
             outcome = {"status": "failed", "result": {}, "error_code": "profile_locked", "error_message": str(exc)}
         except BossCliError as exc:
@@ -611,6 +712,49 @@ class WorkerEngine:
         return False
 
 
+def probe_boss_cli():
+    try:
+        runner = BossCliRunner()
+        raw_version = runner.version().strip()
+        if not raw_version:
+            raise BossCliError("boss-cli 未返回版本信息")
+    except BossCliError as exc:
+        return None, "", {
+            "code": "boss_cli_unavailable",
+            "message": str(exc)[:300],
+        }
+    return runner, raw_version.splitlines()[0], None
+
+
+def build_heartbeat(*, hostname, version, cli_error):
+    capabilities = {
+        "boss_cli": cli_error is None,
+        "actions": capability_payload(),
+    }
+    if cli_error is not None:
+        capabilities["boss_cli_error"] = cli_error
+    return {
+        "hostname": hostname,
+        "version": version,
+        "capabilities": capabilities,
+    }
+
+
+def run_worker_loop(*, engine, stop, poll_seconds, stderr):
+    retry_seconds = 1
+    while not stop.is_set():
+        try:
+            if engine is not None:
+                engine.run_once()
+        except RuntimeError as exc:
+            stderr.write(f"Worker API 暂时不可用，{retry_seconds} 秒后重试：{exc}")
+            stop.wait(retry_seconds)
+            retry_seconds = min(retry_seconds * 2, MAX_API_RETRY_SECONDS)
+            continue
+        retry_seconds = 1
+        stop.wait(poll_seconds)
+
+
 class Command(BaseCommand):
     help = "运行本机 BOSS 只读 RPA Worker"
 
@@ -619,34 +763,42 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         worker_key = f"local-{socket.gethostname().lower()}"
-        runner = BossCliRunner()
         api = WorkerApiClient(settings.RPA_API_BASE_URL, settings.RPA_WORKER_TOKEN, worker_key)
-        version = runner.version().splitlines()[0]
-        heartbeat = {
-            "hostname": socket.gethostname(),
-            "version": version,
-            "capabilities": {"boss_cli": True, "actions": capability_payload()},
-        }
-        api.heartbeat(heartbeat)
-        engine = WorkerEngine(api, runner, worker_key)
+        runner, version, cli_error = probe_boss_cli()
+        heartbeat = build_heartbeat(
+            hostname=socket.gethostname(),
+            version=version,
+            cli_error=cli_error,
+        )
+        engine = WorkerEngine(api, runner, worker_key) if runner is not None else None
         observer = AccountStatusObserver(api)
         if options["once"]:
+            api.heartbeat(heartbeat)
             observer.run_once()
-            engine.run_once()
+            if engine is not None:
+                engine.run_once()
             return
         stop = threading.Event()
+        heartbeat_sender = WorkerHeartbeat(api, heartbeat, stderr=self.stderr)
+        heartbeat_thread = threading.Thread(
+            target=heartbeat_sender.run,
+            args=(stop,),
+            name="rpa-worker-heartbeat",
+            daemon=True,
+        )
         observer_thread = threading.Thread(target=observer.run, args=(stop,), name="boss-status-observer", daemon=True)
+        heartbeat_thread.start()
         observer_thread.start()
-        next_heartbeat = time.monotonic() + 15
         try:
-            while not stop.is_set():
-                if time.monotonic() >= next_heartbeat:
-                    api.heartbeat(heartbeat)
-                    next_heartbeat = time.monotonic() + 15
-                engine.run_once()
-                stop.wait(settings.RPA_POLL_SECONDS)
+            run_worker_loop(
+                engine=engine,
+                stop=stop,
+                poll_seconds=settings.RPA_POLL_SECONDS,
+                stderr=self.stderr,
+            )
         except KeyboardInterrupt:
             stop.set()
         finally:
             stop.set()
+            heartbeat_thread.join(timeout=2)
             observer_thread.join(timeout=2)

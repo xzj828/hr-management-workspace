@@ -1,12 +1,13 @@
 export const modules = [
-  { id: 'recruitment', label: '招聘管理', routeName: 'recruitment-workbench', icon: 'briefcase' },
+  { id: 'recruitment', label: '招聘管理', routeName: 'recruitment-dashboard', icon: 'briefcase' },
   { id: 'attendance', label: '考勤管理', routeName: 'attendance-dashboard', icon: 'calendar-check' },
 ]
 
 const navigation = {
   recruitment: [
+    { name: 'recruitment-dashboard', label: '招聘看板', icon: 'dashboard', scope: 'global' },
     { name: 'recruitment-workbench', label: '招聘作业台', icon: 'briefcase', scope: 'job' },
-    { name: 'recruitment-results', label: '结果中心', icon: 'dashboard', scope: 'job' },
+    { name: 'recruitment-results', label: '结果中心', icon: 'check-circle', scope: 'job' },
     { name: 'recruitment-admin', label: '管理后台', icon: 'sliders', scope: 'global' },
   ],
   attendance: [

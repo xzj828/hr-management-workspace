@@ -1,4 +1,8 @@
+from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
+
 from django.contrib.auth.models import User
+from django.test import TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
@@ -19,6 +23,7 @@ from recruitment.models import (
 from recruitment.services.search_campaigns import _campaign_snapshot
 from recruitment.services.approvals import approve
 from recruitment.services.communications import materialize_communication_batch, prepare_communication
+from recruitment.rpa.tasks import create_task
 
 
 class RpaTaskApiTests(APITestCase):
@@ -37,6 +42,13 @@ class RpaTaskApiTests(APITestCase):
             user_data_dir="C:/hr-test/profiles/boss-task-test",
         )
         self.account.authorized_users.add(self.hr)
+        self.worker = RpaWorker.objects.create(
+            key="rpa-api-worker",
+            hostname="localhost",
+            status=RpaWorker.Status.ONLINE,
+            last_seen_at=timezone.now(),
+            capabilities={"boss_cli": True},
+        )
 
     def create_task(self, action="check_status", payload=None):
         self.client.force_login(self.hr)
@@ -53,6 +65,34 @@ class RpaTaskApiTests(APITestCase):
         self.assertEqual(task.created_by, self.hr)
         self.assertEqual(task.events.get().event, "created")
         self.assertTrue(RecruitmentAuditLog.objects.filter(target_id=str(task.pk), action="task_created").exists())
+
+    def test_open_login_is_rejected_when_worker_heartbeat_is_stale(self):
+        self.worker.last_seen_at = timezone.now() - timedelta(minutes=5)
+        self.worker.save(update_fields=["last_seen_at"])
+
+        response = self.create_task(payload={"open_login": True})
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertIn("Worker", str(response.data))
+        self.assertFalse(RpaTask.objects.exists())
+
+    def test_sync_positions_is_rejected_when_runtime_is_offline(self):
+        self.worker.last_seen_at = timezone.now() - timedelta(minutes=5)
+        self.worker.save(update_fields=["last_seen_at"])
+
+        response = self.create_task(action=RpaTask.Action.SYNC_POSITIONS)
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertFalse(RpaTask.objects.exists())
+
+    def test_duplicate_open_login_reuses_pending_task(self):
+        first = self.create_task(payload={"open_login": True})
+        second = self.create_task(payload={"open_login": True})
+
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(first.data["id"], second.data["id"])
+        self.assertEqual(RpaTask.objects.count(), 1)
 
     def test_viewer_cannot_create_task(self):
         self.client.force_login(self.viewer)
@@ -281,13 +321,10 @@ class RpaTaskApiTests(APITestCase):
         self.assertEqual(RpaTask.objects.count(), 1)
 
     def test_summary_reads_persisted_worker_state(self):
-        RpaWorker.objects.create(
-            key="local-worker",
+        RpaWorker.objects.filter(pk=self.worker.pk).update(
             hostname="WIN-HR",
             version="0.6.6",
-            status=RpaWorker.Status.ONLINE,
-            capabilities={"boss_cli": True},
-            last_seen_at=timezone.now(),
+            last_seen_at=timezone.now() + timedelta(seconds=1),
         )
         self.client.force_login(self.hr)
 
@@ -296,3 +333,54 @@ class RpaTaskApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["worker"]["version"], "0.6.6")
         self.assertTrue(response.data["cli_available"])
+
+    def test_summary_treats_stale_worker_heartbeat_as_offline(self):
+        RpaWorker.objects.filter(pk=self.worker.pk).update(
+            last_seen_at=timezone.now() - timedelta(minutes=5),
+        )
+        self.client.force_login(self.hr)
+
+        response = self.client.get("/api/recruitment/automation/summary/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["worker"]["status"], RpaWorker.Status.OFFLINE)
+        self.assertFalse(response.data["cli_available"])
+
+
+class ConcurrentCheckStatusCreationTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.hr = User.objects.create_user(username="concurrent-task-hr")
+        AccountProfile.objects.create(user=self.hr, role=AccountProfile.Role.HR)
+        self.account = BossAccount.objects.create(
+            name="并发任务账号",
+            browser_profile="concurrent-task-account",
+            cdp_port=53492,
+            browser_executable="C:/Program Files/Google/Chrome/Application/chrome.exe",
+            user_data_dir="C:/hr-test/profiles/concurrent-task-account",
+        )
+        self.account.authorized_users.add(self.hr)
+        RpaWorker.objects.create(
+            key="concurrent-worker",
+            hostname="localhost",
+            status=RpaWorker.Status.ONLINE,
+            last_seen_at=timezone.now(),
+            capabilities={"boss_cli": True},
+        )
+
+    def test_concurrent_open_login_calls_return_one_active_task(self):
+        def create():
+            return create_task(
+                account=BossAccount.objects.get(pk=self.account.pk),
+                action=RpaTask.Action.CHECK_STATUS,
+                actor=User.objects.get(pk=self.hr.pk),
+                request_payload={"open_login": True},
+                creation_path="generic",
+            ).pk
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            task_ids = list(pool.map(lambda _: create(), range(2)))
+
+        self.assertEqual(task_ids[0], task_ids[1])
+        self.assertEqual(RpaTask.objects.count(), 1)

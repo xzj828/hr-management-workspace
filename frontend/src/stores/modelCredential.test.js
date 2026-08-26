@@ -216,6 +216,45 @@ describe('model credential store', () => {
     expect(store.config.model).toBe('b')
   })
 
+  it('deletes a saved profile and clears the active compatibility state', async () => {
+    api.mockResolvedValue(null)
+    const store = useModelCredentialStore()
+    store.profiles = [
+      { id: 1, name: '当前模型', api_url: 'https://a.example/v1', model: 'a', has_api_key: true, key_last4: '1111', is_active: true },
+      { id: 2, name: '备用模型', api_url: 'https://b.example/v1', model: 'b', has_api_key: true, key_last4: '2222', is_active: false },
+    ]
+    store.syncConfigFromProfiles()
+
+    const result = await store.deleteProfile(1)
+
+    expect(api).toHaveBeenCalledWith('account/model-profiles/1/', { method: 'DELETE' })
+    expect(result).toEqual({ deleted: true, wasActive: true })
+    expect(store.profiles.map((profile) => profile.id)).toEqual([2])
+    expect(store.activeProfile).toBeNull()
+    expect(store.config.has_api_key).toBe(false)
+    expect(store.deletingId).toBeNull()
+  })
+
+  it('reconciles a model deletion that committed before the response was lost', async () => {
+    const store = useModelCredentialStore()
+    store.profiles = [
+      { id: 1, name: '待删除模型', api_url: 'https://a.example/v1', model: 'a', has_api_key: true, key_last4: '1111', is_active: true },
+    ]
+    store.connection = { status: 'success', model: 'a', latency_ms: 10, detail: '连接成功' }
+    api.mockImplementation((path, options) => {
+      if (path === 'account/model-profiles/1/' && options?.method === 'DELETE') return Promise.reject(new TypeError('network disconnected'))
+      if (path === 'account/model-profiles/') return Promise.resolve({ results: [] })
+      return Promise.reject(new Error(`unexpected ${path}`))
+    })
+
+    const result = await store.deleteProfile(1)
+
+    expect(result.deleted).toBe(true)
+    expect(store.profiles).toEqual([])
+    expect(store.error).toBe('')
+    expect(store.connection).toEqual({ status: 'unknown', model: '', latency_ms: null, detail: '' })
+  })
+
   it('clears the current account configuration', async () => {
     api.mockResolvedValue(null)
     const store = useModelCredentialStore()

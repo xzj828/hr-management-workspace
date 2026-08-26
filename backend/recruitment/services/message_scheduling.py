@@ -5,7 +5,7 @@ from django.utils import timezone
 
 from attendance.models import AccountProfile
 from recruitment.models import MessageSyncPolicy, RpaTask
-from recruitment.rpa.tasks import create_task
+from recruitment.rpa.tasks import RpaRuntimeUnavailable, create_task
 
 
 @transaction.atomic
@@ -29,11 +29,14 @@ def schedule_due_conversation_syncs(*, now=None):
         ).order_by("id").first()
         if actor is None:
             continue
-        task = create_task(
-            account=policy.boss_account, action=RpaTask.Action.SYNC_CONVERSATIONS, actor=actor,
-            request_payload={"scheduled": True, "policy_id": policy.pk},
-            idempotency_key=f"message-sync-policy:{policy.pk}:{int(current.timestamp() // 60)}",
-        )
+        try:
+            task = create_task(
+                account=policy.boss_account, action=RpaTask.Action.SYNC_CONVERSATIONS, actor=actor,
+                request_payload={"scheduled": True, "policy_id": policy.pk},
+                idempotency_key=f"message-sync-policy:{policy.pk}:{int(current.timestamp() // 60)}",
+            )
+        except RpaRuntimeUnavailable:
+            continue
         policy.last_scheduled_at = current
         policy.save(update_fields=["last_scheduled_at", "updated_at"])
         scheduled.append(task)
