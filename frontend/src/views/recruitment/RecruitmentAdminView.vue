@@ -17,9 +17,11 @@ import {
 import { createRequestId, positionSyncSummary, terminalTaskStatuses } from '@/recruitmentJobs'
 import { useAuthStore } from '@/stores/auth'
 import { useModelCredentialStore } from '@/stores/modelCredential'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
 const auth = useAuthStore()
 const credentials = useModelCredentialStore()
+const recruitmentContext = useRecruitmentContextStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -452,7 +454,10 @@ async function pollSyncTask(taskId) {
     syncTask.value = task
     if (task.status === 'succeeded') {
       syncMessage.value = positionSyncSummary(task.result) || '职位同步完成'
-      await loadJobs()
+      await Promise.all([
+        loadJobs(),
+        recruitmentContext.loadJobs({ userId: auth.user?.id, force: true }),
+      ])
       return
     }
     if (task.status === 'waiting_human') {

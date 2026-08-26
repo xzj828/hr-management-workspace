@@ -18,6 +18,7 @@ vi.mock('@/api', () => ({
 
 import RecruitmentAdminView from './RecruitmentAdminView.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
 const account = {
   id: 1,
@@ -65,7 +66,7 @@ function baseApi({
         verification_status: verificationStatus,
       }] })
     }
-    if (path === 'recruitment/jobs/') return Promise.resolve({ results: synced ? [{
+    if (path === 'recruitment/jobs/' || path === 'recruitment/jobs/?status=open') return Promise.resolve({ results: synced ? [{
       id: 31, boss_account: 1, title: '高级前端工程师', department: '研发中心', headcount: 2,
       status: 'open', updated_at: '2026-08-25T09:00:00Z',
     }] : [] })
@@ -251,6 +252,10 @@ describe('RecruitmentAdminView', () => {
 
   it('syncs published positions from a ready account and shows persisted counts', async () => {
     baseApi({ ready: true, workerOnline: true })
+    const recruitmentContext = useRecruitmentContextStore()
+    await recruitmentContext.loadJobs({ userId: 9 })
+    expect(recruitmentContext.jobs).toEqual([])
+
     wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true } } })
     await flushPromises()
     await wrapper.get('[data-test="admin-tab-jobs"]').trigger('click')
@@ -263,6 +268,9 @@ describe('RecruitmentAdminView', () => {
     expect(payload.request_id).toMatch(/^[0-9a-f-]{36}$/)
     expect(wrapper.text()).toContain('新增 1 · 更新 0 · 未变化 2 · 共 3 个职位')
     expect(wrapper.text()).toContain('高级前端工程师')
+    expect(recruitmentContext.jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 31, title: '高级前端工程师', status: 'open' }),
+    ]))
   })
 
   it('keeps advanced workflow editing behind the workflow governance tab', async () => {
