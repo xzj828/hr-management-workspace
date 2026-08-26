@@ -302,6 +302,7 @@ class RpaTask(models.Model):
         PENDING = "pending", "待执行"
         LEASED = "leased", "已领取"
         RUNNING = "running", "执行中"
+        CANCEL_REQUESTED = "cancel_requested", "正在取消"
         WAITING_HUMAN = "waiting_human", "等待人工处理"
         SUCCEEDED = "succeeded", "成功"
         FAILED = "failed", "失败"
@@ -361,14 +362,14 @@ class RpaTask(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["boss_account"],
-                condition=Q(status__in=["leased", "running"]),
+                condition=Q(status__in=["leased", "running", "cancel_requested"]),
                 name="unique_active_rpa_task_per_account",
             ),
             models.UniqueConstraint(
                 fields=["boss_account", "action"],
                 condition=Q(
                     action="check_status",
-                    status__in=["pending", "leased", "running"],
+                    status__in=["pending", "leased", "running", "cancel_requested"],
                 ),
                 name="unique_active_check_status_per_account",
             ),

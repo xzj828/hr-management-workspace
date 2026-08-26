@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,10 @@ class BossCliError(RuntimeError):
 
 
 class BossCliTimeout(BossCliError):
+    pass
+
+
+class BossCliCancelled(BossCliError):
     pass
 
 
@@ -118,11 +123,15 @@ class BossCliRunner:
         "list", "chat", "greet", "send", "action", "preview",
     }
 
-    def __init__(self, cli_path=None):
+    def __init__(self, cli_path=None, *, cancel_requested=None):
         self.invocation = self._resolve_configured(cli_path) if cli_path else self._discover()
+        self.cancel_requested = cancel_requested
         # Kept as a compatibility/introspection attribute. It is always the
         # native executable (normally node.exe), never a Windows script shim.
         self.cli_path = self.invocation.executable
+
+    def set_cancel_check(self, callback):
+        self.cancel_requested = callback
 
     @staticmethod
     def _environment_value(source, key):
@@ -271,6 +280,8 @@ class BossCliRunner:
 
     def _run(self, args, *, env, timeout_seconds):
         command = self._command(args)
+        if callable(self.cancel_requested):
+            return self._run_monitored(command, env=env, timeout_seconds=timeout_seconds)
         try:
             completed = subprocess.run(
                 command,
@@ -293,6 +304,60 @@ class BossCliRunner:
             detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
             raise BossCliError(detail)
         return result
+
+    def _run_monitored(self, command, *, env, timeout_seconds):
+        popen_kwargs = {
+            "shell": False,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "env": env,
+        }
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)
+        except OSError as exc:
+            raise BossCliError(f"boss-cli 无法启动：{exc}") from exc
+
+        started = time.monotonic()
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                if self.cancel_requested():
+                    self._stop_command(process)
+                    raise BossCliCancelled("任务已按用户要求停止")
+                if time.monotonic() - started >= timeout_seconds:
+                    self._stop_command(process)
+                    raise BossCliTimeout(f"boss-cli 执行超时：{command[len(self.invocation.command)]}")
+
+        result = CliResult(
+            returncode=process.returncode,
+            stdout=_decode_output(stdout),
+            stderr=_decode_output(stderr),
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
+            raise BossCliError(detail)
+        return result
+
+    @staticmethod
+    def _stop_command(process):
+        try:
+            if process.poll() is not None:
+                return
+            process.terminate()
+            try:
+                process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.communicate(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    return
+        except OSError:
+            return
 
     def _command(self, args):
         args = [args] if isinstance(args, str) else [str(value) for value in args]
@@ -421,4 +486,3 @@ class BossCliRunner:
         if not normalized or len(normalized) > 100:
             raise BossCliError("在线简历目标无效")
         return self._run(["preview", normalized], env=self._account_env(account), timeout_seconds=120)
-

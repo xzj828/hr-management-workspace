@@ -17,7 +17,7 @@ from recruitment.management.commands.run_rpa_worker import (
     execute_sync_conversations,
     run_worker_loop,
 )
-from recruitment.rpa.cli import BossCliError, CliAccountConfig
+from recruitment.rpa.cli import BossCliCancelled, BossCliError, CliAccountConfig
 from recruitment.rpa.status import BossBrowserStatus, classify_boss_pages
 from recruitment.rpa.status import inspect_boss_status
 
@@ -97,6 +97,50 @@ class WorkerEngineTests(SimpleTestCase):
         self.assertEqual(runner.calls, 0)
         self.assertTrue(outcome["result"]["checkpoint_stopped"])
         self.assertEqual(outcome["result"]["conversations"], [])
+
+    @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
+    @patch("recruitment.management.commands.run_rpa_worker.managed_cdp_matches", return_value=True)
+    def test_cancelled_cli_reports_cancelled_without_closing_browser(self, matches, inspect):
+        inspect.return_value = BossBrowserStatus("ready", detail="已登录")
+        completed = []
+
+        class Api:
+            def event(self, task_id, payload):
+                return payload
+
+            def control(self, task_id):
+                return {"cancel_requested": True}
+
+            def complete(self, task_id, payload):
+                completed.append(payload)
+
+        class Runner:
+            cancel_requested = None
+
+            def set_cancel_check(self, callback):
+                self.cancel_requested = callback
+
+        runner = Runner()
+        engine = WorkerEngine(api=Api(), runner=runner, worker_key="local-worker")
+        task = {
+            "id": "task-cancelled",
+            "action": "sync_positions",
+            "browser": {
+                "executable": "edge.exe",
+                "user_data_dir": "C:/profiles/expected",
+                "cdp_port": 53470,
+            },
+        }
+
+        with patch(
+            "recruitment.management.commands.run_rpa_worker.ProfileLock",
+            side_effect=lambda path: nullcontext(),
+        ), patch.object(engine, "_execute", side_effect=BossCliCancelled("任务已取消")):
+            outcome = engine.execute_task(task)
+
+        self.assertEqual(outcome["status"], "cancelled")
+        self.assertEqual(completed[0]["status"], "cancelled")
+        self.assertTrue(runner.cancel_requested())
 
     @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
     def test_position_sync_falls_back_to_browser_when_cli_navigation_fails(self, inventory):

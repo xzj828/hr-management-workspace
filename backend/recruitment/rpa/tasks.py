@@ -510,17 +510,32 @@ def cancel_task(*, task, actor):
         or locked.workflow_node_run_id
     ):
         raise ValidationError("领域编排任务不能通过通用取消入口处理")
-    if locked.status != RpaTask.Status.PENDING:
+    if locked.status in {RpaTask.Status.CANCEL_REQUESTED, RpaTask.Status.CANCELLED}:
+        return locked
+    if locked.status not in {
+        RpaTask.Status.PENDING,
+        RpaTask.Status.LEASED,
+        RpaTask.Status.RUNNING,
+    }:
         raise ValidationError("当前任务不能取消")
 
-    locked.status = RpaTask.Status.CANCELLED
-    locked.completed_at = timezone.now()
-    locked.save(update_fields=["status", "completed_at", "updated_at"])
-    append_event(task=locked, event="cancelled", message="任务已取消")
+    if locked.status == RpaTask.Status.PENDING:
+        locked.status = RpaTask.Status.CANCELLED
+        locked.completed_at = timezone.now()
+        event = "cancelled"
+        message = "任务已取消"
+        update_fields = ["status", "completed_at", "updated_at"]
+    else:
+        locked.status = RpaTask.Status.CANCEL_REQUESTED
+        event = "cancel_requested"
+        message = "已通知本机 Worker 停止当前任务"
+        update_fields = ["status", "updated_at"]
+    locked.save(update_fields=update_fields)
+    append_event(task=locked, event=event, message=message)
     RecruitmentAuditLog.objects.create(
         actor=actor,
         boss_account=locked.boss_account,
-        action="task_cancelled",
+        action="task_cancel_requested" if locked.status == RpaTask.Status.CANCEL_REQUESTED else "task_cancelled",
         target_id=str(locked.pk),
     )
     return locked
@@ -547,4 +562,3 @@ def retry_task(*, task, actor):
     )
     append_event(task=retried, event="retried", message="由失败任务重试", data={"source_task_id": str(task.pk)})
     return retried
-
