@@ -144,6 +144,23 @@ def activate_model_profile(*, user, profile):
     return _activate_locked(locked)
 
 
+@transaction.atomic
+def delete_model_profile(*, user, profile):
+    """Permanently erase one owned model profile and its encrypted secret.
+
+    Deleting the active profile deliberately leaves the user without an active
+    projection. Choosing a different profile is an explicit user action; tasks
+    that already captured an immutable model snapshot are unaffected.
+    """
+    locked_user = _lock_user(user)
+    locked = UserModelProfile.objects.select_for_update().get(pk=profile.pk, user=locked_user)
+    was_active = locked.is_active
+    locked.delete()
+    if was_active:
+        UserModelCredential.objects.filter(user=locked_user).delete()
+    return was_active
+
+
 def _legacy_profile_name(*, user, model):
     base = (str(model or "").strip() or "默认模型")[:80]
     if not UserModelProfile.objects.filter(user=user, name__iexact=base).exists():

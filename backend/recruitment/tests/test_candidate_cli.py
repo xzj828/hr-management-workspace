@@ -83,14 +83,16 @@ class CandidateRunnerTests(SimpleTestCase):
     def test_search_arguments_are_passed_without_shell(self, run):
         run.return_value = subprocess.CompletedProcess([], 0, SEARCH_OUTPUT.encode("utf-8"), b"")
 
-        rows = BossCliRunner(cli_path="C:/tools/boss.cmd").search(self.account, "Vue")
+        rows = BossCliRunner(cli_path="C:/tools/boss.exe").search(self.account, "Vue")
 
-        self.assertEqual(run.call_args.args[0], ["C:/tools/boss.cmd", "search", "Vue"])
+        command = run.call_args.args[0]
+        self.assertTrue(command[0].lower().endswith("boss.exe"))
+        self.assertEqual(command[1:], ["search", "Vue"])
         self.assertFalse(run.call_args.kwargs["shell"])
         self.assertEqual(rows[0]["display_name"], "周敏")
 
     def test_runner_rejects_control_characters(self):
-        runner = BossCliRunner(cli_path="C:/tools/boss.cmd")
+        runner = BossCliRunner(cli_path="C:/tools/boss.exe")
 
         with self.assertRaisesMessage(BossCliError, "参数包含非法字符"):
             runner.search(self.account, "Vue\npositions")

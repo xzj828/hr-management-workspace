@@ -3,11 +3,23 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import router from './router'
 
 describe('recruitment workspace routes', () => {
-  it('exposes the three user-facing workspaces', () => {
+  it('exposes the global dashboard and three user-facing workspaces', () => {
     const routes = router.getRoutes()
+    const dashboard = routes.find((route) => route.name === 'recruitment-dashboard')
+    expect(dashboard?.path).toBe('/recruitment')
+    expect(dashboard?.redirect).toBeUndefined()
+    expect(dashboard?.meta.recruitmentScope).toBe('global')
+    expect(dashboard?.components.default).toBeTypeOf('function')
     expect(routes.find((route) => route.name === 'recruitment-workbench')?.path).toBe('/recruitment/workbench')
     expect(routes.find((route) => route.name === 'recruitment-results')?.path).toBe('/recruitment/results')
     expect(routes.find((route) => route.name === 'recruitment-admin')?.path).toBe('/recruitment/admin')
+  })
+
+  it('loads the real recruitment dashboard instead of redirecting overview to attention', async () => {
+    const loader = router.getRoutes().find((route) => route.name === 'recruitment-dashboard').components.default
+    const loaded = await loader()
+
+    expect(loaded.default.__name).toBe('RecruitmentDashboardView')
   })
 
   it('keeps settings links mapped to admin without losing account context', () => {

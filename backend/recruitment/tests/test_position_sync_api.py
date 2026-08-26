@@ -1,8 +1,9 @@
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
-from recruitment.models import BossAccount, RpaTask
+from recruitment.models import BossAccount, RpaTask, RpaWorker
 
 
 class PositionSyncApiTests(APITestCase):
@@ -15,6 +16,13 @@ class PositionSyncApiTests(APITestCase):
             cdp_port=53482,
         )
         self.account.authorized_users.add(self.hr)
+        RpaWorker.objects.create(
+            key="position-sync-worker",
+            hostname="localhost",
+            status=RpaWorker.Status.ONLINE,
+            last_seen_at=timezone.now(),
+            capabilities={"boss_cli": True},
+        )
         self.client.force_login(self.hr)
 
     def test_one_click_sync_creates_an_idempotent_task(self):

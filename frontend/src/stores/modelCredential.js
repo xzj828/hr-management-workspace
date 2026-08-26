@@ -46,6 +46,7 @@ export const useModelCredentialStore = defineStore('modelCredential', {
     loading: false,
     saving: false,
     switchingId: null,
+    deletingId: null,
     testingId: null,
     error: '',
     testing: false,
@@ -68,6 +69,7 @@ export const useModelCredentialStore = defineStore('modelCredential', {
       this.loading = false
       this.saving = false
       this.switchingId = null
+      this.deletingId = null
       this.testingId = null
       this.testing = false
       this.error = ''
@@ -236,6 +238,47 @@ export const useModelCredentialStore = defineStore('modelCredential', {
         throw error
       } finally {
         if (generation === this.generation) this.switchingId = null
+      }
+    },
+    async deleteProfile(id) {
+      if (this.deletingId) return null
+      const generation = this.generation
+      const target = this.profiles.find((profile) => String(profile.id) === String(id))
+      const wasActive = Boolean(target?.is_active)
+      this.deletingId = id
+      this.profileRevision += 1
+      this.error = ''
+      try {
+        await api(`account/model-profiles/${id}/`, { method: 'DELETE' })
+        if (generation !== this.generation) return { deleted: true, wasActive }
+        this.profileRevision += 1
+        this.profiles = this.profiles.filter((profile) => String(profile.id) !== String(id))
+        this.syncConfigFromProfiles()
+        if (wasActive) this.connection = { status: 'unknown', model: '', latency_ms: null, detail: '' }
+        this.activeStateUncertain = false
+        return { deleted: true, wasActive }
+      } catch (error) {
+        if (generation !== this.generation) throw error
+        if (isUncertainMutationError(error)) {
+          try {
+            const profiles = await this.reconcileProfiles(generation)
+            if (profiles === null) throw error
+            if (!profiles.some((profile) => String(profile.id) === String(id))) {
+              if (wasActive) this.connection = { status: 'unknown', model: '', latency_ms: null, detail: '' }
+              return { deleted: true, wasActive }
+            }
+          } catch {
+            if (generation !== this.generation) throw error
+            const uncertain = uncertainResultError('模型删除')
+            this.error = uncertain.message
+            this.activeStateUncertain = wasActive
+            throw uncertain
+          }
+        }
+        this.error = error.message || '模型删除失败'
+        throw error
+      } finally {
+        if (generation === this.generation) this.deletingId = null
       }
     },
     async testProfile(id) {

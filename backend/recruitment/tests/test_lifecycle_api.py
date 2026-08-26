@@ -6,6 +6,7 @@ from attendance.models import AccountProfile
 from recruitment.models import (
     BossAccount, Candidate, JobApplication, RecruitmentJob, Resume, RpaTask,
     WorkflowEdge, WorkflowNode, WorkflowTemplate, WorkflowVersion,
+    WorkflowRun,
 )
 
 
@@ -114,6 +115,45 @@ class RecruitmentLifecycleApiTests(TestCase):
         blocked = self.client.delete(f"/api/recruitment/workflow-versions/{enabled.pk}/")
         self.assertEqual(blocked.status_code, 409, blocked.data)
         self.assertTrue(WorkflowVersion.objects.filter(pk=enabled.pk).exists())
+
+    def test_draft_workflow_version_with_run_returns_conflict_instead_of_protected_error(self):
+        WorkflowRun.objects.create(
+            version=self.version,
+            boss_account=self.account,
+            actor=self.hr,
+            mode=WorkflowRun.Mode.DRY_RUN,
+            idempotency_key="lifecycle-draft-run",
+        )
+
+        response = self.client.delete(f"/api/recruitment/workflow-versions/{self.version.pk}/")
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertIn("运行记录", response.data["detail"])
+        self.assertTrue(WorkflowVersion.objects.filter(pk=self.version.pk).exists())
+
+    def test_audited_resources_do_not_expose_physical_delete(self):
+        for resource, instance in (
+            ("boss-accounts", self.account),
+            ("jobs", self.job),
+            ("workflows", self.template),
+        ):
+            response = self.client.delete(f"/api/recruitment/{resource}/{instance.pk}/")
+            self.assertEqual(response.status_code, 405, getattr(response, "data", None))
+
+    def test_archived_at_cannot_be_forged_through_regular_patch(self):
+        for resource, instance in (
+            ("boss-accounts", self.account),
+            ("jobs", self.job),
+            ("workflows", self.template),
+        ):
+            response = self.client.patch(
+                f"/api/recruitment/{resource}/{instance.pk}/",
+                {"archived_at": "2026-08-25T12:00:00Z"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+            instance.refresh_from_db()
+            self.assertIsNone(instance.archived_at)
 
     def test_other_hr_cannot_archive_objects_outside_their_scope(self):
         self.client.force_login(self.other)

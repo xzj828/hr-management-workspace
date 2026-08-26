@@ -78,6 +78,12 @@
 
 通用 `POST /api/recruitment/rpa-tasks/` 仅允许 `check_status`、`sync_positions`、`sync_conversations`。沟通、在线简历、深度匹配和主动寻访必须通过各自专用确认/物化服务，并使用服务端规范幂等键和 Approval/Batch/Campaign/Workflow 关联；关联任务不得通过通用取消或重试拆离领域状态。主动寻访取消或租约超时时，Task、Campaign、额度证据、账号状态与关联 Workflow 必须在同一领域收口中结束。
 
+`check_status + request_payload.open_login=true` 表示“打开或聚焦该账号的受管登录窗口”，不是自动登录。创建端点必须在账号行锁内复用同账号处于 `pending/leased/running` 的等价任务；Worker 或 CLI 不可用时返回可读的前置条件冲突，不新增永久排队任务。前端以 POST 响应中的任务为提交事实，刷新失败单独报告。账号状态、任务与自动化摘要由管理后台每 5 秒非重叠刷新。
+
+Worker 执行 `open_login` 时异步启动固定 Node/JS CLI，轮询受管 CDP；CDP 就绪后写入账号隔离目录 marker、结束 CLI 父进程并返回 `succeeded + login_status=waiting_login`。CLI 进程 stdout/stderr 丢弃，终止采用 terminate→短等待→kill 的 best-effort 清理，不能把用户尚未扫码误报为系统失败。
+
+`GET /api/recruitment/automation/summary/` 的 Worker 在线值由 `last_seen_at` 与服务端 TTL 计算，不直接信任历史 `status=online`。Worker 心跳在 CLI 不可用时仍应上报结构化能力状态，使 UI 能区分“Worker 未连接”和“Worker 在线但 CLI 不可用”。BOSS 登录 `ready` 只接受明确的招聘端已认证页面；公共、错误、未知页面一律保持未就绪。
+
 取消 WorkflowRun 后，草稿 Approval、未执行的领域 Task/Batch/Step 和后续 Node 一并终结；Worker lease 必须排除暂停或终态 Run/Node，`create_task` 也必须校验 Workflow 生命周期与 node attempt。已进入适配器的任务不能伪装取消，其真实完成回执只更新动作审计，不恢复已取消 Run。直接停止 SearchCampaign 与从 Task 入口停止使用同一领域服务，并在提交后同步 Workflow。失败的 `deep_search` 重试必须创建新 attempt 的确认、幂等键和 Task。
 
 ## 认证与授权
@@ -106,11 +112,11 @@
 | GET/PUT/DELETE | `/api/account/model-credential/` | 兼容端点；读写当前活动模型投影，并同步对应活动档案 |
 | POST | `/api/account/model-credential/test/` | 测试当前活动连接；只返回模型与延迟，不返回 Key |
 | GET/POST | `/api/account/model-profiles/` | 列出自己的模型档案；新增档案，首个自动启用，可显式 `make_active` |
-| GET/PATCH | `/api/account/model-profiles/{id}/` | 读取或编辑自己的档案；活动档案编辑后同步兼容投影 |
+| GET/PATCH/DELETE | `/api/account/model-profiles/{id}/` | 读取、编辑或永久删除自己的档案；活动档案编辑后同步兼容投影 |
 | POST | `/api/account/model-profiles/{id}/activate/` | 原子切换当前模型；重复激活幂等 |
 | POST | `/api/account/model-profiles/{id}/test/` | 测试指定档案；响应不含 API Key 或加密文本 |
 
-模型档案规则：所有查询按 Session 用户过滤，其他用户的 ID 返回 404；输出只含 `has_api_key/key_last4`。创建首个档案自动激活，之后新增默认不切换，除非请求 `make_active=true`。切换、活动档案编辑和旧凭证写入在事务内同步 `UserModelCredential`；活动档案不能出现两个，数据库条件唯一约束作为最后防线。API 地址规范化前后都不得超过 500 字符；API Key 必须为 8–4096 字符，序列化器与领域服务双层校验，历史末四位提示通过独立迁移清除后由新写入重建。
+模型档案规则：所有查询按 Session 用户过滤，其他用户的 ID 返回 404；输出只含 `has_api_key/key_last4`。创建首个档案自动激活，之后新增默认不切换，除非请求 `make_active=true`。切换、活动档案编辑和旧凭证写入在事务内同步 `UserModelCredential`；活动档案不能出现两个，数据库条件唯一约束作为最后防线。删除任意档案会擦除其加密 Key；删除活动档案同时删除 `UserModelCredential` 投影，不自动启用其他档案，已绑定模型快照的历史任务不受影响。API 地址规范化前后都不得超过 500 字符；API Key 必须为 8–4096 字符，序列化器与领域服务双层校验，历史末四位提示通过独立迁移清除后由新写入重建。
 
 模型出网规则：默认拒绝非 HTTPS、userinfo、query/fragment、localhost，以及解析或实际连接到 loopback/private/link-local/reserved/unspecified/multicast 的地址；3xx 不跟随。解析通过后连接固定到已验证的数字 IP，HTTPS 仍以原域名完成 SNI、证书与 Host 校验，避免二次 DNS 重绑定。只有部署管理员通过 `MODEL_API_HOST_ALLOWLIST=host[:port],...` 精确配置的主机可以例外开放 HTTP 或本机/内网模型；该例外不得由普通用户控制。`MODEL_API_MAX_RESPONSE_BYTES` 默认 1 MiB；连接测试由 `MODEL_API_TEST_TIMEOUT_SECONDS`（默认 10 秒）与 `MODEL_API_TEST_THROTTLE_RATE`（默认每用户 `5/min`）限制。任务创建时冻结 API 地址、模型名与加密 Key 快照，序列化器永不输出该快照；Worker 和重试使用任务快照而非当前活动投影。
 
@@ -136,10 +142,10 @@
 
 | 资源/方法 | 路径 | 查询/动作 |
 |---|---|---|
-| BOSS 账号 CRUD | `/api/recruitment/boss-accounts[/<id>/]` | `archived=1`; 创建自动派生 profile/port |
+| BOSS 账号 GET/POST/PATCH | `/api/recruitment/boss-accounts[/<id>/]` | `archived=1`; 创建自动派生 profile/port；禁止物理 DELETE |
 | POST | `.../boss-accounts/<id>/check-status/` | 立即只读检查登录状态 |
 | POST | `.../<resource>/<id>/archive|restore/` | 账号/职位/简历/任务/流程的可恢复生命周期 |
-| 职位 CRUD | `/api/recruitment/jobs[/<id>/]` | is_demo；按用户授权账号过滤 |
+| 职位 GET/POST/PATCH | `/api/recruitment/jobs[/<id>/]` | is_demo；按用户授权账号过滤；禁止物理 DELETE |
 | POST | `/api/recruitment/jobs/sync/` | boss_account + UUID request_id，幂等创建同步任务 |
 | 候选人只读 | `/api/recruitment/candidates[/<id>/]` | search, job, stage, is_demo |
 | 应聘 CRUD | `/api/recruitment/applications[/<id>/]` | job, stage, is_demo；阶段变更需原因 |
@@ -182,8 +188,8 @@
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| CRUD | `/api/recruitment/workflows[/<id>/]` | 模板；支持归档/恢复 |
-| CRUD | `/api/recruitment/workflow-versions[/<id>/]` | 版本；仅草稿可删除 |
+| GET/POST/PATCH | `/api/recruitment/workflows[/<id>/]` | 模板；禁止物理 DELETE，支持归档/恢复 |
+| GET/POST/DELETE | `/api/recruitment/workflow-versions[/<id>/]` | 版本；仅无运行记录且非活动的草稿可删除 |
 | POST | `/api/recruitment/workflow-versions/<id>/enable/` | 校验图并启用 |
 | POST | `/api/recruitment/workflow-versions/<id>/run/` | dry_run/formal；formal 要启用、账号 ready、confirm=true |
 | GET | `/api/recruitment/workflow-runs[/<id>/]` | 运行、节点和事件 |
@@ -246,7 +252,7 @@
 
 | 集成 | 方式 | 数据方向 | 安全边界 |
 |---|---|---|---|
-| BOSS CLI | 本机子进程，参数列表调用 | 职位/候选/会话读取；确认后的有限写动作 | 不使用 shell；隔离环境；超时/编码归一化 |
+| BOSS CLI | 本机 Node 子进程，固定 JS 入口并以参数列表调用 | 职位/候选/会话读取；确认后的有限写动作 | 不执行 npm `.cmd/.bat/.ps1` shim；`shell=False`；最小环境；隔离资料目录；超时/编码归一化 |
 | Chrome/Edge | 独立用户目录 + loopback CDP + Playwright | 人工登录、状态观察、目标核验、PDF | 受管端口/路径；不绕验证；不使用日常资料 |
 | 飞书打卡 Excel | 人工上传 `.xlsx` | 单向导入 | 类型/大小/哈希、原文件留档 |
 | 模型服务 | 仅保存个人兼容 API 配置 | [待确认] 当前无实际调用端点 | Key 加密；不应默认发送候选人/员工敏感数据 |

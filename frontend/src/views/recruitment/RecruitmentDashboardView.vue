@@ -81,8 +81,8 @@ onMounted(async () => {
     </section>
 
     <template v-else>
-      <div class="recruitment-command-grid">
-        <section class="panel recruitment-dashboard-panel">
+      <div class="panel recruitment-command-grid recruitment-command-workspace">
+        <section class="panel recruitment-dashboard-panel recruitment-today-panel">
           <header class="panel__header"><div><span class="panel-kicker">TODAY</span><h3>今日工作</h3></div><span>按优先级处理</span></header>
           <div class="today-action-list">
             <button v-for="action in dashboard.today_actions" :key="action.key" type="button" :data-test="`today-action-${action.key}`" @click="go(action.route)">
@@ -106,13 +106,13 @@ onMounted(async () => {
         <p v-else class="table-empty">暂无在招职位，请先到职位管理同步</p>
       </section>
 
-      <div class="recruitment-analysis-grid">
-        <section class="panel recruitment-dashboard-panel">
+      <div class="panel recruitment-analysis-grid recruitment-analysis-workspace">
+        <section class="panel recruitment-dashboard-panel recruitment-funnel-panel">
           <header class="panel__header"><div><span class="panel-kicker">PIPELINE</span><h3>招聘漏斗</h3></div><button class="text-button" type="button" @click="go('/recruitment/pipeline')">查看流程</button></header>
           <div class="recruitment-funnel"><div v-for="item in dashboard.funnel" :key="item.key"><span>{{ item.label }}</span><div><i :style="{ width: `${Math.max(3, item.count / funnelMax * 100)}%` }"></i></div><strong>{{ item.count }}</strong></div></div>
         </section>
 
-        <section class="panel recruitment-dashboard-panel">
+        <section class="panel recruitment-dashboard-panel recruitment-trend-panel">
           <header class="panel__header"><div><span class="panel-kicker">7 DAY PULSE</span><h3>近 7 天趋势</h3></div><span class="trend-legend"><i></i>候选人 <i></i>简历 <i></i>面试 <i></i>录用</span></header>
           <div class="recruitment-trend" role="img" aria-label="近七天候选人、简历、面试和录用数量趋势">
             <div v-for="day in dashboard.trend" :key="day.date" data-test="trend-day" :aria-label="`${day.label}：候选人 ${day.candidates}，简历 ${day.resumes}，面试 ${day.interviews}，录用 ${day.hires}`"><span class="trend-bars"><i :style="{ height: `${day.candidates / trendMax * 100}%` }"></i><i :style="{ height: `${day.resumes / trendMax * 100}%` }"></i><i :style="{ height: `${day.interviews / trendMax * 100}%` }"></i><i :style="{ height: `${day.hires / trendMax * 100}%` }"></i></span><small>{{ day.label }}</small></div>
@@ -121,7 +121,7 @@ onMounted(async () => {
       </div>
 
       <div class="recruitment-detail-grid-dashboard recruitment-detail-grid-dashboard--single">
-        <section class="panel recruitment-dashboard-panel">
+        <section class="panel recruitment-dashboard-panel recruitment-recent-panel">
           <header class="panel__header"><div><span class="panel-kicker">AUTOMATION LOG</span><h3>最近自动化</h3></div><button class="text-button" type="button" @click="go('/recruitment/automation')">查看全部</button></header>
           <div v-if="dashboard.recent_tasks.length" class="dashboard-task-list"><button v-for="task in dashboard.recent_tasks" :key="task.id" type="button" @click="go(task.route)"><i :class="`is-${task.status}`"></i><span><strong>{{ task.action_label }}</strong><small>{{ task.account_name }} · {{ formatTime(task.created_at) }}</small></span><b>{{ task.status_label }}</b></button></div>
           <p v-else class="table-empty">暂无自动化记录</p>
@@ -132,5 +132,628 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.intelligence-overview{display:grid;gap:12px;padding:17px 18px;background:linear-gradient(110deg,#102c2a,#173c38);border:1px solid rgba(255,255,255,.06);border-radius:15px;box-shadow:0 14px 38px rgba(15,42,41,.13)}.intelligence-overview>header{display:flex;align-items:end;justify-content:space-between;gap:18px}.intelligence-overview h3{margin:4px 0 0;color:#fff;font-family:Georgia,"Noto Serif SC",serif;font-size:17px}.intelligence-overview .panel-kicker{color:#5bc7b6}.intelligence-overview>header>span{color:#7fa19c;font-size:8px}.intelligence-overview>div{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.intelligence-overview button{display:grid;grid-template-columns:30px minmax(0,1fr) auto 12px;align-items:center;gap:9px;min-width:0;padding:10px 11px;color:#9fc2bd;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07);border-radius:10px;text-align:left;transition:background .16s ease,transform .16s ease}.intelligence-overview button:hover{transform:translateY(-1px);background:rgba(255,255,255,.08)}.intelligence-overview button>span{display:grid;gap:3px}.intelligence-overview button strong{overflow:hidden;color:#e8f6f3;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.intelligence-overview button small{color:#71958f;font-size:7px}.intelligence-overview button b{color:#6de0cf;font-family:Georgia,serif;font-size:21px;font-weight:500}@media(max-width:1000px){.intelligence-overview>div{grid-template-columns:repeat(2,1fr)}}
+.recruitment-dashboard {
+  --rd-surface: var(--paper);
+  --rd-surface-hover: color-mix(in srgb, var(--rd-surface) 92%, var(--rd-teal));
+  --rd-ink: var(--ink);
+  --rd-slate: var(--slate);
+  --rd-muted: var(--muted);
+  --rd-muted-soft: color-mix(in srgb, var(--rd-muted) 65%, var(--rd-surface));
+  --rd-line: var(--line);
+  --rd-line-soft: color-mix(in srgb, var(--rd-line) 70%, var(--rd-surface));
+  --rd-teal: var(--teal);
+  --rd-teal-dark: var(--teal-dark);
+  --rd-teal-soft: color-mix(in srgb, var(--rd-surface) 90%, var(--rd-teal));
+  --rd-amber: var(--amber);
+  --rd-red: var(--red);
+  --rd-status-neutral: var(--rd-muted);
+  --rd-panel-border: 1px solid var(--rd-line);
+  --rd-soft-border: 1px solid var(--rd-line-soft);
+  --rd-radius-panel: 15px;
+  --rd-radius-control: 9px;
+  --rd-radius-pill: 999px;
+  --rd-shadow-panel: 0 1px 2px rgba(15, 23, 42, .025);
+  --rd-space-0: 0;
+  --rd-space-1: 4px;
+  --rd-space-2: 8px;
+  --rd-space-3: 12px;
+  --rd-space-4: 16px;
+  --rd-space-5: 22px;
+  --rd-font-meta: 10px;
+  --rd-font-control: 12px;
+  --rd-font-panel: 15px;
+  --rd-font-kpi: 30px;
+  --rd-weight-bold: 700;
+  --rd-line-height-tight: 1.4;
+  --rd-metric-height: 118px;
+  --rd-list-row-height: 58px;
+  --rd-intelligence-row-height: 64px;
+  --rd-chart-height: 230px;
+  --rd-dot-size: 7px;
+  --rd-status-bar-width: 4px;
+  --rd-progress-height: 6px;
+  --rd-motion: 160ms ease;
+  --rd-metric-columns: repeat(5, minmax(0, 1fr));
+  --rd-command-columns: minmax(0, 1.42fr) minmax(280px, .58fr);
+  --rd-analysis-columns: minmax(280px, .72fr) minmax(0, 1.28fr);
+  --rd-six-columns: repeat(6, minmax(0, 1fr));
+  --rd-four-columns: repeat(4, minmax(0, 1fr));
+  --rd-two-columns: repeat(2, minmax(0, 1fr));
+  --rd-one-column: minmax(0, 1fr);
+  container-name: recruitment-dashboard;
+  container-type: inline-size;
+  min-width: var(--rd-space-0);
+  gap: var(--rd-space-5);
+}
+
+.recruitment-dashboard__hero {
+  align-items: flex-end;
+}
+
+.recruitment-dashboard > .recruitment-metrics {
+  grid-template-columns: var(--rd-metric-columns);
+  gap: var(--rd-space-3);
+  min-width: var(--rd-space-0);
+}
+
+.recruitment-metric {
+  min-width: var(--rd-space-0);
+  min-height: var(--rd-metric-height);
+  padding: var(--rd-space-4);
+  color: var(--rd-muted);
+  background: var(--rd-surface);
+  border: var(--rd-panel-border);
+  border-radius: var(--rd-radius-panel);
+  box-shadow: var(--rd-shadow-panel);
+  transition: border-color var(--rd-motion), background var(--rd-motion);
+}
+
+.recruitment-metric:hover,
+.recruitment-metric:focus-visible {
+  transform: none;
+  background: var(--rd-surface-hover);
+  border-color: var(--rd-teal);
+  box-shadow: var(--rd-shadow-panel);
+}
+
+.recruitment-metric > span:not(.recruitment-metric__icon) {
+  color: var(--rd-muted);
+  font-size: var(--rd-font-control);
+}
+
+.recruitment-metric strong {
+  color: var(--rd-ink);
+  font-size: var(--rd-font-kpi);
+}
+
+.recruitment-metric small {
+  color: var(--rd-muted-soft);
+  font-size: var(--rd-font-meta);
+}
+
+.recruitment-metric__icon {
+  color: var(--rd-teal-dark);
+  background: var(--rd-teal-soft);
+  border-radius: var(--rd-radius-control);
+}
+
+.recruitment-metric--primary {
+  color: var(--rd-surface);
+  background: var(--rd-ink);
+  border-color: var(--rd-ink);
+}
+
+.recruitment-metric--primary:hover,
+.recruitment-metric--primary:focus-visible {
+  background: var(--rd-slate);
+  border-color: var(--rd-slate);
+}
+
+.recruitment-metric--primary > span:not(.recruitment-metric__icon),
+.recruitment-metric--primary strong {
+  color: var(--rd-surface);
+}
+
+.recruitment-metric--primary small {
+  color: var(--rd-muted-soft);
+}
+
+.intelligence-overview {
+  display: grid;
+  gap: var(--rd-space-4);
+  min-width: var(--rd-space-0);
+  padding: var(--rd-space-4) var(--rd-space-5);
+  color: var(--rd-slate);
+  background: var(--rd-surface);
+  border: var(--rd-panel-border);
+  border-radius: var(--rd-radius-panel);
+  box-shadow: var(--rd-shadow-panel);
+}
+
+.intelligence-overview > header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--rd-space-4);
+}
+
+.intelligence-overview h3 {
+  margin: var(--rd-space-1) var(--rd-space-0) var(--rd-space-0);
+  color: var(--rd-ink);
+  font-family: inherit;
+  font-size: var(--rd-font-panel);
+}
+
+.intelligence-overview .panel-kicker {
+  color: var(--rd-muted-soft);
+}
+
+.intelligence-overview > header > span {
+  color: var(--rd-muted);
+  font-size: var(--rd-font-meta);
+}
+
+.recruitment-dashboard > .intelligence-overview > div {
+  display: grid;
+  grid-template-columns: var(--rd-four-columns);
+  min-width: var(--rd-space-0);
+  border-top: var(--rd-panel-border);
+}
+
+.intelligence-overview button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--rd-space-3);
+  min-width: var(--rd-space-0);
+  min-height: var(--rd-intelligence-row-height);
+  padding: var(--rd-space-2) var(--rd-space-4);
+  color: var(--rd-muted);
+  background: transparent;
+  border: var(--rd-space-0);
+  border-left: var(--rd-panel-border);
+  border-radius: var(--rd-space-0);
+  text-align: left;
+  transition: color var(--rd-motion), background var(--rd-motion);
+}
+
+.intelligence-overview button:first-child {
+  border-left: var(--rd-space-0);
+}
+
+.intelligence-overview button:hover,
+.intelligence-overview button:focus-visible {
+  color: var(--rd-teal-dark);
+  background: var(--rd-surface-hover);
+  transform: none;
+}
+
+.intelligence-overview button > span {
+  display: grid;
+  gap: var(--rd-space-1);
+  min-width: var(--rd-space-0);
+}
+
+.intelligence-overview button strong {
+  color: var(--rd-ink);
+  font-size: var(--rd-font-control);
+  line-height: var(--rd-line-height-tight);
+  overflow-wrap: break-word;
+  white-space: normal;
+}
+
+.intelligence-overview button small {
+  color: var(--rd-muted);
+  font-size: var(--rd-font-meta);
+}
+
+.intelligence-overview button b {
+  color: var(--rd-teal-dark);
+  font-family: inherit;
+  font-size: var(--rd-font-panel);
+  font-weight: var(--rd-weight-bold);
+}
+
+.recruitment-command-grid,
+.recruitment-analysis-grid {
+  gap: var(--rd-space-0);
+  min-width: var(--rd-space-0);
+  overflow: hidden;
+  background: var(--rd-surface);
+}
+
+.recruitment-command-grid {
+  grid-template-columns: var(--rd-command-columns);
+}
+
+.recruitment-analysis-grid {
+  grid-template-columns: var(--rd-analysis-columns);
+}
+
+.recruitment-command-workspace > .recruitment-dashboard-panel,
+.recruitment-analysis-workspace > .recruitment-dashboard-panel {
+  min-width: var(--rd-space-0);
+  padding: var(--rd-space-5);
+  background: transparent;
+  border: var(--rd-space-0);
+  border-radius: var(--rd-space-0);
+  box-shadow: none;
+}
+
+.recruitment-command-workspace > .recruitment-dashboard-panel + .recruitment-dashboard-panel,
+.recruitment-analysis-workspace > .recruitment-dashboard-panel + .recruitment-dashboard-panel {
+  border-left: var(--rd-panel-border);
+}
+
+.recruitment-dashboard-panel > .panel__header {
+  margin: var(--rd-space-0);
+  padding-bottom: var(--rd-space-3);
+  border-bottom: var(--rd-panel-border);
+}
+
+.today-action-list {
+  grid-template-columns: var(--rd-two-columns);
+  gap: var(--rd-space-0);
+}
+
+.today-action-list > button {
+  min-width: var(--rd-space-0);
+  min-height: var(--rd-list-row-height);
+  padding: var(--rd-space-3) var(--rd-space-2);
+  color: var(--rd-slate);
+  background: transparent;
+  border: var(--rd-space-0);
+  border-bottom: var(--rd-soft-border);
+  border-radius: var(--rd-space-0);
+  transition: color var(--rd-motion), background var(--rd-motion);
+}
+
+.today-action-list > button:nth-child(even) {
+  border-left: var(--rd-soft-border);
+}
+
+.today-action-list > button:hover,
+.today-action-list > button:focus-visible {
+  color: var(--rd-teal-dark);
+  background: var(--rd-surface-hover);
+  border-color: var(--rd-line-soft);
+}
+
+.today-action-icon {
+  color: var(--rd-teal-dark);
+  background: var(--rd-teal-soft);
+  border-radius: var(--rd-radius-control);
+}
+
+.today-action-list strong,
+.recruitment-alert-list strong {
+  color: var(--rd-ink);
+  font-size: var(--rd-font-control);
+}
+
+.today-action-list small,
+.recruitment-alert-list small {
+  color: var(--rd-muted);
+  font-size: var(--rd-font-meta);
+}
+
+.today-action-list b {
+  color: var(--rd-ink);
+  font-size: var(--rd-font-panel);
+}
+
+.recruitment-alert-list {
+  gap: var(--rd-space-0);
+}
+
+.recruitment-alert-list article {
+  min-height: var(--rd-list-row-height);
+  gap: var(--rd-space-3);
+  padding: var(--rd-space-3) var(--rd-space-0);
+  border: var(--rd-space-0);
+  border-bottom: var(--rd-soft-border);
+  border-radius: var(--rd-space-0);
+}
+
+.recruitment-alert-list article:last-child {
+  border-bottom: var(--rd-space-0);
+}
+
+.recruitment-alert-list article > i {
+  width: var(--rd-status-bar-width);
+  background: var(--rd-amber);
+}
+
+.recruitment-alert-list article.is-high > i {
+  background: var(--rd-red);
+}
+
+.recruitment-alert-list button {
+  color: var(--rd-teal-dark);
+  font-size: var(--rd-font-meta);
+}
+
+.dashboard-calm-state {
+  color: var(--rd-teal);
+}
+
+.dashboard-calm-state strong {
+  color: var(--rd-slate);
+  font-size: var(--rd-font-control);
+}
+
+.dashboard-calm-state span {
+  color: var(--rd-muted);
+  font-size: var(--rd-font-meta);
+}
+
+.recruitment-job-overview,
+.recruitment-recent-panel {
+  margin-top: var(--rd-space-0);
+  padding: var(--rd-space-0);
+  overflow: hidden;
+}
+
+.recruitment-job-overview > .panel__header,
+.recruitment-recent-panel > .panel__header {
+  padding: var(--rd-space-5);
+}
+
+.job-progress-list > button,
+.dashboard-task-list > button {
+  min-width: var(--rd-space-0);
+  min-height: var(--rd-list-row-height);
+  padding: var(--rd-space-3) var(--rd-space-5);
+  border-bottom: var(--rd-soft-border);
+  transition: color var(--rd-motion), background var(--rd-motion);
+}
+
+.job-progress-list > button:hover,
+.job-progress-list > button:focus-visible,
+.dashboard-task-list > button:hover,
+.dashboard-task-list > button:focus-visible {
+  color: var(--rd-teal-dark);
+  background: var(--rd-surface-hover);
+}
+
+.job-progress-list > button {
+  grid-template-columns: minmax(180px, 1.25fr) minmax(120px, .75fr) auto auto;
+}
+
+.job-progress-list strong,
+.dashboard-task-list strong {
+  color: var(--rd-ink);
+  font-size: var(--rd-font-control);
+}
+
+.job-progress-list small,
+.dashboard-task-list small,
+.dashboard-task-list b {
+  color: var(--rd-muted);
+  font-size: var(--rd-font-meta);
+}
+
+.job-progress-list .job-progress-focus,
+.job-progress-list b {
+  color: var(--rd-teal-dark);
+}
+
+.job-progress-track {
+  height: var(--rd-progress-height);
+  background: var(--rd-teal-soft);
+  border-radius: var(--rd-radius-pill);
+}
+
+.job-progress-track i {
+  background: var(--rd-teal);
+}
+
+.recruitment-funnel {
+  gap: var(--rd-space-0);
+  padding: var(--rd-space-0);
+}
+
+.recruitment-funnel > div {
+  min-height: var(--rd-list-row-height);
+  padding: var(--rd-space-2) var(--rd-space-0);
+  border-bottom: var(--rd-soft-border);
+}
+
+.recruitment-funnel > div:last-child {
+  border-bottom: var(--rd-space-0);
+}
+
+.recruitment-funnel span,
+.recruitment-funnel strong {
+  color: var(--rd-slate);
+  font-size: var(--rd-font-meta);
+}
+
+.recruitment-funnel > div > div {
+  height: var(--rd-progress-height);
+  background: var(--rd-teal-soft);
+}
+
+.recruitment-funnel i {
+  background: var(--rd-teal);
+}
+
+.trend-legend {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  color: var(--rd-muted);
+  font-size: var(--rd-font-meta) !important;
+}
+
+.recruitment-trend {
+  height: var(--rd-chart-height);
+  gap: var(--rd-space-3);
+  padding-top: var(--rd-space-4);
+  border-bottom: var(--rd-space-0);
+}
+
+.recruitment-trend small {
+  color: var(--rd-muted);
+  font-size: var(--rd-font-meta);
+}
+
+.trend-bars i {
+  background: var(--rd-teal-dark);
+}
+
+.trend-bars i:nth-child(2) {
+  background: var(--rd-teal);
+}
+
+.trend-bars i:nth-child(3) {
+  background: var(--rd-amber);
+}
+
+.trend-bars i:nth-child(4) {
+  background: var(--rd-slate);
+}
+
+.dashboard-task-list > button > i {
+  width: var(--rd-dot-size);
+  height: var(--rd-dot-size);
+  background: var(--rd-status-neutral);
+}
+
+.dashboard-task-list > button > i.is-succeeded {
+  background: var(--rd-teal);
+}
+
+.dashboard-task-list > button > i.is-failed {
+  background: var(--rd-red);
+}
+
+.dashboard-task-list > button > i.is-waiting_human {
+  background: var(--rd-amber);
+}
+
+@container recruitment-dashboard (max-width: 1320px) {
+  .recruitment-dashboard > .recruitment-metrics {
+    grid-template-columns: var(--rd-six-columns);
+  }
+
+  .recruitment-dashboard > .recruitment-metrics > .recruitment-metric {
+    grid-column: span 2;
+  }
+
+  .recruitment-dashboard > .recruitment-metrics > .recruitment-metric:nth-last-child(-n + 2) {
+    grid-column: span 3;
+  }
+
+  .recruitment-dashboard > .intelligence-overview > div {
+    grid-template-columns: var(--rd-two-columns);
+  }
+
+  .recruitment-dashboard > .intelligence-overview button {
+    border-left: var(--rd-space-0);
+    border-bottom: var(--rd-panel-border);
+  }
+
+  .recruitment-dashboard > .intelligence-overview button:nth-child(even) {
+    border-left: var(--rd-panel-border);
+  }
+
+  .recruitment-dashboard > .intelligence-overview button:nth-last-child(-n + 2) {
+    border-bottom: var(--rd-space-0);
+  }
+}
+
+@container recruitment-dashboard (max-width: 1050px) {
+  .recruitment-command-grid,
+  .recruitment-analysis-grid {
+    grid-template-columns: var(--rd-one-column);
+  }
+
+  .recruitment-command-workspace > .recruitment-dashboard-panel + .recruitment-dashboard-panel,
+  .recruitment-analysis-workspace > .recruitment-dashboard-panel + .recruitment-dashboard-panel {
+    border-left: var(--rd-space-0);
+    border-top: var(--rd-panel-border);
+  }
+}
+
+@container recruitment-dashboard (max-width: 720px) {
+  .recruitment-dashboard__hero,
+  .intelligence-overview > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .recruitment-dashboard > .recruitment-metrics,
+  .recruitment-dashboard > .intelligence-overview > div,
+  .recruitment-dashboard .today-action-list {
+    grid-template-columns: var(--rd-two-columns);
+  }
+
+  .recruitment-dashboard > .recruitment-metrics > .recruitment-metric {
+    grid-column: span 1;
+  }
+
+  .recruitment-dashboard > .recruitment-metrics > .recruitment-metric:last-child {
+    grid-column: span 2;
+  }
+
+  .today-action-list > button:nth-child(even) {
+    border-left: var(--rd-space-0);
+  }
+
+  .job-progress-list > button {
+    grid-template-columns: minmax(0, 1fr) minmax(76px, .42fr) auto;
+  }
+
+  .job-progress-list > button > small:last-child {
+    grid-column: 2 / -1;
+    text-align: right;
+  }
+
+  .trend-legend {
+    justify-content: flex-start;
+  }
+}
+
+@container recruitment-dashboard (max-width: 520px) {
+  .recruitment-dashboard > .recruitment-metrics,
+  .recruitment-dashboard > .intelligence-overview > div,
+  .recruitment-dashboard .today-action-list {
+    grid-template-columns: var(--rd-one-column);
+  }
+
+  .recruitment-dashboard > .recruitment-metrics > .recruitment-metric,
+  .recruitment-dashboard > .recruitment-metrics > .recruitment-metric:last-child {
+    grid-column: span 1;
+  }
+
+  .recruitment-dashboard > .intelligence-overview button,
+  .recruitment-dashboard > .intelligence-overview button:nth-child(even) {
+    border-left: var(--rd-space-0);
+    border-bottom: var(--rd-panel-border);
+  }
+
+  .recruitment-dashboard > .intelligence-overview button:last-child {
+    border-bottom: var(--rd-space-0);
+  }
+
+  .recruitment-command-workspace > .recruitment-dashboard-panel,
+  .recruitment-analysis-workspace > .recruitment-dashboard-panel,
+  .recruitment-job-overview > .panel__header,
+  .recruitment-recent-panel > .panel__header,
+  .job-progress-list > button,
+  .dashboard-task-list > button {
+    padding-right: var(--rd-space-4);
+    padding-left: var(--rd-space-4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recruitment-metric,
+  .intelligence-overview button,
+  .today-action-list > button,
+  .job-progress-list > button,
+  .dashboard-task-list > button {
+    transition: none;
+  }
+}
 </style>

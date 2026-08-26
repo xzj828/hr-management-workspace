@@ -352,7 +352,15 @@ class RpaTask(models.Model):
                 fields=["boss_account"],
                 condition=Q(status__in=["leased", "running"]),
                 name="unique_active_rpa_task_per_account",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["boss_account", "action"],
+                condition=Q(
+                    action="check_status",
+                    status__in=["pending", "leased", "running"],
+                ),
+                name="unique_active_check_status_per_account",
+            ),
         ]
 
 

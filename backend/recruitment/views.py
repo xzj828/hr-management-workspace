@@ -4,6 +4,7 @@ import uuid
 
 from django.db import transaction
 from django.db.models import Count, Prefetch, Q
+from django.db.models.deletion import ProtectedError
 from django.http import FileResponse
 from django.utils import timezone
 from django.utils.http import content_disposition_header
@@ -42,7 +43,14 @@ from .models import (
     WorkflowRun,
 )
 from .permissions import RecruitmentWritePermission
-from .rpa.tasks import cancel_task, create_task, retry_task
+from .rpa.tasks import (
+    RpaRuntimeUnavailable,
+    cancel_task,
+    create_task,
+    latest_rpa_worker,
+    retry_task,
+    rpa_worker_is_online,
+)
 from .rpa.status import inspect_boss_status
 from .serializers import (
     BossAccountSerializer,
@@ -177,6 +185,7 @@ class BossAccountViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     queryset = BossAccount.objects.all().order_by("name")
     serializer_class = BossAccountSerializer
     permission_classes = [RecruitmentWritePermission]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -188,17 +197,23 @@ class BossAccountViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         account = serializer.save()
         account.authorized_users.add(self.request.user)
-        create_task(
-            account=account,
-            action=RpaTask.Action.CHECK_STATUS,
-            actor=self.request.user,
-            request_payload={"open_login": True},
-        )
+        try:
+            create_task(
+                account=account,
+                action=RpaTask.Action.CHECK_STATUS,
+                actor=self.request.user,
+                request_payload={"open_login": True},
+                creation_path="account_create",
+            )
+        except RpaRuntimeUnavailable:
+            # Saving an account remains possible while the desktop runtime is offline.
+            # The UI will offer the login action after a healthy Worker heartbeat.
+            pass
 
     @action(detail=True, methods=["post"], url_path="check-status")
     def check_status(self, request, pk=None):
         account = self.get_object()
-        observation = inspect_boss_status(account.cdp_port)
+        observation = inspect_boss_status(account.cdp_port, user_data_dir=account.user_data_dir)
         account = apply_account_observation(
             account=account,
             login_status=observation.login_status,
@@ -216,6 +231,7 @@ class RecruitmentJobViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     ).order_by("-updated_at")
     serializer_class = RecruitmentJobSerializer
     permission_classes = [RecruitmentWritePermission]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -805,6 +821,7 @@ class WorkflowTemplateViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkflowTemplate.objects.select_related("active_version", "created_by").all()
     serializer_class = WorkflowTemplateSerializer
     permission_classes = [RecruitmentWritePermission]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -850,12 +867,19 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
         queryset = queryset.filter(template__archived_at__isnull=self.request.query_params.get("archived") != "1")
         return queryset if self.request.user.is_superuser else queryset.filter(template__created_by=self.request.user)
 
+    @transaction.atomic
     def destroy(self, request, *args, **kwargs):
-        version = self.get_object()
+        accessible_version = self.get_object()
+        version = WorkflowVersion.objects.select_for_update().select_related("template", "boss_account").get(
+            pk=accessible_version.pk
+        )
+        template = WorkflowTemplate.objects.select_for_update().get(pk=version.template_id)
         if version.status != WorkflowVersion.Status.DRAFT:
             raise LifecycleConflict("已启用或已停用的流程版本需要保留审计记录，不能直接删除")
-        if version.template.active_version_id == version.pk:
+        if template.active_version_id == version.pk:
             raise LifecycleConflict("当前启用版本不能删除，请先停用流程")
+        if version.runs.exists():
+            raise LifecycleConflict("该流程草稿已有运行记录，需要保留审计，不能删除")
         RecruitmentAuditLog.objects.create(
             actor=request.user,
             boss_account=version.boss_account,
@@ -863,7 +887,10 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
             target_id=str(version.pk),
             detail={"template_id": version.template_id, "version": version.version},
         )
-        version.delete()
+        try:
+            version.delete()
+        except ProtectedError as exc:
+            raise LifecycleConflict("该流程草稿已有运行或关联记录，需要保留审计，不能删除") from exc
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"])
@@ -1303,20 +1330,25 @@ def automation_summary_view(request):
     if not request.user.is_superuser:
         tasks = tasks.filter(boss_account__authorized_users=request.user)
     counts = {row["status"]: row["count"] for row in tasks.values("status").annotate(count=Count("id"))}
-    worker = RpaWorker.objects.order_by("-last_seen_at").first()
+    worker = latest_rpa_worker()
+    worker_online = rpa_worker_is_online(worker)
     worker_data = None
     if worker:
         worker_data = {
             "key": worker.key,
             "hostname": worker.hostname,
             "version": worker.version,
-            "status": worker.status,
+            "status": RpaWorker.Status.ONLINE if worker_online else RpaWorker.Status.OFFLINE,
             "last_seen_at": worker.last_seen_at,
         }
     active_statuses = [RpaTask.Status.PENDING, RpaTask.Status.LEASED, RpaTask.Status.RUNNING]
     return Response({
         "worker": worker_data,
-        "cli_available": bool(worker and worker.capabilities.get("boss_cli")),
+        "cli_available": bool(
+            worker_online
+            and isinstance(worker.capabilities, dict)
+            and worker.capabilities.get("boss_cli") is True
+        ),
         "task_counts": counts,
         "has_active_task": tasks.filter(status__in=active_statuses).exists(),
     })

@@ -25,11 +25,11 @@
 | P1 | 本地部署与会话认证 | Windows 一键初始化/启动、局域网访问、Django Session + CSRF | [x] 完整 | `scripts/`, `backend/config/`, `backend/attendance/views.py` |
 | P2 | 角色权限骨架 | Admin、HR、Supervisor、Viewer；读写权限分离 | [~] 部分 | `backend/attendance/models.py`, `backend/attendance/permissions.py` |
 | P3 | 统一数据与文件存储 | SQLite 默认、PostgreSQL 可选、上传文件与 PDF 留档 | [x] 完整 | `backend/config/settings.py`, `backend/*/models.py` |
-| P4 | 审计与可恢复生命周期 | 招聘审计、任务事件、阶段历史、归档/恢复 | [x] 完整 | `backend/recruitment/models.py`, `services/lifecycle.py` |
-| P5 | 安全自动化运行时 | 隔离浏览器、Worker 租约、人工确认、额度、幂等与证据 | [x] 代码完整 / 真实账号待验收 | `backend/recruitment/rpa/`, `services/`, `worker_api.py` |
+| P4 | 审计与可恢复生命周期 | 招聘审计、任务事件、阶段历史、管理后台归档/恢复与受控永久删除 | [x] 2026-08-25 管理后台入口与删除边界验收完成 | `backend/recruitment/models.py`, `services/lifecycle.py`, `RecruitmentAdminView.vue` |
+| P5 | 安全自动化运行时 | 隔离浏览器、Worker 租约、人工确认、额度、幂等与证据 | [x] 代码完整 / 真实隔离窗口已验收，账号扫码待用户完成 | `backend/recruitment/rpa/`, `services/`, `worker_api.py` |
 | P6 | 统一前端壳与设计系统 | Vue SPA、模块导航、本地图标、表格/抽屉/弹窗模式 | [x] 完整 | `frontend/src/components/`, `styles.css` |
 | P7 | 个人模型档案与切换 | 加密保存多个兼容模型配置，在 Shell 或管理后台明确切换当前模型 | [x] 2026-08-25 完成 | `backend/accounts/`, `ModelSwitcher.vue`, `RecruitmentAdminView.vue` |
-| P8 | 招聘三工作区 | 以 HR 任务为中心收敛为招聘作业台、结果中心、管理后台 | [x] 2026-08-25 完成并通过全栈与生命周期验收 | `frontend/src/views/recruitment/`, `navigation.js` |
+| P8 | 招聘总览与三工作区 | 以跨岗位看板分流，以作业台、结果中心、管理后台完成任务 | [x] 2026-08-25 看板入口恢复，三工作区全栈与生命周期验收通过 | `frontend/src/views/recruitment/`, `navigation.js` |
 
 ### 场景层功能
 
@@ -40,13 +40,13 @@
 | W3 | 跨日打卡疑似人工审核 | W2, P4 | [x] 完整 | `SuspicionsView.vue`, `resolve_cross_day` |
 | W4 | 月度结果调整、确认与 Excel 导出 | W1–W3 | [x] 完整 | `ResultsView.vue`, `attendance/exporter.py` |
 | W5 | 跨月/部门考勤看板 | W4, P6 | [x] 完整 | `DashboardView.vue`, `dashboard_view` |
-| W6 | BOSS 账号和职位管理 | P2, P5 | [x] 代码完整 / 外部依赖 | `RecruitmentAutomationView.vue`, `RecruitmentJobsView.vue` |
+| W6 | BOSS 账号和职位管理 | P2, P5 | [x] 真实 Worker、双账号隔离窗口与等待登录状态已验收 | `RecruitmentAdminView.vue`, `backend/recruitment/rpa/` |
 | W7 | 推荐、搜索、深度匹配与候选人入库 | W6, P5 | [x] 代码完整 / 外部依赖 | `RecruitmentCandidatesView.vue`, `services/discovery.py` |
 | W8 | 候选人阶段与招聘看板 | W6, W7, P4 | [x] 完整 | `RecruitmentPipelineView.vue`, `RecruitmentDashboardView.vue` |
 | W9 | 沟通批次、简历索取/保存与面试邀约 | W7, P5 | [x] 代码完整 / 真实写操作待验收 | `services/communications.py`, `services/resumes.py` |
 | W10 | 人工确认的招聘流程编排 | W6–W9, P5 | [x] 完整 | `WorkflowCanvas.vue`, `services/workflow_runtime.py` |
 | W11 | 演示数据与 PDF 简历预览 | P3, P6 | [x] 完整 | `recruitment/demo_data.py`, `RecruitmentDemoMenu.vue` |
-| W12 | 招聘记录归档与恢复 | P4 | [x] 完整 | `ArchivableViewSetMixin`, `ArchiveConfirmModal.vue` |
+| W12 | 招聘记录归档与恢复 | P4 | [x] 管理后台当前/归档、恢复与确认交互完整 | `ArchivableViewSetMixin`, `ArchiveConfirmModal.vue`, `RecruitmentAdminView.vue` |
 
 ## 未完成或边界功能
 
@@ -78,10 +78,11 @@
 ### 2026-08-25 招聘信息架构决策
 
 - 高频业务按 HR 心智重组为“准备一次作业 → 执行 → 查看结果与处理例外”，不再按职位、候选人、流程、自动化和简历等技术对象平铺一级导航。
-- 招聘一级入口收敛为“招聘作业台、结果中心、管理后台”。作业台承载岗位、画像/需求文件、文字要求、方案、数量与执行；结果中心承载运行、人工介入、候选人、简历、评分与阶段；管理后台承载职位同步、BOSS 账号、隔离浏览器、流程编排、模型和诊断。
+- 招聘一级入口为“招聘看板、招聘作业台、结果中心、管理后台”。看板承载跨岗位概览与分流；作业台承载岗位、画像/需求文件、文字要求、方案、数量与执行；结果中心承载运行、人工介入、候选人、简历、评分与阶段；管理后台承载职位同步、BOSS 账号、隔离浏览器、流程编排、模型和诊断。
 - 已实现的职位同步、岗位文档、评分标准、工作流、RPA 审批、候选人、简历和评分领域能力继续复用；本轮不复制模型、不放宽安全门。
 - 旧招聘 URL 作为兼容入口保留，定向到新工作区的对应视图，避免收藏和业务深链失效。
 - 顶栏入口使用用户可理解的“切换模型”，而不是尚不存在对话能力的“Copilot”；当前模型是用户级配置，新增或切换不会改变历史评分记录所绑定的模型信息。
+- 2026-08-26 作业台交互由三段同屏调整为同路由三页向导：岗位与账号、招聘标准、执行方案逐步完成；岗位依据上传复用考勤模块的拖拽心智。调整只降低业务表单认知负担，不复制数据、不改变自动化安全门。
 
 ## 建议的后续功能
 

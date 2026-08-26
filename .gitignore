@@ -18,3 +18,4 @@ __pycache__/
 htmlcov/
 backend/*.log
 frontend/coverage/
+.codex-start-local.*.log

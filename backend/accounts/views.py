@@ -14,6 +14,7 @@ from .services.model_profiles import (
     ModelProfileInvalid,
     activate_model_profile,
     clear_legacy_model_credential,
+    delete_model_profile,
     get_legacy_model_credential,
 )
 
@@ -81,12 +82,15 @@ def model_profile_list_view(request):
     return Response(UserModelProfileSerializer(profile).data, status=status.HTTP_201_CREATED)
 
 
-@api_view(["GET", "PATCH"])
+@api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def model_profile_detail_view(request, profile_id):
     profile = get_object_or_404(UserModelProfile, pk=profile_id, user=request.user)
     if request.method == "GET":
         return Response(UserModelProfileSerializer(profile).data)
+    if request.method == "DELETE":
+        delete_model_profile(user=request.user, profile=profile)
+        return Response(status=status.HTTP_204_NO_CONTENT)
     serializer = UserModelProfileSerializer(
         profile,
         data=request.data,

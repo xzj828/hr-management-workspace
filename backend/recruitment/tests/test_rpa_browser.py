@@ -1,4 +1,6 @@
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -6,11 +8,15 @@ from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
-from recruitment.models import BossAccount, RpaTask
+from django.utils import timezone
+
+from recruitment.models import BossAccount, RpaTask, RpaWorker
 from recruitment.rpa.browser import (
     ProfileLock,
     ProfileLockedError,
     browser_configuration,
+    managed_cdp_matches,
+    record_managed_cdp,
 )
 
 
@@ -32,11 +38,31 @@ class BrowserConfigurationTests(SimpleTestCase):
             browser_configuration("firefox", "boss-account-a", 53470, exists=lambda path: True)
 
     def test_second_profile_lock_is_rejected(self):
-        profile = Path(settings.RPA_PROFILE_ROOT) / "boss-account-a"
-        with ProfileLock(profile):
-            with self.assertRaisesMessage(ProfileLockedError, "浏览器目录正在使用"):
-                with ProfileLock(profile):
-                    pass
+        with TemporaryDirectory() as root:
+            profile = Path(root) / "boss-account-a"
+            with ProfileLock(profile):
+                with self.assertRaisesMessage(ProfileLockedError, "浏览器目录正在使用"):
+                    with ProfileLock(profile):
+                        pass
+
+    @patch("recruitment.rpa.browser.read_cdp_identity")
+    def test_managed_cdp_marker_binds_port_to_profile_and_websocket(self, identity):
+        identity.return_value = {
+            "port": 53470,
+            "websocket_url": "ws://127.0.0.1:53470/devtools/browser/expected",
+            "browser": "Edge/151",
+        }
+        with TemporaryDirectory() as root, self.settings(RPA_PROFILE_ROOT=Path(root)):
+            profile = Path(root) / "boss-account-a"
+            record_managed_cdp(53470, profile)
+
+            self.assertTrue(managed_cdp_matches(53470, profile))
+            identity.return_value = {
+                "port": 53470,
+                "websocket_url": "ws://127.0.0.1:53470/devtools/browser/other",
+                "browser": "Edge/151",
+            }
+            self.assertFalse(managed_cdp_matches(53470, profile))
 
 
 class BossAccountConfigurationApiTests(APITestCase):
@@ -71,10 +97,29 @@ class BossAccountConfigurationApiTests(APITestCase):
         self.assertTrue(account.authorized_users.filter(pk=self.hr.pk).exists())
 
     @override_settings(RPA_PROFILE_ROOT=Path("C:/hr-test/profiles"))
-    def test_creating_account_queues_open_login_task(self):
+    def test_creating_account_without_worker_does_not_queue_dead_login_task(self):
         response = self.client.post(
             "/api/recruitment/boss-accounts/",
             {"name": "首次登录账号", "browser_type": "edge"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(RpaTask.objects.filter(boss_account_id=response.data["id"]).exists())
+
+    @override_settings(RPA_PROFILE_ROOT=Path("C:/hr-test/profiles"))
+    def test_creating_account_with_ready_worker_queues_open_login_task(self):
+        RpaWorker.objects.create(
+            key="browser-test-worker",
+            hostname="localhost",
+            status=RpaWorker.Status.ONLINE,
+            last_seen_at=timezone.now(),
+            capabilities={"boss_cli": True},
+        )
+
+        response = self.client.post(
+            "/api/recruitment/boss-accounts/",
+            {"name": "自动打开登录", "browser_type": "edge"},
             format="json",
         )
 

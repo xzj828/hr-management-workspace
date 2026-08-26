@@ -33,6 +33,7 @@ function baseApi(path) {
     cli_available: true,
   })
   if (path === 'recruitment/job-documents/?job=51') return Promise.resolve({ results: [] })
+  if (path === 'recruitment/job-documents/?job=52') return Promise.resolve({ results: [] })
   return Promise.reject(new Error(`unexpected path: ${path}`))
 }
 
@@ -52,6 +53,21 @@ async function mountView(query = {}) {
   return { wrapper, router }
 }
 
+async function goToStandard(wrapper) {
+  await wrapper.get('[data-test="complete-context-step"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(true)
+}
+
+async function goToPlan(wrapper, { core = '', bonus = '' } = {}) {
+  await goToStandard(wrapper)
+  if (core) await wrapper.get('[data-test="core-requirements"]').setValue(core)
+  if (bonus) await wrapper.get('[data-test="bonus-requirements"]').setValue(bonus)
+  await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(true)
+}
+
 describe('RecruitmentWorkbenchView', () => {
   let wrapper
 
@@ -62,15 +78,26 @@ describe('RecruitmentWorkbenchView', () => {
     auth.user = { id: 9, username: 'hr', role: 'hr' }
     auth.loading = false
     const context = useRecruitmentContextStore()
-    context.jobs = [{
-      id: 51,
-      title: 'Python 后端工程师',
-      department: '研发部',
-      boss_account: 7,
-      account_name: '研发招聘账号',
-      status: 'open',
-      jd: '负责招聘平台服务端研发',
-    }]
+    context.jobs = [
+      {
+        id: 51,
+        title: 'Python 后端工程师',
+        department: '研发部',
+        boss_account: 7,
+        account_name: '研发招聘账号',
+        status: 'open',
+        jd: '负责招聘平台服务端研发',
+      },
+      {
+        id: 52,
+        title: '产品经理',
+        department: '产品部',
+        boss_account: 7,
+        account_name: '研发招聘账号',
+        status: 'open',
+        jd: '负责企业产品规划',
+      },
+    ]
     context.selectedJobId = '51'
     context.loaded = true
     context.loadedUserId = '9'
@@ -85,38 +112,102 @@ describe('RecruitmentWorkbenchView', () => {
     sessionStorage.clear()
   })
 
-  it('keeps job, account, standards, scheme and preflight in one page with one primary action', async () => {
-    ;({ wrapper } = await mountView())
+  it('presents the three steps as guarded pages with current-step semantics and previous navigation', async () => {
+    let router
+    ;({ wrapper, router } = await mountView())
 
-    expect(wrapper.get('[data-test="workbench-job"]').element.value).toBe('51')
-    expect(wrapper.get('[data-test="workbench-account"]').element.value).toBe('7')
-    expect(wrapper.text()).toContain('招聘标准')
-    expect(wrapper.text()).toContain('核心要求')
-    expect(wrapper.text()).toContain('被动咨询')
-    expect(wrapper.text()).toContain('主动寻访')
+    expect(wrapper.get('[data-test="wizard-step-context"]').attributes('aria-current')).toBe('step')
+    expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(false)
+    expect(router.currentRoute.value.query.step).toBe('context')
+
+    await goToStandard(wrapper)
+    expect(wrapper.get('[data-test="wizard-step-standard"]').attributes('aria-current')).toBe('step')
+    expect(router.currentRoute.value.query).toMatchObject({ job: '51', step: 'standard' })
+    expect(wrapper.text()).toContain('岗位依据文件')
+
+    await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="wizard-step-plan"]').attributes('aria-current')).toBe('step')
     expect(wrapper.text()).toContain('执行前检查')
     expect(wrapper.findAll('button.primary-button')).toHaveLength(1)
-    expect(wrapper.get('[data-test="start-execution"]').attributes()).not.toHaveProperty('disabled')
-    expect(wrapper.get('[data-test="precheck-browser"]').classes()).toContain('is-ready')
-    expect(wrapper.get('[data-test="precheck-runtime"]').classes()).toContain('is-ready')
+
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(true)
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
   })
 
-  it('uploads multiple requirement files one by one through the existing multipart endpoint', async () => {
+  it('guards direct deep links and does not auto-skip the first step during hydration', async () => {
+    let router
+    ;({ wrapper, router } = await mountView({ job: '51', step: 'plan' }))
+
+    expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
+    expect(router.currentRoute.value.query.step).toBe('context')
+  })
+
+  it('persists a versioned non-file draft per user and job and restores it on the plan page', async () => {
+    let router
+    ;({ wrapper, router } = await mountView())
+    await goToPlan(wrapper, { core: '3 年 Python 经验', bonus: 'AI 项目经验' })
+    await wrapper.get('[data-test="scheme-active"]').setValue(true)
+    await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
+    await flushPromises()
+
+    const key = Object.keys(sessionStorage).find((item) => item.includes('workbench-draft:v1:9:51'))
+    expect(key).toBeTruthy()
+    expect(sessionStorage.getItem(key)).not.toContain('File')
+
+    wrapper.unmount()
+    wrapper = null
+    ;({ wrapper, router } = await mountView({ job: '51', step: 'plan' }))
+    expect(router.currentRoute.value.query.step).toBe('plan')
+    expect(wrapper.get('[data-test="scheme-active"]').element.checked).toBe(true)
+    expect(wrapper.get('[data-test="active-keyword"]').element.value).toBe('Python 后端')
+
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="core-requirements"]').element.value).toBe('3 年 Python 经验')
+    expect(wrapper.get('[data-test="bonus-requirements"]').element.value).toBe('AI 项目经验')
+  })
+
+  it('returns to step one and isolates the draft when the job changes', async () => {
+    ;({ wrapper } = await mountView())
+    await goToStandard(wrapper)
+    await wrapper.get('[data-test="core-requirements"]').setValue('只属于职位 51')
+    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="workbench-job"]').setValue('52')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="wizard-step-context"]').attributes('aria-current')).toBe('step')
+    await goToStandard(wrapper)
+    expect(wrapper.get('[data-test="core-requirements"]').element.value).toBe('')
+  })
+
+  it('uploads multiple requirement files sequentially through click selection', async () => {
     let documentReads = 0
-    apiMock.mockImplementation((path, options) => {
+    const uploadOrder = []
+    apiMock.mockImplementation(async (path, options) => {
       if (path === 'recruitment/job-documents/?job=51') {
         documentReads += 1
-        return Promise.resolve({ results: documentReads > 1 ? [
-          { id: 1, title: '候选人画像', category_label: '招聘需求', current_version: { id: 11, version: 1 } },
-          { id: 2, title: '岗位要求', category_label: '招聘需求', current_version: { id: 12, version: 1 } },
-        ] : [] })
+        return { results: documentReads > 1 ? [
+          { id: 1, title: '候选人画像', category_label: '岗位需求', current_version: { id: 11, version: 1 } },
+          { id: 2, title: '岗位要求', category_label: '岗位需求', current_version: { id: 12, version: 1 } },
+        ] : [] }
       }
       if (path === 'recruitment/job-documents/' && options?.method === 'POST') {
-        return Promise.resolve({ id: Math.random() })
+        uploadOrder.push(options.body.get('title'))
+        return { id: uploadOrder.length }
       }
       return baseApi(path)
     })
     ;({ wrapper } = await mountView())
+    await goToStandard(wrapper)
     await wrapper.get('[data-test="document-category"]').setValue('requirement')
     const fileInput = wrapper.get('[data-test="workbench-file-input"]')
     Object.defineProperty(fileInput.element, 'files', {
@@ -130,16 +221,47 @@ describe('RecruitmentWorkbenchView', () => {
     await fileInput.trigger('change')
     await flushPromises()
 
+    expect(uploadOrder).toEqual(['候选人画像', '岗位要求'])
     const uploadCalls = apiMock.mock.calls.filter(([path, options]) => (
       path === 'recruitment/job-documents/' && options?.method === 'POST'
     ))
     expect(uploadCalls).toHaveLength(2)
     expect(uploadCalls[0][1].body.get('job')).toBe('51')
     expect(uploadCalls[0][1].body.get('category')).toBe('requirement')
-    expect(uploadCalls[0][1].body.get('title')).toBe('候选人画像')
-    expect(uploadCalls[1][1].body.get('title')).toBe('岗位要求')
     expect(wrapper.text()).toContain('候选人画像')
     expect(wrapper.text()).toContain('岗位要求')
+    expect(wrapper.text()).toContain('已上传')
+  })
+
+  it('supports drag-and-drop validation and keeps per-file partial-failure status', async () => {
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/job-documents/' && options?.method === 'POST') {
+        const title = options.body.get('title')
+        return title === '失败文件' ? Promise.reject(new Error('服务端拒绝该文件')) : Promise.resolve({ id: 1 })
+      }
+      return baseApi(path)
+    })
+    ;({ wrapper } = await mountView())
+    await goToStandard(wrapper)
+    const empty = new File([], '空文件.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+    const valid = new File(['valid'], '成功文件.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+    const failed = new File(['valid'], '失败文件.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const invalid = new File(['text'], '错误格式.txt', { type: 'text/plain' })
+
+    await wrapper.get('[data-test="workbench-drop-zone"]').trigger('drop', {
+      dataTransfer: { files: [valid, failed, invalid, empty] },
+    })
+    await flushPromises()
+
+    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/job-documents/')).toHaveLength(2)
+    expect(wrapper.text()).toContain('成功文件.docx')
+    expect(wrapper.text()).toContain('已上传')
+    expect(wrapper.text()).toContain('失败文件.xlsx')
+    expect(wrapper.text()).toContain('服务端拒绝该文件')
+    expect(wrapper.text()).toContain('错误格式.txt')
+    expect(wrapper.text()).toContain('仅支持 DOC、DOCX 或 XLSX')
+    expect(wrapper.text()).toContain('空文件.docx')
+    expect(wrapper.text()).toContain('文件不能为空')
   })
 
   it('writes active core and bonus criteria into the standard workflow, enables it, then runs it formally', async () => {
@@ -156,9 +278,8 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
     ;({ wrapper } = await mountView())
+    await goToPlan(wrapper, { core: '3 年 Python 经验\n熟悉 Django', bonus: 'AI 项目经验\nToB 经验' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
-    await wrapper.get('[data-test="core-requirements"]').setValue('3 年 Python 经验\n熟悉 Django')
-    await wrapper.get('[data-test="bonus-requirements"]').setValue('AI 项目经验\nToB 经验')
     await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
     await wrapper.get('[data-test="target-resume-count"]').setValue('5')
     await wrapper.get('[data-test="max-scan-count"]').setValue('30')
@@ -221,8 +342,8 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
     ;({ wrapper } = await mountView())
+    await goToPlan(wrapper, { core: 'Python' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
-    await wrapper.get('[data-test="core-requirements"]').setValue('Python')
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
 
     const start = wrapper.get('[data-test="start-execution"]')
@@ -245,6 +366,7 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
     ;({ wrapper } = await mountView())
+    await goToPlan(wrapper)
 
     expect(wrapper.get('[data-test="start-execution"]').attributes()).toHaveProperty('disabled')
     expect(wrapper.get('[data-test="precheck-browser"]').text()).toContain('隔离浏览器尚未启动')
@@ -260,8 +382,8 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
     ;({ wrapper } = await mountView())
+    await goToPlan(wrapper, { core: 'Python' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
-    await wrapper.get('[data-test="core-requirements"]').setValue('Python')
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
     await wrapper.get('[data-test="workflow-choice"]').setValue('custom:91')
 
@@ -287,8 +409,8 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
     ;({ wrapper } = await mountView())
+    await goToPlan(wrapper, { core: 'Python' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
-    await wrapper.get('[data-test="core-requirements"]').setValue('Python')
     await wrapper.get('[data-test="active-keyword"]').setValue('Python')
 
     await wrapper.get('[data-test="start-execution"]').trigger('click')
@@ -296,7 +418,8 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.text()).toContain('network lost')
 
     wrapper.unmount()
-    ;({ wrapper } = await mountView())
+    wrapper = null
+    ;({ wrapper } = await mountView({ job: '51', step: 'plan' }))
     await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
 

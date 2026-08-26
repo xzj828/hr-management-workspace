@@ -39,7 +39,15 @@ function modelProfiles() {
   return { results: [{ id: 3, name: '日常招聘', ...modelConfig(), is_active: true }] }
 }
 
-function baseApi({ ready = false, workerOnline = false, workflowVersion = null } = {}) {
+function baseApi({
+  ready = false,
+  workerOnline = false,
+  workflowVersion = null,
+  loginStatus = null,
+  verificationStatus = '',
+  failAccounts = false,
+  failRuntimeRefreshAfterLogin = false,
+} = {}) {
   let loginQueued = false
   let synced = false
   apiMock.mockImplementation((path, options = {}) => {
@@ -49,7 +57,14 @@ function baseApi({ ready = false, workerOnline = false, workflowVersion = null }
       task_counts: {},
       has_active_task: loginQueued,
     })
-    if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [{ ...account, login_status: ready ? 'ready' : 'browser_stopped' }] })
+    if (path === 'recruitment/boss-accounts/') {
+      if (failAccounts || (loginQueued && failRuntimeRefreshAfterLogin)) return Promise.reject(new Error('账号状态服务暂不可用'))
+      return Promise.resolve({ results: [{
+        ...account,
+        login_status: loginStatus || (ready ? 'ready' : 'browser_stopped'),
+        verification_status: verificationStatus,
+      }] })
+    }
     if (path === 'recruitment/jobs/') return Promise.resolve({ results: synced ? [{
       id: 31, boss_account: 1, title: '高级前端工程师', department: '研发中心', headcount: 2,
       status: 'open', updated_at: '2026-08-25T09:00:00Z',
@@ -93,9 +108,10 @@ describe('RecruitmentAdminView', () => {
     wrapper?.unmount()
     wrapper = null
     document.body.innerHTML = ''
+    vi.useRealTimers()
   })
 
-  it('turns a stopped browser into a visible, traceable login task', async () => {
+  it('blocks browser login visibly while the local worker or CLI is offline', async () => {
     baseApi({ ready: false, workerOnline: false })
     wrapper = mount(RecruitmentAdminView, {
       global: {
@@ -109,7 +125,44 @@ describe('RecruitmentAdminView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('隔离浏览器未启动')
-    expect(wrapper.text()).toContain('浏览器尚未启动，职位同步与正式执行暂不可用')
+    expect(wrapper.get('[data-test="account-runtime-blocker"]').text()).toContain('启动考勤系统.cmd')
+    expect(wrapper.get('[data-test="add-boss-account"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-test="start-browser-1"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-test="start-browser-1"]').trigger('click')
+    await flushPromises()
+
+    const loginCall = apiMock.mock.calls.find(([path, options]) => path === 'recruitment/rpa-tasks/' && options?.method === 'POST')
+    expect(loginCall).toBeUndefined()
+
+    await wrapper.get('[data-test="admin-tab-jobs"]').trigger('click')
+    expect(wrapper.text()).toContain('同步条件未满足')
+    expect(wrapper.text()).toContain('去启动并登录')
+  })
+
+  it('blocks position sync when a previously ready account loses the worker runtime', async () => {
+    baseApi({ ready: true, workerOnline: false })
+    wrapper = mount(RecruitmentAdminView, {
+      global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-test="admin-tab-jobs"]').trigger('click')
+    const syncButton = wrapper.get('[data-test="admin-sync-positions"]')
+    expect(syncButton.attributes('disabled')).toBeDefined()
+    await syncButton.trigger('click')
+    await flushPromises()
+
+    const syncCall = apiMock.mock.calls.find(([path, options]) => path === 'recruitment/jobs/sync/' && options?.method === 'POST')
+    expect(syncCall).toBeUndefined()
+  })
+
+  it('merges a submitted login task immediately and keeps feedback on the account card', async () => {
+    baseApi({ ready: false, workerOnline: true })
+    wrapper = mount(RecruitmentAdminView, {
+      global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } },
+    })
+    await flushPromises()
+
     await wrapper.get('[data-test="start-browser-1"]').trigger('click')
     await flushPromises()
 
@@ -119,12 +172,81 @@ describe('RecruitmentAdminView', () => {
       action: 'check_status',
       request_payload: { open_login: true },
     })
-    expect(wrapper.text()).toContain('启动任务已排队')
     expect(wrapper.text()).toContain('等待执行')
+    expect(wrapper.get('[data-test="account-feedback-1"]').text()).toContain('正在打开隔离浏览器')
+  })
 
-    await wrapper.get('[data-test="admin-tab-jobs"]').trigger('click')
-    expect(wrapper.text()).toContain('同步条件未满足')
-    expect(wrapper.text()).toContain('去启动并登录')
+  it('keeps the accepted task visible when the follow-up refresh fails', async () => {
+    baseApi({ workerOnline: true, failRuntimeRefreshAfterLogin: true })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true } } })
+    await flushPromises()
+
+    await wrapper.get('[data-test="start-browser-1"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('等待执行')
+    expect(wrapper.get('[data-test="account-feedback-1"]').text()).toContain('任务已提交，但状态刷新暂时失败')
+    expect(apiMock.mock.calls.filter(([path, options]) => path === 'recruitment/rpa-tasks/' && options?.method === 'POST')).toHaveLength(1)
+  })
+
+  it('uses state-specific login actions and human guidance', async () => {
+    baseApi({ workerOnline: true, loginStatus: 'waiting_login' })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true } } })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="start-browser-1"]').text()).toContain('聚焦登录窗口')
+    expect(wrapper.text()).toContain('完成 BOSS 扫码登录')
+  })
+
+  it('polls account runtime every five seconds after the previous request settles', async () => {
+    vi.useFakeTimers()
+    baseApi({ workerOnline: true })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true } } })
+    await flushPromises()
+    const initialAccountCalls = apiMock.mock.calls.filter(([path]) => path === 'recruitment/boss-accounts/').length
+
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+
+    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/boss-accounts/')).toHaveLength(initialAccountCalls + 1)
+  })
+
+  it('ignores a late polling response after a newer manual refresh has applied', async () => {
+    vi.useFakeTimers()
+    baseApi({ workerOnline: true })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true } } })
+    await flushPromises()
+
+    const fallback = apiMock.getMockImplementation()
+    let accountRefreshCalls = 0
+    let resolveSlowPoll
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path !== 'recruitment/boss-accounts/') return fallback(path, options)
+      accountRefreshCalls += 1
+      if (accountRefreshCalls === 1) {
+        return new Promise((resolve) => { resolveSlowPoll = resolve })
+      }
+      return Promise.resolve({ results: [{ ...account, login_status: 'ready' }] })
+    })
+
+    await vi.advanceTimersByTimeAsync(5000)
+    await wrapper.get('.admin-hero .admin-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('登录成功')
+
+    resolveSlowPoll({ results: [{ ...account, login_status: 'browser_stopped' }] })
+    await flushPromises()
+    expect(wrapper.text()).toContain('登录成功')
+    expect(wrapper.text()).not.toContain('隔离浏览器未启动')
+  })
+
+  it('does not render the no-account empty state when the initial account request fails', async () => {
+    baseApi({ workerOnline: true, failAccounts: true })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true } } })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="accounts-load-error"]').text()).toContain('账号列表加载失败')
+    expect(wrapper.text()).not.toContain('尚未添加 BOSS 账号')
   })
 
   it('syncs published positions from a ready account and shows persisted counts', async () => {
@@ -196,6 +318,215 @@ describe('RecruitmentAdminView', () => {
     expect(wrapper.text()).toContain('当前使用')
     await wrapper.get('[data-test="open-model-config"]').trigger('click')
     expect(wrapper.find('[data-test="model-drawer-stub"]').exists()).toBe(true)
+  })
+
+  it('archives and restores a BOSS account from the same administration tab', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/boss-accounts/1/archive/' && options.method === 'POST') return Promise.resolve({ ...account, archived_at: '2026-08-25T10:00:00Z' })
+      if (path === 'recruitment/boss-accounts/?archived=1') return Promise.resolve({ results: [{ ...account, active: false, archived_at: '2026-08-25T10:00:00Z' }] })
+      if (path === 'recruitment/boss-accounts/1/restore/?archived=1' && options.method === 'POST') return Promise.resolve({ ...account, active: true, archived_at: null })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+
+    await wrapper.get('[aria-label="归档账号 北京招聘账号"]').trigger('click')
+    expect(wrapper.text()).toContain('归档 BOSS 账号')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('recruitment/boss-accounts/1/archive/', { method: 'POST' })
+    expect(wrapper.text()).toContain('尚未添加 BOSS 账号')
+
+    await wrapper.get('[data-test="archived-accounts"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('账号已停用')
+    await wrapper.get('[data-test="restore-account-1"]').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('recruitment/boss-accounts/1/restore/?archived=1', { method: 'POST' })
+  })
+
+  it('closes and archives a synced job without implying a BOSS-side deletion', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/jobs/') return Promise.resolve({ results: [{
+        id: 31, boss_account: 1, title: '高级前端工程师', department: '研发中心', headcount: 2,
+        status: 'open', updated_at: '2026-08-25T09:00:00Z',
+      }] })
+      if (path === 'recruitment/jobs/31/archive/' && options.method === 'POST') return Promise.resolve({ id: 31, title: '高级前端工程师', status: 'closed' })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-jobs"]').trigger('click')
+
+    await wrapper.get('[aria-label="关闭并归档职位 高级前端工程师"]').trigger('click')
+    expect(wrapper.text()).toContain('不会关闭或删除 BOSS 线上发布的职位')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/jobs/31/archive/', { method: 'POST' })
+    expect(wrapper.text()).toContain('BOSS 线上职位未更改')
+  })
+
+  it('permanently deletes a selected model through the masked profile API', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'account/model-profiles/3/' && options.method === 'DELETE') return Promise.resolve(null)
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-models"]').trigger('click')
+
+    await wrapper.get('[aria-label="永久删除模型 日常招聘"]').trigger('click')
+    expect(wrapper.text()).toContain('加密保存的 Key')
+    expect(wrapper.text()).toContain('新建 AI 任务将等待配置')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('account/model-profiles/3/', { method: 'DELETE' })
+    expect(wrapper.text()).toContain('API Key 已擦除')
+    expect(wrapper.text()).toContain('尚未配置模型')
+  })
+
+  it('deletes only workflow drafts and restores archived workflow templates', async () => {
+    const version = {
+      id: 21, template: 9, boss_account: 1, version: 3, status: 'draft', nodes: [], edges: [],
+    }
+    baseApi({ ready: true, workerOnline: true, workflowVersion: version })
+    const fallback = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/workflow-versions/21/' && options.method === 'DELETE') return Promise.resolve(null)
+      if (path === 'recruitment/workflows/?archived=1') return Promise.resolve({ results: [{ id: 10, name: '已归档寻访流程' }] })
+      if (path === 'recruitment/workflow-versions/?archived=1') return Promise.resolve({ results: [{ id: 22, template: 10, version: 2, status: 'disabled' }] })
+      if (path === 'recruitment/workflows/10/restore/?archived=1' && options.method === 'POST') return Promise.resolve({ id: 10, name: '已归档寻访流程' })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-workflows"]').trigger('click')
+
+    const deleteDraft = wrapper.findAll('button').find((button) => button.text() === '删除草稿')
+    await deleteDraft.trigger('click')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-versions/21/', { method: 'DELETE' })
+    expect(wrapper.text()).toContain('尚无可用版本')
+    expect(wrapper.findAll('button').some((button) => button.text() === '归档方案')).toBe(true)
+
+    await wrapper.get('[data-test="archived-workflows"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已归档寻访流程')
+    const restore = wrapper.findAll('button').find((button) => button.text() === '恢复流程')
+    await restore.trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('recruitment/workflows/10/restore/?archived=1', { method: 'POST' })
+  })
+
+  it('archives a terminal task from its record and exposes the archived task list', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    const task = { id: 'done-1', boss_account: 1, account_name: account.name, action: 'sync_positions', status: 'succeeded', created_at: '2026-08-25T09:00:00Z', events: [] }
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/rpa-tasks/' && !options.method) return Promise.resolve({ results: [task] })
+      if (path === 'recruitment/rpa-tasks/done-1/archive/' && options.method === 'POST') return Promise.resolve({ ...task, archived_at: '2026-08-25T10:00:00Z' })
+      if (path === 'recruitment/rpa-tasks/?archived=1') return Promise.resolve({ results: [{ ...task, archived_at: '2026-08-25T10:00:00Z' }] })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-diagnostics"]').trigger('click')
+
+    const viewRecord = wrapper.findAll('button').find((button) => button.text() === '查看记录')
+    await viewRecord.trigger('click')
+    const archiveRecord = wrapper.findAll('button').find((button) => button.text() === '归档任务记录')
+    await archiveRecord.trigger('click')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('recruitment/rpa-tasks/done-1/archive/', { method: 'POST' })
+
+    await wrapper.get('[data-test="archived-tasks"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已归档自动化任务')
+    expect(wrapper.text()).toContain('北京招聘账号')
+  })
+
+  it('treats workflow restore as committed even when the follow-up list refresh fails', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    let restored = false
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/workflows/?archived=1') return Promise.resolve({ results: [{ id: 10, name: '已归档流程' }] })
+      if (path === 'recruitment/workflow-versions/?archived=1') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/workflows/10/restore/?archived=1' && options.method === 'POST') {
+        restored = true
+        return Promise.resolve({ id: 10, name: '已归档流程' })
+      }
+      if (restored && path === 'recruitment/workflows/') return Promise.reject(new Error('流程列表暂不可用'))
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-workflows"]').trigger('click')
+    await wrapper.get('[data-test="archived-workflows"]').trigger('click')
+    await flushPromises()
+
+    const restore = wrapper.findAll('button').find((button) => button.text() === '恢复流程')
+    await restore.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已恢复，但列表刷新暂时失败')
+    expect(wrapper.text()).toContain('暂无已归档流程')
+    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/workflows/10/restore/?archived=1')).toHaveLength(1)
+  })
+
+  it('shows a retryable archive error instead of a false empty state', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/jobs/?archived=1') return Promise.reject(new Error('归档服务暂不可用'))
+      if (path === 'recruitment/jobs/') return Promise.resolve({ results: [{
+        id: 31, boss_account: 1, title: '高级前端工程师', department: '研发中心', headcount: 2,
+        status: 'open', updated_at: '2026-08-25T09:00:00Z',
+      }] })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-jobs"]').trigger('click')
+    await wrapper.get('[data-test="archived-jobs"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('归档职位加载失败')
+    expect(wrapper.text()).toContain('重新加载归档职位')
+    expect(wrapper.text()).not.toContain('暂无已归档职位')
+    const currentButton = wrapper.findAll('.admin-segmented button').find((button) => button.text() === '当前')
+    await currentButton.trigger('click')
+    expect(wrapper.text()).toContain('高级前端工程师')
+    expect(wrapper.text()).not.toContain('归档职位加载失败')
+  })
+
+  it('does not hide task lifecycle actions after the twentieth record', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    const manyTasks = Array.from({ length: 21 }, (_, index) => ({
+      id: `done-${index + 1}`, boss_account: 1, account_name: account.name,
+      action: 'sync_positions', status: 'succeeded', created_at: '2026-08-25T09:00:00Z', events: [],
+    }))
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/rpa-tasks/' && !options.method) return Promise.resolve({ results: manyTasks })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-diagnostics"]').trigger('click')
+
+    expect(wrapper.findAll('.admin-table-shell tbody tr')).toHaveLength(21)
+    expect(wrapper.text()).toContain('21 条')
   })
 
   it('opens the requested administration section from a compatibility deep link', async () => {

@@ -480,35 +480,37 @@ watch(
     </section>
 
     <template v-else>
-      <section class="results-context" aria-label="当前结果范围">
-        <label class="results-context__job"><span>当前岗位</span><select :value="currentJobId" data-test="job-filter" @change="chooseJob"><option v-for="job in context.jobs" :key="job.id" :value="String(job.id)">{{ job.title }} · {{ job.account_name || '未绑定账号' }}</option></select><small>招聘目标 {{ currentJob.headcount || '未设置' }} 人</small></label>
-        <label><span>任务运行</span><select v-model="selectedRunId" data-test="run-filter"><option value="">该岗位全部运行</option><option v-for="run in jobRuns" :key="run.id" :value="String(run.id)">{{ run.template_name || '自动化任务' }} · {{ statusLabel(run.status) }} · {{ formatDateTime(run.created_at) }}</option></select></label>
-        <label><span>结果状态</span><select v-model="statusFilter" data-test="status-filter"><option v-for="option in visibleStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-      </section>
+      <div class="results-overview">
+        <section class="results-context" aria-label="当前结果范围">
+          <label class="results-context__job"><span>当前岗位</span><select :value="currentJobId" data-test="job-filter" @change="chooseJob"><option v-for="job in context.jobs" :key="job.id" :value="String(job.id)">{{ job.title }} · {{ job.account_name || '未绑定账号' }}</option></select><small>招聘目标 {{ currentJob.headcount || '未设置' }} 人</small></label>
+          <label><span>任务运行</span><select v-model="selectedRunId" data-test="run-filter"><option value="">该岗位全部运行</option><option v-for="run in jobRuns" :key="run.id" :value="String(run.id)">{{ run.template_name || '自动化任务' }} · {{ statusLabel(run.status) }} · {{ formatDateTime(run.created_at) }}</option></select></label>
+          <label><span>结果状态</span><select v-model="statusFilter" data-test="status-filter"><option v-for="option in visibleStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+        </section>
 
-      <section v-if="hasLegacyContext" class="results-context-note" data-test="legacy-context">
-        <AppIcon name="filter" :size="14" />
-        <span>
-          已恢复历史链接上下文
-          <template v-if="legacyContext.application"> · 应聘 #{{ legacyContext.application }}</template>
-          <template v-if="legacyContext.candidate"> · 候选人 #{{ legacyContext.candidate }}</template>
-          <template v-if="legacyContext.filter"> · {{ legacyFilterLabel(legacyContext.filter) }}</template>
-          <template v-if="legacyContext.account"> · BOSS 账号 #{{ legacyContext.account }}</template>
-        </span>
-        <button type="button" data-test="clear-legacy-context" @click="clearLegacyContext">清除定向</button>
-      </section>
+        <section v-if="hasLegacyContext" class="results-context-note" data-test="legacy-context">
+          <AppIcon name="filter" :size="14" />
+          <span>
+            已恢复历史链接上下文
+            <template v-if="legacyContext.application"> · 应聘 #{{ legacyContext.application }}</template>
+            <template v-if="legacyContext.candidate"> · 候选人 #{{ legacyContext.candidate }}</template>
+            <template v-if="legacyContext.filter"> · {{ legacyFilterLabel(legacyContext.filter) }}</template>
+            <template v-if="legacyContext.account"> · BOSS 账号 #{{ legacyContext.account }}</template>
+          </span>
+          <button type="button" data-test="clear-legacy-context" @click="clearLegacyContext">清除定向</button>
+        </section>
 
-      <section class="results-kpis" aria-label="结果概览">
-        <article><span>待人工处理</span><strong>{{ openAttentionCount }}</strong><small>优先处理候选人咨询与风控</small></article>
-        <article><span>活跃任务</span><strong>{{ activeRunCount }}</strong><small>执行中、等待人工或暂停</small></article>
-        <article><span>已拉取简历</span><strong>{{ pulledResumeCount }}</strong><small>来自当前岗位主动寻访</small></article>
-        <article><span>候选人</span><strong>{{ resources.applications.items.length }}</strong><small>{{ resources.resumes.items.length }} 份简历已归档</small></article>
-      </section>
+        <section class="results-kpis" aria-label="结果概览">
+          <article><span>待人工处理</span><strong>{{ openAttentionCount }}</strong><small>优先处理候选人咨询与风控</small></article>
+          <article><span>活跃任务</span><strong>{{ activeRunCount }}</strong><small>执行中、等待人工或暂停</small></article>
+          <article><span>已拉取简历</span><strong>{{ pulledResumeCount }}</strong><small>来自当前岗位主动寻访</small></article>
+          <article><span>候选人</span><strong>{{ resources.applications.items.length }}</strong><small>{{ resources.resumes.items.length }} 份简历已归档</small></article>
+        </section>
 
-      <div v-if="resourceErrors.length && !allFailed" class="results-data-warning" role="status" data-test="partial-error">
-        <AppIcon name="alert-circle" :size="16" />
-        <span><strong>{{ resourceErrors.length }} 项数据暂未加载：</strong>{{ resourceErrors.map((item) => item.label).join('、') }}。已加载的结果仍可查看。</span>
-        <button type="button" :disabled="isRefreshing" @click="loadResults()">重试</button>
+        <div v-if="resourceErrors.length && !allFailed" class="results-data-warning" role="status" data-test="partial-error">
+          <AppIcon name="alert-circle" :size="16" />
+          <span><strong>{{ resourceErrors.length }} 项数据暂未加载：</strong>{{ resourceErrors.map((item) => item.label).join('、') }}。已加载的结果仍可查看。</span>
+          <button type="button" :disabled="isRefreshing" @click="loadResults()">重试</button>
+        </div>
       </div>
 
       <section v-if="initialLoading" class="panel results-loading" aria-live="polite" data-test="results-loading">
@@ -518,15 +520,16 @@ watch(
       <section v-else-if="allFailed" class="panel results-fatal-error" data-test="results-error">
         <AppIcon name="alert-circle" :size="25" />
         <div><strong>结果数据暂时无法加载</strong><p>{{ resourceErrors[0]?.message || '请稍后重试' }}。页面不会用旧岗位的数据覆盖当前岗位。</p></div>
-        <button class="primary-button" type="button" @click="loadResults()">重新加载</button>
+        <button class="secondary-button" type="button" @click="loadResults()">重新加载</button>
       </section>
 
       <template v-else>
-        <nav class="results-tabs" role="tablist" aria-label="结果中心视图">
-          <button v-for="tab in tabs" :key="tab.key" type="button" role="tab" :aria-selected="activeView === tab.key" :class="{ active: activeView === tab.key }" :data-test="`results-tab-${tab.key}`" @click="activeView = tab.key">{{ tab.label }} <span>{{ tab.count }}</span></button>
-        </nav>
+        <div class="results-workspace">
+          <nav class="results-tabs" role="tablist" aria-label="结果中心视图">
+            <button v-for="tab in tabs" :key="tab.key" type="button" role="tab" :aria-selected="activeView === tab.key" :class="{ active: activeView === tab.key }" :data-test="`results-tab-${tab.key}`" @click="activeView = tab.key">{{ tab.label }} <span>{{ tab.count }}</span></button>
+          </nav>
 
-        <section v-if="activeView === 'attention'" class="panel results-panel" data-test="attention-view">
+        <section v-if="activeView === 'attention'" class="results-panel" data-test="attention-view">
           <header><div><span class="panel-kicker">HUMAN ATTENTION</span><h3>需要人工</h3><p>系统只提醒，不会替 HR 对候选人意图或风控结果做决定。</p></div><span>{{ filteredAttentions.length }} 项</span></header>
           <p v-if="resources.attentions.error" class="results-inline-error">人工事项加载失败：{{ resources.attentions.error }}</p>
           <p v-if="attentionActionError" class="results-inline-error" data-test="attention-action-error">{{ attentionActionError }}</p>
@@ -544,7 +547,7 @@ watch(
         </section>
 
         <section v-else-if="activeView === 'tasks'" class="results-task-grid" data-test="tasks-view">
-          <article class="panel results-panel">
+          <article class="results-subpanel">
             <header><div><span class="panel-kicker">WORKFLOW RUNS</span><h3>自动化运行</h3><p>刷新后从服务端恢复，不依赖本页内存。</p></div><span>{{ filteredRuns.length }} 次</span></header>
             <p v-if="resources.runs.error" class="results-inline-error">任务运行加载失败：{{ resources.runs.error }}</p>
             <p v-if="runActionError" class="results-inline-error" data-test="run-action-error">{{ runActionError }}</p>
@@ -589,7 +592,7 @@ watch(
             <div v-else class="results-empty results-empty--compact"><AppIcon name="workflow" :size="22" /><strong>当前筛选下没有任务运行</strong><span>返回作业台发起任务后，运行记录会出现在这里。</span></div>
           </article>
 
-          <article class="panel results-panel">
+          <article class="results-subpanel">
             <header><div><span class="panel-kicker">SEARCH OUTCOMES</span><h3>主动寻访结果</h3><p>按目标简历数追踪扫描和拉取进度。</p></div><span>{{ filteredCampaigns.length }} 个方案</span></header>
             <p v-if="resources.campaigns.error" class="results-inline-error">主动寻访加载失败：{{ resources.campaigns.error }}</p>
             <div v-if="filteredCampaigns.length" class="campaign-list">
@@ -605,7 +608,7 @@ watch(
           </article>
         </section>
 
-        <section v-else-if="activeView === 'candidates'" class="panel results-panel" data-test="candidates-view">
+        <section v-else-if="activeView === 'candidates'" class="results-panel" data-test="candidates-view">
           <header><div><span class="panel-kicker">CANDIDATES & RESUMES</span><h3>候选人与简历</h3><p>评分只提供初筛依据，不会自动推进或淘汰候选人。</p></div><div class="results-header-links"><RouterLink :to="{ name: 'recruitment-candidates', query: { job: currentJobId, application: legacyContext.application || undefined, candidate: legacyContext.candidate || undefined } }">候选人详情</RouterLink><RouterLink :to="{ name: 'recruitment-resumes', query: { job: currentJobId, candidate: legacyContext.candidate || undefined, filter: legacyContext.filter || undefined } }">简历详情</RouterLink></div></header>
           <p v-if="resources.applications.error || resources.resumes.error || resources.structures.error || resources.assessments.error" class="results-inline-error">部分候选人或简历智能数据未加载，请参考页面上方的数据提示。</p>
           <div v-if="candidateResults.length" class="candidate-result-list">
@@ -622,7 +625,7 @@ watch(
           <div v-else class="results-empty"><AppIcon name="users" :size="25" /><strong>该岗位还没有候选人结果</strong><span>返回作业台执行寻访，或在候选人页面导入已确认的人选。</span><RouterLink class="primary-button" to="/recruitment/workbench">返回招聘作业台</RouterLink></div>
         </section>
 
-        <section v-else class="panel results-panel" data-test="pipeline-view">
+        <section v-else class="results-panel" data-test="pipeline-view">
           <header><div><span class="panel-kicker">HIRING PROGRESS</span><h3>招聘进度</h3><p>{{ resources.applications.items.length }} 位候选人 · 招聘目标 {{ currentJob.headcount || '未设置' }} 人</p></div><RouterLink :to="{ name: 'recruitment-pipeline', query: { job: currentJobId } }">进入招聘流程</RouterLink></header>
           <p v-if="resources.applications.error" class="results-inline-error">招聘进度加载失败：{{ resources.applications.error }}</p>
           <div v-if="resources.applications.items.length" class="stage-progress-list">
@@ -631,6 +634,7 @@ watch(
           <div v-else-if="resources.applications.loading" class="results-local-loading">正在加载招聘进度…</div>
           <div v-else class="results-empty"><AppIcon name="workflow" :size="25" /><strong>还没有可展示的招聘进度</strong><span>候选人进入当前岗位后，系统会按阶段汇总在这里。</span></div>
         </section>
+        </div>
       </template>
       <WorkflowRunPanel
         v-if="activeRun"
@@ -648,43 +652,1132 @@ watch(
 </template>
 
 <style scoped>
-.results-required select{min-width:180px;height:38px;padding:0 30px 0 10px;color:#334155;background:#fff;border:1px solid #dbe3ea;border-radius:9px}
-.results-context-note{display:flex;align-items:center;gap:8px;padding:9px 12px;color:#475569;background:#f8fafc;border:1px solid #dbe3ea;border-radius:10px;font-size:10px}.results-context-note>svg{color:#0f9f8f}.results-context-note span{flex:1}.results-context-note button{padding:0;color:#0f766e;background:transparent;border:0;font-size:10px;font-weight:800}.attention-actions{display:grid;justify-items:end;gap:6px}.attention-actions button{padding:5px 8px;color:#0f766e;background:#ecfdf8;border:1px solid #b9ebe0;border-radius:7px;font-size:9px;font-weight:800}.attention-actions button:disabled{opacity:.55}.run-list__actions{display:flex;align-items:center;gap:10px}
-.results-center{gap:16px}.results-hero{align-items:center}.results-refresh{display:inline-flex;align-items:center;gap:7px}.results-required{display:flex;align-items:center;gap:15px;padding:24px}.results-required>svg{color:#0f9f8f}.results-required>div{flex:1}.results-required strong{font-size:15px}.results-required p{margin:5px 0 0;color:#64748b;font-size:12px}.results-context{display:grid;grid-template-columns:minmax(230px,1.2fr) minmax(210px,1fr) minmax(170px,.65fr);gap:12px;padding:14px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;box-shadow:0 1px 2px rgba(15,23,42,.04)}.results-context__job,.results-context label{display:grid;gap:5px;min-width:0}.results-context span{color:#64748b;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.results-context__job strong{overflow:hidden;color:#0f172a;font-size:15px;text-overflow:ellipsis;white-space:nowrap}.results-context small{color:#64748b;font-size:10px}.results-context select{width:100%;height:38px;padding:0 32px 0 11px;color:#334155;background:#f8fafc;border:1px solid #dbe3ea;border-radius:9px;font-size:11px}.results-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.results-kpis article{display:grid;gap:4px;padding:14px 15px;background:#fff;border:1px solid #e2e8f0;border-radius:13px}.results-kpis span{color:#64748b;font-size:9px}.results-kpis strong{color:#0f172a;font-family:Georgia,"Noto Serif SC",serif;font-size:26px;font-weight:500}.results-kpis small{color:#94a3b8;font-size:8px}.results-data-warning{display:flex;align-items:center;gap:9px;padding:10px 12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;font-size:10px}.results-data-warning span{flex:1}.results-data-warning button{color:#0f766e;background:transparent;border:0;font-size:10px;font-weight:800}.results-loading{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:22px}.results-loading span{height:76px;background:linear-gradient(90deg,#f1f5f9,#f8fafc,#f1f5f9);background-size:200% 100%;border-radius:10px;animation:results-shimmer 1.2s infinite}.results-loading p{grid-column:1/-1;margin:0;color:#64748b;text-align:center;font-size:11px}.results-fatal-error{display:flex;align-items:center;gap:15px;padding:26px}.results-fatal-error>svg{color:#dc4a4a}.results-fatal-error>div{flex:1}.results-fatal-error strong{font-size:15px}.results-fatal-error p{margin:5px 0 0;color:#64748b;font-size:11px}.results-tabs{display:flex;gap:4px;padding:4px;background:#e9eef2;border-radius:11px}.results-tabs button{display:flex;align-items:center;justify-content:center;gap:7px;flex:1;padding:9px 12px;color:#64748b;background:transparent;border:0;border-radius:8px;font-size:11px;font-weight:700}.results-tabs button.active{color:#0f766e;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.08)}.results-tabs span{display:inline-grid;place-items:center;min-width:20px;height:18px;padding:0 5px;background:#edf2f4;border-radius:999px;font-size:9px}.results-panel{padding:0;overflow:hidden}.results-panel>header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 18px;border-bottom:1px solid #edf1f4}.results-panel>header h3{margin:3px 0;color:#0f172a;font-size:15px}.results-panel>header p{margin:0;color:#64748b;font-size:9px}.results-panel>header>span{color:#64748b;font-size:10px}.results-panel>header>a,.results-header-links a{color:#0f766e;font-size:10px;font-weight:800;text-decoration:none}.results-header-links{display:flex;gap:12px}.results-inline-error{margin:12px 18px 0;padding:9px 10px;color:#b42318;background:#fff1f0;border-radius:8px;font-size:10px}.attention-list{display:grid}.attention-list>article{display:grid;grid-template-columns:4px minmax(0,1fr) auto;gap:13px;align-items:center;padding:14px 18px;border-bottom:1px solid #edf1f4}.attention-list>article:last-child{border-bottom:0}.attention-list i{align-self:stretch;background:#94a3b8;border-radius:99px}.attention-list .is-warning i{background:#d97706}.attention-list .is-danger i{background:#dc4a4a}.attention-list .is-success i{background:#0f9f8f}.attention-list article>div{display:grid;gap:3px}.attention-list span,.attention-list small{color:#64748b;font-size:9px}.attention-list strong{color:#0f172a;font-size:12px}.attention-list p{margin:0;color:#475569;font-size:10px}.attention-list a{display:inline-flex;align-items:center;gap:4px;color:#0f766e;font-size:9px;font-weight:800;text-decoration:none}.results-empty{display:grid;justify-items:center;gap:6px;padding:42px 20px;color:#94a3b8;text-align:center}.results-empty strong{color:#334155;font-size:12px}.results-empty span{max-width:420px;font-size:10px}.results-empty .primary-button{margin-top:8px;color:#fff;text-decoration:none}.results-empty--compact{padding:30px 16px}.results-local-loading{padding:38px;color:#64748b;text-align:center;font-size:10px}.results-task-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}.run-list,.campaign-list{display:grid}.run-list>article,.campaign-list>article{display:grid;gap:10px;padding:14px 18px;border-bottom:1px solid #edf1f4}.run-list>article:last-child,.campaign-list>article:last-child{border-bottom:0}.run-list__top,.campaign-list article>header,.run-list footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.run-list__top>div,.campaign-list header>div{display:grid;gap:3px}.run-list strong,.campaign-list strong{font-size:11px}.run-list small,.campaign-list small{color:#64748b;font-size:8px}.run-list__top>span,.campaign-list header>span{padding:4px 7px;border-radius:999px;font-size:8px;font-weight:800}.is-success{color:#087f73;background:#e8f8f5}.is-danger{color:#b42318;background:#fff0ef}.is-warning{color:#a15c00;background:#fff5df}.is-active{color:#1d4ed8;background:#eff6ff}.is-neutral{color:#64748b;background:#f1f5f9}.results-progress{height:5px;overflow:hidden;background:#e7ecef;border-radius:99px}.results-progress i{display:block;height:100%;background:#0f9f8f;border-radius:inherit}.run-list footer a{color:#0f766e;font-size:8px;font-weight:800;text-decoration:none}.run-error{margin:0;padding:7px 8px;color:#b42318;background:#fff1f0;border-radius:6px;font-size:9px}.campaign-numbers{display:flex;align-items:end;justify-content:space-between}.campaign-numbers b{color:#0f766e;font-size:18px}.campaign-list p:not(.run-error){margin:0;color:#92400e;font-size:8px}.candidate-result-list{display:grid}.candidate-result-list>article{display:grid;grid-template-columns:34px minmax(150px,1.15fr) minmax(90px,.55fr) minmax(110px,.7fr) minmax(155px,.9fr) 24px;align-items:center;gap:12px;padding:13px 18px;border-bottom:1px solid #edf1f4}.candidate-result-list>article:last-child{border-bottom:0}.candidate-avatar{display:grid;place-items:center;width:32px;height:32px;color:#087f73;background:#e7f7f4;border-radius:10px;font-size:12px;font-weight:900}.candidate-result-list article>div:not(.candidate-avatar){display:grid;gap:3px;min-width:0}.candidate-result-list strong{overflow:hidden;color:#0f172a;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.candidate-result-list small{color:#64748b;font-size:8px}.candidate-stage{justify-self:start;padding:5px 8px;color:#475569;background:#f1f5f9;border-radius:999px;font-size:8px;font-weight:700}.candidate-score.has-score strong{color:#0f766e}.candidate-result-list a{color:#64748b}.stage-progress-list{display:grid;gap:13px;padding:20px 18px}.stage-progress-list article{display:grid;grid-template-columns:90px minmax(0,1fr) 30px;align-items:center;gap:12px}.stage-progress-list span{color:#475569;font-size:10px}.stage-progress-list div{height:8px;overflow:hidden;background:#edf1f4;border-radius:99px}.stage-progress-list i{display:block;height:100%;min-width:2px;background:linear-gradient(90deg,#0f9f8f,#5bc7b6);border-radius:inherit}.stage-progress-list strong{color:#0f172a;font-size:11px;text-align:right}@keyframes results-shimmer{to{background-position:-200% 0}}@media(max-width:1050px){.results-task-grid{grid-template-columns:1fr}.results-context{grid-template-columns:1fr 1fr}.results-context__job{grid-column:1/-1}.results-kpis{grid-template-columns:repeat(2,1fr)}.candidate-result-list>article{grid-template-columns:34px 1fr auto}.candidate-result-list .candidate-resume,.candidate-result-list .candidate-score{grid-column:2/-1}.candidate-result-list>a{grid-column:3;grid-row:1}}@media(max-width:720px){.results-context{grid-template-columns:1fr}.results-context__job{grid-column:auto}.results-kpis{grid-template-columns:1fr 1fr}.results-tabs{overflow-x:auto}.results-tabs button{min-width:120px}.results-data-warning{align-items:flex-start}.results-panel>header{align-items:flex-start}.attention-list>article{grid-template-columns:4px 1fr}.attention-list a{grid-column:2}.candidate-result-list>article{grid-template-columns:34px 1fr auto}.results-refresh{align-self:flex-start}}@media(prefers-reduced-motion:reduce){.results-loading span{animation:none}}
+.results-center {
+  --results-font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --results-color-ink: #0f172a;
+  --results-color-slate: #334155;
+  --results-color-copy: var(--results-color-slate);
+  --results-color-muted: #64748b;
+  --results-color-faint: var(--results-color-muted);
+  --results-color-line: #e2e8f0;
+  --results-color-line-soft: var(--results-color-line);
+  --results-color-surface: #ffffff;
+  --results-color-canvas: #f3f6f8;
+  --results-color-surface-soft: var(--results-color-canvas);
+  --results-color-surface-muted: var(--results-color-canvas);
+  --results-color-brand: #0f9f8f;
+  --results-color-brand-dark: #087f73;
+  --results-color-brand-soft: var(--results-color-canvas);
+  --results-color-brand-control: var(--results-color-surface);
+  --results-color-brand-line: var(--results-color-line);
+  --results-color-warning: #d97706;
+  --results-color-warning-text: var(--results-color-warning);
+  --results-color-warning-soft: var(--results-color-canvas);
+  --results-color-warning-line: var(--results-color-warning);
+  --results-color-danger: #dc4a4a;
+  --results-color-danger-text: var(--results-color-danger);
+  --results-color-danger-soft: var(--results-color-canvas);
+  --results-color-active: var(--results-color-brand-dark);
+  --results-color-active-soft: var(--results-color-canvas);
+  --results-space-1: 4px;
+  --results-space-2: 8px;
+  --results-space-3: 12px;
+  --results-space-4: 16px;
+  --results-space-5: 22px;
+  --results-space-6: 28px;
+  --results-space-7: 34px;
+  --results-radius-control: 9px;
+  --results-radius-panel: 15px;
+  --results-radius-status: 999px;
+  --results-border-width: 1px;
+  --results-active-border-width: 2px;
+  --results-control-height: 38px;
+  --results-font-meta: 10px;
+  --results-font-detail: 11px;
+  --results-font-control: 12px;
+  --results-font-body: 13px;
+  --results-font-title: 15px;
+  --results-font-metric: 29px;
+  --results-font-campaign-metric: 20px;
+  --results-weight-regular: 400;
+  --results-weight-medium: 600;
+  --results-weight-bold: 700;
+  --results-weight-heavy: 800;
+  --results-leading-tight: 1.3;
+  --results-leading-body: 1.6;
+  --results-tracking-kicker: .12em;
+  --results-tracking-metric: -.025em;
+  --results-shadow-panel: 0 1px 2px rgba(15, 23, 42, .025);
+  --results-transition: 180ms ease;
+  --results-disabled-opacity: .55;
+  --results-filter-job-min: 230px;
+  --results-filter-run-min: 210px;
+  --results-filter-status-min: 170px;
+  --results-empty-copy-max: 420px;
+  --results-avatar-size: 32px;
+  --results-candidate-name-min: 150px;
+  --results-candidate-stage-min: 90px;
+  --results-candidate-resume-min: 110px;
+  --results-candidate-score-min: 155px;
+  --results-action-column: 24px;
+  --results-stage-label-width: 90px;
+  --results-stage-count-width: 30px;
+  --results-progress-height: 5px;
+  --results-stage-progress-height: 8px;
+  --results-status-marker-width: 4px;
+  --results-node-marker-size: 6px;
+  --results-skeleton-height: 76px;
+  --results-skeleton-background: var(--results-color-surface-muted);
+  --results-skeleton-opacity: .6;
+  --results-skeleton-duration: 1.2s;
+  gap: var(--results-space-5);
+  container-name: results-center;
+  container-type: inline-size;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--results-color-ink);
+  font-family: var(--results-font-family);
+}
 
-.run-list footer button {
-  padding: 0;
-  color: #0f766e;
+.results-center *,
+.results-center *::before,
+.results-center *::after {
+  box-sizing: border-box;
+}
+
+.results-hero {
+  align-items: center;
+}
+
+.results-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--results-space-2);
+  color: var(--results-color-slate);
+  background: var(--results-color-surface);
+  border-color: var(--results-color-line);
+  font-size: var(--results-font-control);
+}
+
+.results-required {
+  display: flex;
+  align-items: center;
+  gap: var(--results-space-4);
+  padding: var(--results-space-6);
+}
+
+.results-required > svg {
+  flex: none;
+  color: var(--results-color-brand);
+}
+
+.results-required > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.results-required strong {
+  font-size: var(--results-font-title);
+}
+
+.results-required p {
+  margin: var(--results-space-1) 0 0;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-control);
+  line-height: var(--results-leading-body);
+}
+
+.results-required .primary-button,
+.results-fatal-error .secondary-button,
+.results-empty .primary-button {
+  font-size: var(--results-font-control);
+}
+
+.results-required select {
+  min-width: var(--results-filter-status-min);
+  max-width: 100%;
+  height: var(--results-control-height);
+  padding: 0 var(--results-space-7) 0 var(--results-space-3);
+  color: var(--results-color-slate);
+  background: var(--results-color-surface);
+  border: var(--results-border-width) solid var(--results-color-line);
+  border-radius: var(--results-radius-control);
+  font: var(--results-weight-medium) var(--results-font-control)/var(--results-leading-tight) var(--results-font-family);
+}
+
+.results-overview,
+.results-workspace {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  background: var(--results-color-surface);
+  border: var(--results-border-width) solid var(--results-color-line);
+  border-radius: var(--results-radius-panel);
+  box-shadow: var(--results-shadow-panel);
+}
+
+.results-context {
+  display: grid;
+  grid-template-columns: minmax(var(--results-filter-job-min), 1.2fr) minmax(var(--results-filter-run-min), 1fr) minmax(var(--results-filter-status-min), .65fr);
+  gap: var(--results-space-4);
+  padding: var(--results-space-4) var(--results-space-5);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.results-context__job,
+.results-context label {
+  display: grid;
+  gap: var(--results-space-1);
+  min-width: 0;
+}
+
+.results-context span {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-heavy);
+  letter-spacing: var(--results-tracking-kicker);
+  text-transform: uppercase;
+}
+
+.results-context small {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+}
+
+.results-context select {
+  width: 100%;
+  min-width: 0;
+  height: var(--results-control-height);
+  padding: 0 var(--results-space-7) 0 var(--results-space-3);
+  color: var(--results-color-slate);
+  background: var(--results-color-surface-soft);
+  border: var(--results-border-width) solid var(--results-color-line);
+  border-radius: var(--results-radius-control);
+  font: var(--results-weight-medium) var(--results-font-control)/var(--results-leading-tight) var(--results-font-family);
+}
+
+.results-context select:focus-visible,
+.results-tabs button:focus-visible,
+.results-center button:focus-visible,
+.results-center a:focus-visible {
+  outline: var(--results-active-border-width) solid var(--results-color-brand);
+  outline-offset: var(--results-active-border-width);
+}
+
+.results-context-note {
+  display: flex;
+  align-items: center;
+  gap: var(--results-space-2);
+  padding: var(--results-space-2) var(--results-space-5);
+  color: var(--results-color-copy);
+  background: var(--results-color-surface-soft);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.results-context-note > svg {
+  flex: none;
+  color: var(--results-color-brand);
+}
+
+.results-context-note span,
+.results-data-warning span {
+  flex: 1;
+  min-width: 0;
+}
+
+.results-context-note button,
+.results-data-warning button {
+  flex: none;
+  padding: var(--results-space-1) 0;
+  color: var(--results-color-brand-dark);
   background: transparent;
   border: 0;
-  font-size: 8px;
-  font-weight: 800;
+  font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-heavy);
+}
+
+.results-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.results-kpis article {
+  display: grid;
+  align-content: start;
+  gap: var(--results-space-1);
+  min-width: 0;
+  padding: var(--results-space-4) var(--results-space-5);
+  border-left: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.results-kpis article:first-child {
+  background: var(--results-color-brand-soft);
+  border-left: 0;
+}
+
+.results-kpis span {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-medium);
+}
+
+.results-kpis strong {
+  color: var(--results-color-ink);
+  font-family: var(--results-font-family);
+  font-size: var(--results-font-metric);
+  font-weight: var(--results-weight-bold);
+  line-height: var(--results-leading-tight);
+  letter-spacing: var(--results-tracking-metric);
+}
+
+.results-kpis small {
+  overflow: hidden;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-meta);
+  line-height: var(--results-leading-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.results-data-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--results-space-2);
+  padding: var(--results-space-2) var(--results-space-5);
+  color: var(--results-color-warning-text);
+  background: var(--results-color-warning-soft);
+  border-top: var(--results-border-width) solid var(--results-color-warning-line);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.results-loading {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--results-space-3);
+  padding: var(--results-space-5);
+}
+
+.results-loading span {
+  height: var(--results-skeleton-height);
+  background: var(--results-skeleton-background);
+  border-radius: var(--results-radius-control);
+  animation: results-pulse var(--results-skeleton-duration) ease-in-out infinite;
+}
+
+.results-loading p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  text-align: center;
+}
+
+.results-fatal-error {
+  display: flex;
+  align-items: center;
+  gap: var(--results-space-4);
+  padding: var(--results-space-6);
+}
+
+.results-fatal-error > svg {
+  flex: none;
+  color: var(--results-color-danger);
+}
+
+.results-fatal-error > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.results-fatal-error strong {
+  font-size: var(--results-font-title);
+}
+
+.results-fatal-error p {
+  margin: var(--results-space-1) 0 0;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.results-tabs {
+  display: flex;
+  min-width: 0;
+  padding: 0 var(--results-space-5);
+  border-bottom: var(--results-border-width) solid var(--results-color-line);
+}
+
+.results-tabs button {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: var(--results-space-2);
+  min-width: 0;
+  padding: var(--results-space-3) var(--results-space-4);
+  color: var(--results-color-muted);
+  background: transparent;
+  border: 0;
+  font-size: var(--results-font-control);
+  font-weight: var(--results-weight-bold);
+  transition: color var(--results-transition), background-color var(--results-transition);
+}
+
+.results-tabs button::after {
+  position: absolute;
+  right: 0;
+  bottom: calc(-1 * var(--results-border-width));
+  left: 0;
+  height: var(--results-active-border-width);
+  background: transparent;
+  content: "";
+}
+
+.results-tabs button:hover {
+  color: var(--results-color-slate);
+  background: var(--results-color-surface-soft);
+}
+
+.results-tabs button.active {
+  color: var(--results-color-brand-dark);
+}
+
+.results-tabs button.active::after {
+  background: var(--results-color-brand);
+}
+
+.results-tabs span {
+  display: inline-grid;
+  place-items: center;
+  min-width: var(--results-space-5);
+  min-height: var(--results-space-5);
+  padding: 0 var(--results-space-2);
+  color: var(--results-color-muted);
+  background: var(--results-color-surface-muted);
+  border-radius: var(--results-radius-status);
+  font-size: var(--results-font-meta);
+}
+
+.results-tabs button.active span {
+  color: var(--results-color-brand-dark);
+  background: var(--results-color-brand-soft);
+}
+
+.results-panel,
+.results-subpanel,
+.results-task-grid {
+  min-width: 0;
+}
+
+.results-panel,
+.results-subpanel {
+  overflow: hidden;
+}
+
+.results-panel > header,
+.results-subpanel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--results-space-4);
+  padding: var(--results-space-4) var(--results-space-5);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.results-panel > header h3,
+.results-subpanel > header h3 {
+  margin: var(--results-space-1) 0;
+  color: var(--results-color-ink);
+  font-size: var(--results-font-title);
+}
+
+.results-panel > header p,
+.results-subpanel > header p {
+  margin: 0;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.results-panel > header > span,
+.results-subpanel > header > span {
+  flex: none;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+}
+
+.results-panel > header > a,
+.results-header-links a {
+  color: var(--results-color-brand-dark);
+  font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-heavy);
+  text-decoration: none;
+}
+
+.results-header-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--results-space-3);
+}
+
+.results-inline-error {
+  margin: var(--results-space-3) var(--results-space-5) 0;
+  padding: var(--results-space-2) var(--results-space-3);
+  color: var(--results-color-danger-text);
+  background: var(--results-color-danger-soft);
+  border-radius: var(--results-radius-control);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.attention-list,
+.run-list,
+.campaign-list,
+.candidate-result-list {
+  display: grid;
+}
+
+.attention-list > article {
+  display: grid;
+  grid-template-columns: var(--results-status-marker-width) minmax(0, 1fr) auto;
+  gap: var(--results-space-3);
+  align-items: center;
+  min-width: 0;
+  padding: var(--results-space-4) var(--results-space-5);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.attention-list > article:last-child,
+.run-list > article:last-child,
+.campaign-list > article:last-child,
+.candidate-result-list > article:last-child {
+  border-bottom: 0;
+}
+
+.attention-list i {
+  align-self: stretch;
+  background: var(--results-color-faint);
+  border-radius: var(--results-radius-status);
+}
+
+.attention-list .is-warning i {
+  background: var(--results-color-warning);
+}
+
+.attention-list .is-danger i {
+  background: var(--results-color-danger);
+}
+
+.attention-list .is-success i {
+  background: var(--results-color-brand);
+}
+
+.attention-list article > div {
+  display: grid;
+  gap: var(--results-space-1);
+  min-width: 0;
+}
+
+.attention-list span,
+.attention-list small {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+}
+
+.attention-list strong {
+  color: var(--results-color-ink);
+  font-size: var(--results-font-body);
+}
+
+.attention-list p {
+  margin: 0;
+  color: var(--results-color-copy);
+  font-size: var(--results-font-control);
+  line-height: var(--results-leading-body);
+}
+
+.attention-actions {
+  display: grid;
+  justify-items: end;
+  gap: var(--results-space-2);
+}
+
+.attention-list a,
+.attention-actions button,
+.run-list footer button {
+  color: var(--results-color-brand-dark);
+  font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-heavy);
+  text-decoration: none;
+}
+
+.attention-list a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--results-space-1);
+}
+
+.attention-actions button {
+  padding: var(--results-space-2) var(--results-space-3);
+  background: var(--results-color-brand-control);
+  border: var(--results-border-width) solid var(--results-color-brand-line);
+  border-radius: var(--results-radius-control);
+}
+
+.attention-actions button:disabled,
+.results-center button:disabled {
+  opacity: var(--results-disabled-opacity);
+}
+
+.results-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--results-space-2);
+  padding: var(--results-space-7) var(--results-space-5);
+  color: var(--results-color-faint);
+  text-align: center;
+}
+
+.results-empty strong {
+  color: var(--results-color-slate);
+  font-size: var(--results-font-body);
+}
+
+.results-empty span {
+  max-width: var(--results-empty-copy-max);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.results-empty .primary-button {
+  margin-top: var(--results-space-2);
+  color: var(--results-color-surface);
+  text-decoration: none;
+}
+
+.results-empty--compact {
+  padding: var(--results-space-6) var(--results-space-4);
+}
+
+.results-local-loading {
+  padding: var(--results-space-7);
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  text-align: center;
+}
+
+.results-task-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.results-subpanel + .results-subpanel {
+  border-left: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.run-list > article,
+.campaign-list > article {
+  display: grid;
+  gap: var(--results-space-3);
+  min-width: 0;
+  padding: var(--results-space-4) var(--results-space-5);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.run-list__top,
+.campaign-list article > header,
+.run-list footer,
+.campaign-numbers {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--results-space-3);
+  min-width: 0;
+}
+
+.run-list__top > div,
+.campaign-list header > div {
+  display: grid;
+  gap: var(--results-space-1);
+  min-width: 0;
+}
+
+.run-list strong,
+.campaign-list strong {
+  color: var(--results-color-ink);
+  font-size: var(--results-font-control);
+}
+
+.run-list small,
+.campaign-list small {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-meta);
+  line-height: var(--results-leading-body);
+}
+
+.run-list__top > span,
+.campaign-list header > span,
+.candidate-stage {
+  flex: none;
+  padding: var(--results-space-1) var(--results-space-2);
+  border-radius: var(--results-radius-status);
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-heavy);
+}
+
+.run-list__top > span.is-success,
+.campaign-list header > span.is-success {
+  color: var(--results-color-brand-dark);
+  background: var(--results-color-brand-soft);
+}
+
+.run-list__top > span.is-danger,
+.campaign-list header > span.is-danger {
+  color: var(--results-color-danger-text);
+  background: var(--results-color-danger-soft);
+}
+
+.run-list__top > span.is-warning,
+.campaign-list header > span.is-warning {
+  color: var(--results-color-warning-text);
+  background: var(--results-color-warning-soft);
+}
+
+.run-list__top > span.is-active,
+.campaign-list header > span.is-active {
+  color: var(--results-color-active);
+  background: var(--results-color-active-soft);
+}
+
+.run-list__top > span.is-neutral,
+.campaign-list header > span.is-neutral {
+  color: var(--results-color-muted);
+  background: var(--results-color-surface-muted);
+}
+
+.results-progress {
+  height: var(--results-progress-height);
+  overflow: hidden;
+  background: var(--results-color-line);
+  border-radius: var(--results-radius-status);
+}
+
+.results-progress i {
+  display: block;
+  height: 100%;
+  background: var(--results-color-brand);
+  border-radius: inherit;
+}
+
+.run-list__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--results-space-3);
+}
+
+.run-list footer button {
+  padding: var(--results-space-1) 0;
+  background: transparent;
+  border: 0;
+}
+
+.run-error {
+  margin: 0;
+  padding: var(--results-space-2);
+  color: var(--results-color-danger-text);
+  background: var(--results-color-danger-soft);
+  border-radius: var(--results-radius-control);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.campaign-numbers {
+  align-items: flex-end;
+}
+
+.campaign-numbers b {
+  color: var(--results-color-brand-dark);
+  font-size: var(--results-font-campaign-metric);
+}
+
+.campaign-list p:not(.run-error) {
+  margin: 0;
+  color: var(--results-color-warning-text);
+  font-size: var(--results-font-detail);
+  line-height: var(--results-leading-body);
+}
+
+.candidate-result-list > article {
+  display: grid;
+  grid-template-columns: var(--results-avatar-size) minmax(var(--results-candidate-name-min), 1.15fr) minmax(var(--results-candidate-stage-min), .55fr) minmax(var(--results-candidate-resume-min), .7fr) minmax(var(--results-candidate-score-min), .9fr) var(--results-action-column);
+  align-items: center;
+  gap: var(--results-space-3);
+  min-width: 0;
+  padding: var(--results-space-3) var(--results-space-5);
+  border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+}
+
+.candidate-avatar {
+  display: grid;
+  place-items: center;
+  width: var(--results-avatar-size);
+  height: var(--results-avatar-size);
+  color: var(--results-color-brand-dark);
+  background: var(--results-color-brand-soft);
+  border-radius: var(--results-radius-control);
+  font-size: var(--results-font-control);
+  font-weight: var(--results-weight-heavy);
+}
+
+.candidate-result-list article > div:not(.candidate-avatar) {
+  display: grid;
+  gap: var(--results-space-1);
+  min-width: 0;
+}
+
+.candidate-result-list strong {
+  overflow: hidden;
+  color: var(--results-color-ink);
+  font-size: var(--results-font-control);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-result-list small {
+  overflow: hidden;
+  color: var(--results-color-muted);
+  font-size: var(--results-font-detail);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-stage {
+  justify-self: start;
+  color: var(--results-color-copy);
+  background: var(--results-color-surface-muted);
+}
+
+.candidate-score.has-score strong {
+  color: var(--results-color-brand-dark);
+}
+
+.candidate-result-list a {
+  display: inline-grid;
+  place-items: center;
+  color: var(--results-color-muted);
+}
+
+.stage-progress-list {
+  display: grid;
+  gap: var(--results-space-3);
+  padding: var(--results-space-5);
+}
+
+.stage-progress-list article {
+  display: grid;
+  grid-template-columns: var(--results-stage-label-width) minmax(0, 1fr) var(--results-stage-count-width);
+  align-items: center;
+  gap: var(--results-space-3);
+}
+
+.stage-progress-list span {
+  color: var(--results-color-copy);
+  font-size: var(--results-font-control);
+}
+
+.stage-progress-list div {
+  height: var(--results-stage-progress-height);
+  overflow: hidden;
+  background: var(--results-color-line-soft);
+  border-radius: var(--results-radius-status);
+}
+
+.stage-progress-list i {
+  display: block;
+  height: 100%;
+  min-width: var(--results-active-border-width);
+  background: var(--results-color-brand);
+  border-radius: inherit;
+}
+
+.stage-progress-list strong {
+  color: var(--results-color-ink);
+  font-size: var(--results-font-control);
+  text-align: right;
 }
 
 .run-detail {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  padding: 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 9px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--results-space-3);
+  padding: var(--results-space-3) 0 0;
+  border-top: var(--results-border-width) solid var(--results-color-line-soft);
 }
 
-.run-detail > div { display: grid; align-content: start; gap: 7px; }
-.run-detail > div > span { color: #64748b; font-size: 8px; font-weight: 800; letter-spacing: .08em; }
-.run-detail ol { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
-.run-detail li { display: grid; grid-template-columns: 7px minmax(80px, .6fr) 1fr; align-items: center; gap: 7px; }
-.run-detail li > i { width: 6px; height: 6px; background: #94a3b8; border-radius: 99px; }
-.run-detail li > i.is-success { background: #0f9f8f; }
-.run-detail li > i.is-danger { background: #dc4a4a; }
-.run-detail li > i.is-warning { background: #d97706; }
-.run-detail strong { font-size: 8px; }
+.run-detail > div {
+  display: grid;
+  align-content: start;
+  gap: var(--results-space-2);
+  min-width: 0;
+}
+
+.run-detail > div > span {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-heavy);
+  letter-spacing: var(--results-tracking-kicker);
+  text-transform: uppercase;
+}
+
+.run-detail ol {
+  display: grid;
+  gap: var(--results-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-detail li {
+  display: grid;
+  grid-template-columns: var(--results-node-marker-size) minmax(0, .6fr) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--results-space-2);
+  min-width: 0;
+}
+
+.run-detail li > i {
+  width: var(--results-node-marker-size);
+  height: var(--results-node-marker-size);
+  background: var(--results-color-faint);
+  border-radius: var(--results-radius-status);
+}
+
+.run-detail li > i.is-success {
+  background: var(--results-color-brand);
+}
+
+.run-detail li > i.is-danger {
+  background: var(--results-color-danger);
+}
+
+.run-detail li > i.is-warning {
+  background: var(--results-color-warning);
+}
+
+.run-detail strong,
 .run-detail small,
 .run-detail p,
-.run-detail time { margin: 0; color: #64748b; font-size: 8px; }
+.run-detail time {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--results-font-meta);
+  line-height: var(--results-leading-body);
+}
 
-@media (max-width: 720px) {
-  .run-detail { grid-template-columns: 1fr; }
+.run-detail strong {
+  overflow: hidden;
+  color: var(--results-color-slate);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-detail small,
+.run-detail p,
+.run-detail time {
+  color: var(--results-color-muted);
+  overflow-wrap: anywhere;
+}
+
+@keyframes results-pulse {
+  50% { opacity: var(--results-skeleton-opacity); }
+}
+
+/* Container conditions intentionally use literals because custom properties are invalid in query expressions. */
+@container results-center (max-width: 1320px) {
+  .results-context {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .results-context__job {
+    grid-column: 1 / -1;
+  }
+
+  .results-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0;
+  }
+
+  .results-tabs button:nth-child(odd) {
+    border-right: var(--results-border-width) solid var(--results-color-line-soft);
+  }
+
+  .results-tabs button:nth-child(-n + 2) {
+    border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+  }
+}
+
+@container results-center (max-width: 1050px) {
+
+  .results-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .results-kpis article:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .results-kpis article:nth-child(n + 3) {
+    border-top: var(--results-border-width) solid var(--results-color-line-soft);
+  }
+
+  .results-task-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .results-subpanel + .results-subpanel {
+    border-top: var(--results-border-width) solid var(--results-color-line-soft);
+    border-left: 0;
+  }
+
+  .candidate-result-list > article {
+    grid-template-columns: var(--results-avatar-size) minmax(0, 1fr) auto;
+  }
+
+  .candidate-result-list .candidate-resume,
+  .candidate-result-list .candidate-score {
+    grid-column: 2 / -1;
+  }
+
+  .candidate-result-list > article > a {
+    grid-row: 1;
+    grid-column: 3;
+  }
+}
+
+@container results-center (max-width: 720px) {
+  .results-hero,
+  .results-required,
+  .results-fatal-error,
+  .results-data-warning,
+  .results-panel > header,
+  .results-subpanel > header {
+    align-items: flex-start;
+  }
+
+  .results-required,
+  .results-fatal-error {
+    flex-wrap: wrap;
+  }
+
+  .results-required select,
+  .results-required .primary-button {
+    width: 100%;
+  }
+
+  .results-context {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--results-space-4);
+  }
+
+  .results-context__job {
+    grid-column: auto;
+  }
+
+  .results-context-note,
+  .results-data-warning {
+    padding-right: var(--results-space-4);
+    padding-left: var(--results-space-4);
+  }
+
+  .results-kpis article {
+    padding: var(--results-space-3) var(--results-space-4);
+  }
+
+  .results-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: visible;
+  }
+
+  .results-tabs button {
+    min-width: 0;
+    padding-right: var(--results-space-3);
+    padding-left: var(--results-space-3);
+  }
+
+  .results-panel > header,
+  .results-subpanel > header {
+    flex-direction: column;
+    padding-right: var(--results-space-4);
+    padding-left: var(--results-space-4);
+  }
+
+  .results-header-links {
+    justify-content: flex-start;
+  }
+
+  .attention-list > article {
+    grid-template-columns: var(--results-status-marker-width) minmax(0, 1fr);
+    padding-right: var(--results-space-4);
+    padding-left: var(--results-space-4);
+  }
+
+  .attention-actions {
+    grid-column: 2;
+    grid-template-columns: repeat(2, minmax(0, auto));
+    justify-content: start;
+    justify-items: start;
+  }
+
+  .run-list > article,
+  .campaign-list > article,
+  .candidate-result-list > article {
+    padding-right: var(--results-space-4);
+    padding-left: var(--results-space-4);
+  }
+
+  .run-list footer,
+  .campaign-numbers {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .candidate-stage {
+    grid-row: 2;
+    grid-column: 2;
+  }
+
+  .candidate-result-list .candidate-resume,
+  .candidate-result-list .candidate-score {
+    grid-column: 2 / -1;
+  }
+
+  .run-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stage-progress-list {
+    padding: var(--results-space-4);
+  }
+
+  .stage-progress-list article {
+    grid-template-columns: minmax(var(--results-stage-count-width), auto) minmax(0, 1fr) var(--results-stage-count-width);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .results-loading span {
+    animation: none;
+  }
+
+  .results-tabs button {
+    transition: none;
+  }
 }
 </style>
