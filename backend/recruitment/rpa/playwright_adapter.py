@@ -1,7 +1,9 @@
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
+import hashlib
 from pathlib import Path
 import uuid
+
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import sync_playwright
 
 
 class BrowserConnectionError(RuntimeError):
@@ -32,6 +34,77 @@ class BrowserInventory:
                 ]
         except PlaywrightError as exc:
             raise BrowserConnectionError(f"无法连接隔离浏览器：{exc}") from exc
+
+    def positions(self):
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(self.endpoint)
+                pages = [
+                    page for context in browser.contexts for page in context.pages
+                    if str(page.url).startswith("https://www.zhipin.com/")
+                ]
+                if not pages:
+                    raise BrowserConnectionError("未找到已登录的 BOSS 页面")
+                page = pages[-1]
+                if not str(page.url).startswith("https://www.zhipin.com/web/chat/job/list"):
+                    page.goto(
+                        "https://www.zhipin.com/web/chat/job/list",
+                        wait_until="domcontentloaded",
+                        timeout=30_000,
+                    )
+                selector = ".job-item-container, .job-jobInfo-warp"
+                cards = None
+                for attempt in range(3):
+                    frame = next((item for item in page.frames if "/web/frame/job_v2/list" in str(item.url)), None)
+                    if frame is None:
+                        page.wait_for_selector('iframe[src*="/web/frame/job_v2/list"]', timeout=15_000)
+                        frame = next((item for item in page.frames if "/web/frame/job_v2/list" in str(item.url)), None)
+                    if frame is None:
+                        raise BrowserConnectionError("未找到 BOSS 职位列表")
+                    try:
+                        frame.wait_for_function(
+                            """selector => document.querySelectorAll(selector).length > 0
+                            || /共\\s*0\\s*个职位/.test(document.body?.innerText || '')""",
+                            arg=selector,
+                            timeout=15_000,
+                        )
+                        cards = frame.eval_on_selector_all(
+                            selector,
+                            """rows => rows.map((el) => ({
+                              id: (el.getAttribute('data-id') || '').trim(),
+                              title: (el.querySelector('.job-name, .job-title a')?.textContent || '').replace(/\\s+/g, ' ').trim(),
+                              status: (el.querySelector('.job-status-wrapper .status-box')?.textContent || '').replace(/\\s+/g, ' ').trim(),
+                              meta: Array.from(el.querySelectorAll('.info-labels .divider-label-text, .job-main-info-wrapper .info-labels span'))
+                                .map((item) => (item.textContent || '').replace(/\\s+/g, ' ').trim())
+                                .filter(Boolean),
+                            })).filter((row) => row.title)""",
+                        )
+                        break
+                    except PlaywrightError as exc:
+                        if "Execution context was destroyed" not in str(exc) or attempt == 2:
+                            raise
+                        page.wait_for_timeout(300)
+                positions = []
+                for card in cards or []:
+                    title = str(card.get("title", "")).strip()
+                    status_text = str(card.get("status", "")).strip()
+                    meta = [str(value).strip() for value in card.get("meta", []) if str(value).strip()]
+                    external_id = str(card.get("id", "")).strip()
+                    if not external_id:
+                        identity = "｜".join([title, *meta])
+                        external_id = f"derived-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}"
+                    status = "open" if "开放中" in status_text else "closed" if "已关闭" in status_text else "paused"
+                    positions.append({
+                        "external_id": external_id,
+                        "title": title,
+                        "status": status,
+                        "raw": "｜".join([title, f"状态:{status_text}", *meta]),
+                    })
+                return positions
+        except BrowserConnectionError:
+            raise
+        except PlaywrightError as exc:
+            raise BrowserConnectionError(f"无法读取 BOSS 职位列表：{exc}") from exc
 
     def save_pdf(self, expected_name, output_path):
         normalized = str(expected_name or "").strip()
