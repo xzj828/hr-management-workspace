@@ -241,6 +241,25 @@ class RpaTaskApiTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["status"], "cancelled")
 
+    def test_running_task_requests_worker_cancellation_idempotently(self):
+        task_id = self.create_task(action=RpaTask.Action.SYNC_POSITIONS).data["id"]
+        RpaTask.objects.filter(pk=task_id).update(
+            status=RpaTask.Status.RUNNING,
+            worker=self.worker,
+            started_at=timezone.now(),
+        )
+
+        first = self.client.post(f"/api/recruitment/rpa-tasks/{task_id}/cancel/")
+        second = self.client.post(f"/api/recruitment/rpa-tasks/{task_id}/cancel/")
+
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(first.data["status"], "cancel_requested")
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(second.data["status"], "cancel_requested")
+        task = RpaTask.objects.get(pk=task_id)
+        self.assertIsNone(task.completed_at)
+        self.assertEqual(task.events.filter(event="cancel_requested").count(), 1)
+
     def test_pending_communication_task_cannot_be_cancelled_outside_its_domain_batch(self):
         job = RecruitmentJob.objects.create(
             boss_account=self.account,

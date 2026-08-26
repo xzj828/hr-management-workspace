@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from django.test import SimpleTestCase
 
 from recruitment.rpa.cli import (
+    BossCliCancelled,
     BossCliError,
     BossCliRunner,
     BossCliTimeout,
@@ -123,6 +124,25 @@ class BossCliRunnerTests(SimpleTestCase):
     def test_timeout_is_normalized(self, run):
         with self.assertRaises(BossCliTimeout):
             BossCliRunner(cli_path="C:/tools/boss.exe").positions(self.account)
+
+    @patch("recruitment.rpa.cli.subprocess.Popen")
+    def test_monitored_command_stops_cli_process_when_cancelled(self, popen):
+        process = popen.return_value
+        process.poll.return_value = None
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("boss", 0.25),
+            (b"", b""),
+        ]
+        runner = BossCliRunner(
+            cli_path="C:/tools/boss.exe",
+            cancel_requested=lambda: True,
+        )
+
+        with self.assertRaises(BossCliCancelled):
+            runner.positions(self.account)
+
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
 
     @patch("recruitment.rpa.cli.subprocess.run")
     def test_nonzero_exit_is_normalized(self, run):

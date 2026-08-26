@@ -35,7 +35,7 @@ class HasRpaWorkerToken(BasePermission):
 
 
 def _worker(request):
-    key = str(request.data.get("worker_key", ""))[:100]
+    key = str(request.data.get("worker_key", "") or request.query_params.get("worker_key", ""))[:100]
     if not key:
         return None
     return RpaWorker.objects.filter(key=key).first()
@@ -843,6 +843,18 @@ def task_event_view(request, task_id):
     return Response({"id": event.id}, status=status.HTTP_201_CREATED)
 
 
+@api_view(["GET"])
+@permission_classes([HasRpaWorkerToken])
+def task_control_view(request, task_id):
+    _, task = _assigned_task(request, task_id)
+    if task is None:
+        return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    return Response({
+        "status": task.status,
+        "cancel_requested": task.status == RpaTask.Status.CANCEL_REQUESTED,
+    })
+
+
 @api_view(["POST"])
 @permission_classes([HasRpaWorkerToken])
 @transaction.atomic
@@ -850,6 +862,29 @@ def complete_task_view(request, task_id):
     _, task = _assigned_task(request, task_id, for_update=True)
     if task is None:
         return Response({"detail": "任务不存在或不属于该 Worker"}, status=status.HTTP_404_NOT_FOUND)
+    if task.status == RpaTask.Status.CANCEL_REQUESTED:
+        task.status = RpaTask.Status.CANCELLED
+        task.result = {}
+        task.error_code = "cancelled_by_user"
+        task.error_message = "任务已按用户要求停止"
+        task.completed_at = timezone.now()
+        task.lease_expires_at = None
+        task.save(update_fields=[
+            "status", "result", "error_code", "error_message", "completed_at",
+            "lease_expires_at", "updated_at",
+        ])
+        append_event(task=task, event="cancelled", message="本机 Worker 已停止当前任务")
+        account = task.boss_account
+        account.status = BossAccount.Status.READY
+        account.save(update_fields=["status", "updated_at"])
+        RecruitmentAuditLog.objects.create(
+            boss_account=account,
+            action="task_cancelled",
+            target_id=str(task.pk),
+            detail={"worker_key": task.worker.key if task.worker_id else ""},
+        )
+        _schedule_workflow_resume(task)
+        return Response({"id": str(task.pk), "status": task.status})
     if task.status not in {RpaTask.Status.LEASED, RpaTask.Status.RUNNING}:
         return Response({"detail": "任务已结束"}, status=status.HTTP_409_CONFLICT)
     terminal = {RpaTask.Status.WAITING_HUMAN, RpaTask.Status.SUCCEEDED, RpaTask.Status.FAILED}

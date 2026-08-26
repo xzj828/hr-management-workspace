@@ -37,6 +37,7 @@ urlpatterns = [
     path("worker/status-observations/", worker_api.status_observations_view),
     path("worker/tasks/lease/", worker_api.lease_task_view),
     path("worker/tasks/<uuid:task_id>/event/", worker_api.task_event_view),
+    path("worker/tasks/<uuid:task_id>/control/", worker_api.task_control_view),
     path("worker/tasks/<uuid:task_id>/complete/", worker_api.complete_task_view),
     path("", include(router.urls)),
 ]

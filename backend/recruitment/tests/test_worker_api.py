@@ -188,6 +188,33 @@ class WorkerApiTests(APITestCase):
         )
         self.assertEqual(replay.status_code, 409)
 
+    def test_worker_reads_cancel_control_and_late_success_becomes_cancelled(self):
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+        task_id = lease.data["task"]["id"]
+        RpaTask.objects.filter(pk=task_id).update(status="cancel_requested")
+
+        control = self.client.get(
+            f"/api/recruitment/worker/tasks/{task_id}/control/?worker_key=local-worker",
+            **self.token_header,
+        )
+        complete = self.client.post(
+            f"/api/recruitment/worker/tasks/{task_id}/complete/",
+            {"worker_key": "local-worker", "status": "succeeded", "result": {"ignored": True}},
+            format="json", **self.token_header,
+        )
+
+        self.assertEqual(control.status_code, 200, control.data)
+        self.assertTrue(control.data["cancel_requested"])
+        self.assertEqual(complete.status_code, 200, complete.data)
+        self.assertEqual(complete.data["status"], "cancelled")
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, RpaTask.Status.CANCELLED)
+        self.assertEqual(self.task.result, {})
+
     def test_progress_event_renews_running_task_lease(self):
         self.heartbeat()
         lease = self.client.post(

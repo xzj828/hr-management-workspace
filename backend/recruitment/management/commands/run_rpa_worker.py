@@ -22,7 +22,7 @@ from recruitment.rpa.browser import (
     record_managed_cdp,
 )
 from recruitment.rpa.capabilities import capability_payload
-from recruitment.rpa.cli import BossCliError, BossCliRunner, CliAccountConfig
+from recruitment.rpa.cli import BossCliCancelled, BossCliError, BossCliRunner, CliAccountConfig
 from recruitment.rpa.status import inspect_boss_status
 from recruitment.rpa.conversations import parse_chat_messages, parse_conversation_list
 from recruitment.rpa.playwright_adapter import BrowserConnectionError, BrowserInventory
@@ -76,6 +76,9 @@ class WorkerApiClient:
 
     def complete(self, task_id, payload):
         return self._request(f"tasks/{task_id}/complete/", payload)
+
+    def control(self, task_id):
+        return self._get(f"tasks/{task_id}/control/?worker_key={self.worker_key}")
 
     def status_targets(self):
         return self._get("status-targets/")
@@ -673,6 +676,15 @@ class WorkerEngine:
             task.get("action") == "check_status"
             and task.get("open_login") is True
         )
+        set_cancel_check = getattr(self.runner, "set_cancel_check", None)
+        if callable(set_cancel_check):
+            def cancellation_requested():
+                try:
+                    return self.api.control(task["id"]).get("cancel_requested") is True
+                except RuntimeError:
+                    return False
+
+            set_cancel_check(cancellation_requested)
         try:
             self.api.event(task["id"], {"event": "started", "message": "本机 Worker 开始执行"})
             with ProfileLock(account.user_data_dir):
@@ -703,6 +715,13 @@ class WorkerEngine:
                         outcome = self._execute(task, account)
                 else:
                     outcome = self._execute(task, account)
+        except BossCliCancelled as exc:
+            outcome = {
+                "status": "cancelled",
+                "result": {},
+                "error_code": "cancelled_by_user",
+                "error_message": str(exc),
+            }
         except ProfileLockedError as exc:
             outcome = {"status": "failed", "result": {}, "error_code": "profile_locked", "error_message": str(exc)}
         except BossCliError as exc:
