@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.test import TestCase
 
-from recruitment.models import BossAccount, WorkflowNodeRun, WorkflowRun, WorkflowTemplate
+from recruitment.models import BossAccount, RpaTask, WorkflowNodeRun, WorkflowRun, WorkflowTemplate
 from recruitment.services.workflow_runtime import (
     advance_run,
     cancel_run,
@@ -78,6 +78,23 @@ class WorkflowRuntimeTests(TestCase):
         cancel_run(run, actor=self.user)
         run.refresh_from_db(); self.assertEqual(run.status, WorkflowRun.Status.CANCELLED)
         self.assertFalse(run.node_runs.filter(status__in=[WorkflowNodeRun.Status.READY, WorkflowNodeRun.Status.BLOCKED]).exists())
+
+    def test_cancel_run_requests_cancellation_for_running_node_task(self):
+        run = create_run(version=self.version, actor=self.user, mode=WorkflowRun.Mode.FORMAL, idempotency_key="formal:cancel-running")
+        node = run.node_runs.get(node_key="source")
+        task = RpaTask.objects.create(
+            boss_account=self.account,
+            action=RpaTask.Action.SEARCH_CANDIDATES,
+            created_by=self.user,
+            status=RpaTask.Status.RUNNING,
+            workflow_node_run=node,
+        )
+
+        cancel_run(run, actor=self.user)
+
+        task.refresh_from_db()
+        self.assertEqual(task.status, RpaTask.Status.CANCEL_REQUESTED)
+        self.assertTrue(task.events.filter(event="cancel_requested").exists())
 
     def test_conditional_edges_execute_only_the_matching_branch(self):
         template = WorkflowTemplate.objects.create(name="conditional graph", created_by=self.user)

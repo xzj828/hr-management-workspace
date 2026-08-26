@@ -5,28 +5,49 @@ from datetime import datetime
 def parse_conversation_list(output):
     rows = []
     for line in str(output or "").splitlines():
-        match = re.match(r"^\s*(\d+)\.\s*([^｜|]+)(?:[｜|].*)?$", line)
+        match = re.match(r"^\s*(\d+)\.\s*(.+)$", line)
         if not match:
             continue
-        preview_match = re.search(r"(?:^|[｜|])消息[:：]([^｜|]+)", line)
-        external_id_match = re.search(
-            r"(?:^|[｜|])\s*(?:external[_ -]?id|候选人ID|平台ID)\s*[:：=]\s*([^｜|\s]+)",
-            line,
-            re.I,
-        )
-        fingerprint_match = re.search(
-            r"(?:^|[｜|])\s*(?:fingerprint|指纹)\s*[:：=]\s*([0-9a-z_-]+)",
-            line,
-            re.I,
-        )
-        rows.append({
-            "index": int(match.group(1)),
-            "name": " ".join(match.group(2).split()).strip(),
+        index = int(match.group(1))
+        parts = [part.strip() for part in re.split(r"[｜|]", match.group(2))]
+        name = " ".join(parts[0].split()).strip()
+        if not name:
+            continue
+        preview = ""
+        external_id = ""
+        fingerprint = ""
+        job_title = ""
+        for part in parts[1:]:
+            if not part:
+                continue
+            if re.match(r"^(?:external[_ -]?id|候选人ID|平台ID)\s*[:：=]\s*", part, re.I):
+                external_id = re.sub(
+                    r"^(?:external[_ -]?id|候选人ID|平台ID)\s*[:：=]\s*", "", part, flags=re.I
+                ).strip()
+            elif re.match(r"^(?:fingerprint|指纹)\s*[:：=]\s*", part, re.I):
+                fingerprint = re.sub(
+                    r"^(?:fingerprint|指纹)\s*[:：=]\s*", "", part, flags=re.I
+                ).strip()
+            elif re.match(r"^消息[:：]", part):
+                preview = " ".join(re.sub(r"^消息[:：]\s*", "", part).split()).strip()
+            elif part.startswith("未读") or part.startswith("已读"):
+                continue
+            elif not job_title:
+                job_title = part
+        row = {
+            "index": index,
+            "name": name,
             "unread": "未读" in line,
-            **({"preview": " ".join(preview_match.group(1).split()).strip()} if preview_match else {}),
-            **({"external_id": external_id_match.group(1).strip()} if external_id_match else {}),
-            **({"fingerprint": fingerprint_match.group(1).strip()} if fingerprint_match else {}),
-        })
+        }
+        if preview:
+            row["preview"] = preview
+        if external_id:
+            row["external_id"] = external_id
+        if fingerprint:
+            row["fingerprint"] = fingerprint
+        if job_title:
+            row["job_title"] = job_title
+        rows.append(row)
     return rows
 
 

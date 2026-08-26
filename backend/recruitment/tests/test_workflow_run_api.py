@@ -394,7 +394,7 @@ class WorkflowRunApiTests(APITestCase):
         self.assertIsNotNone(node.completed_at)
         self.assertEqual(run.status, WorkflowRun.Status.CANCELLED)
 
-    def test_cancelling_workflow_preserves_already_leased_task_but_closes_run(self):
+    def test_cancelling_workflow_requests_cancellation_for_leased_task_but_closes_run(self):
         run = self._create_deep_match_approval_run()
         node = run.node_runs.get(node_key="deep")
         self.client.post(
@@ -415,7 +415,8 @@ class WorkflowRunApiTests(APITestCase):
         task.refresh_from_db()
         node.refresh_from_db()
         run.refresh_from_db()
-        self.assertEqual(task.status, RpaTask.Status.LEASED)
+        self.assertEqual(task.status, RpaTask.Status.CANCEL_REQUESTED)
+        self.assertTrue(task.events.filter(event="cancel_requested").exists())
         self.assertEqual(node.status, WorkflowNodeRun.Status.RUNNING)
         self.assertEqual(run.status, WorkflowRun.Status.CANCELLED)
 

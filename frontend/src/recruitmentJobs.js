@@ -2,6 +2,7 @@ const TASK_PROGRESS = {
   pending: { label: '等待执行', percent: 12 },
   leased: { label: 'Worker 已领取任务', percent: 34 },
   running: { label: '正在读取 BOSS 职位', percent: 62 },
+  cancel_requested: { label: '正在取消', percent: 80 },
   waiting_human: { label: '等待人工完成验证', percent: 72 },
   succeeded: { label: '同步完成', percent: 100 },
   failed: { label: '同步失败', percent: 100 },

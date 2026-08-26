@@ -340,7 +340,8 @@ class WorkerApiTests(APITestCase):
         candidate = Candidate.objects.create(identity_key="conversation-worker", name="林然")
         JobApplication.objects.create(candidate=candidate, job=job, source="boss")
         self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
-        self.task.save(update_fields=["action"])
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
         self.heartbeat()
         lease = self.client.post(
             "/api/recruitment/worker/tasks/lease/",
@@ -386,7 +387,8 @@ class WorkerApiTests(APITestCase):
         )
         JobApplication.objects.create(candidate=candidate, job=job, source="boss")
         self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
-        self.task.save(update_fields=["action"])
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
         self.heartbeat()
         lease = self.client.post(
             "/api/recruitment/worker/tasks/lease/",

@@ -989,13 +989,19 @@ def complete_task_view(request, task_id):
             })
     if task.action == RpaTask.Action.SYNC_CONVERSATIONS and completed_status == RpaTask.Status.SUCCEEDED:
         rows = result.get("conversations")
+        job = RecruitmentJob.objects.filter(
+            pk=task.request_payload.get("job"),
+            boss_account=task.boss_account,
+        ).first()
+        if job is None:
+            return Response({"detail": "消息同步缺少有效的所选岗位"}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            sync_result = sync_conversation_states(account=task.boss_account, rows=rows, actor=task.created_by)
+            sync_result = sync_conversation_states(account=task.boss_account, job=job, rows=rows, actor=task.created_by)
             archived = 0
             incoming = (Path(settings.MEDIA_ROOT) / "rpa-incoming").resolve()
             for row in rows:
                 applications = list(JobApplication.objects.filter(
-                    job__boss_account=task.boss_account,
+                    job=job,
                     candidate__name=str(row.get("name", "")).strip(),
                 )[:2])
                 if len(applications) != 1:

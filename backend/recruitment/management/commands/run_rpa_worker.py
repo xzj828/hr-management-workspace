@@ -395,21 +395,41 @@ def execute_send_interview(task, account, runner):
     }
 
 
+def _normalize_job_title(value):
+    return " ".join(str(value or "").split())
+
+
 def execute_sync_conversations(task, account, runner):
-    rows = parse_conversation_list(runner.conversations(account))
+    payload = task.get("request_payload") if isinstance(task.get("request_payload"), dict) else {}
+    expected_job_title = _normalize_job_title(payload.get("job_title", ""))
+    rows = parse_conversation_list(runner.conversations(account, unread=True))
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     name_counts = {row["name"]: sum(1 for item in rows if item["name"] == row["name"]) for row in rows}
-    for row in rows[:50]:
+    eligible = []
+    skipped = 0
+    for row in rows:
+        if not row.get("unread"):
+            row["sync_error"] = "会话已读，未打开"
+            skipped += 1
+            continue
+        if _normalize_job_title(row.get("job_title", "")) != expected_job_title:
+            row["sync_error"] = "会话岗位与当前选择岗位不一致，未打开"
+            skipped += 1
+            continue
         if name_counts[row["name"]] != 1:
             row["sync_error"] = "同名候选人不唯一，未打开会话"
+            skipped += 1
             continue
+        eligible.append(row)
+    for row in eligible[:50]:
         try:
             opened = runner.open_chat(account, row["name"])
             row["messages"] = parse_chat_messages(opened.stdout)
             row["attachments"] = BrowserInventory(account.cdp_port).download_resume_attachments(row["name"], incoming)
         except (BossCliError, BrowserConnectionError) as exc:
             row["sync_error"] = str(exc)
-    return {"status": "succeeded", "result": {"conversations": rows}}
+    return {"status": "succeeded", "result": {"conversations": rows, "skipped": skipped}}
+
 
 
 def execute_view_online_resume(task, account, runner):

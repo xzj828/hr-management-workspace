@@ -16,10 +16,15 @@ from recruitment.models import (
     RecruitmentJob,
     RpaTask,
     StepExecution,
+    WorkflowNodeRun,
+    WorkflowRun,
+    WorkflowTemplate,
+    WorkflowVersion,
 )
 from recruitment.rpa.tasks import create_task
 from recruitment.services.approvals import approve
 from recruitment.services.communications import (
+    cancel_workflow_communication,
     complete_communication_task,
     materialize_communication_batch,
     prepare_communication,
@@ -228,3 +233,35 @@ class CommunicationServiceTests(TestCase):
                     "first_contact": False,
                 },
             )
+
+    def test_cancel_workflow_communication_requests_cancellation_for_running_task(self):
+        template = WorkflowTemplate.objects.create(name="cancel comms", created_by=self.user)
+        version = WorkflowVersion.objects.create(
+            template=template, version=1, boss_account=self.account, created_by=self.user,
+        )
+        run = WorkflowRun.objects.create(
+            version=version, boss_account=self.account, actor=self.user,
+            status=WorkflowRun.Status.RUNNING, idempotency_key="cancel-comms-run",
+            graph_snapshot={"nodes": [], "edges": []},
+        )
+        node = WorkflowNodeRun.objects.create(
+            run=run, node_key="comm", node_type="greet",
+            status=WorkflowNodeRun.Status.RUNNING, idempotency_key="cancel-comms-node",
+        )
+        batch = ExecutionBatch.objects.create(
+            boss_account=self.account, action=AutomationApproval.Action.GREET,
+            idempotency_key="cancel-comms-batch", created_by=self.user, total_items=1,
+            workflow_node_run=node,
+        )
+        task = RpaTask.objects.create(
+            boss_account=self.account, action=RpaTask.Action.GREET, created_by=self.user,
+            status=RpaTask.Status.RUNNING, execution_batch=batch,
+            request_payload={"step_id": 1, "conversation_action_id": "x"},
+        )
+
+        result = cancel_workflow_communication(workflow_node_run=node, actor=self.user)
+
+        task.refresh_from_db()
+        self.assertTrue(result)
+        self.assertEqual(task.status, RpaTask.Status.CANCEL_REQUESTED)
+        self.assertTrue(task.events.filter(event="cancel_requested").exists())

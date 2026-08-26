@@ -159,7 +159,7 @@ class SearchCampaignApiTests(APITestCase):
         self.assertEqual(replay.status_code, 400, replay.data)
         self.assertEqual(AutomationEvidence.objects.filter(task=task).count(), 2)
 
-    def test_stop_refuses_to_claim_cancellation_after_browser_execution_started(self):
+    def test_stop_requests_worker_cancellation_after_browser_execution_started(self):
         campaign = SearchCampaign.objects.create(
             name="执行中停止",
             boss_account=self.account,
@@ -190,12 +190,13 @@ class SearchCampaignApiTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200, response.data)
         campaign.refresh_from_db()
         task.refresh_from_db()
+        self.assertEqual(task.status, RpaTask.Status.CANCEL_REQUESTED)
         self.assertEqual(campaign.status, SearchCampaign.Status.QUEUED)
-        self.assertEqual(task.status, RpaTask.Status.LEASED)
         self.assertFalse(AutomationEvidence.objects.filter(task=task).exists())
+        self.assertTrue(task.events.filter(event="cancel_requested").exists())
 
     def test_paused_campaign_cannot_pretend_to_restart_over_waiting_task(self):
         campaign = SearchCampaign.objects.create(

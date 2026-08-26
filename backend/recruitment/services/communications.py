@@ -14,6 +14,7 @@ from recruitment.models import (
     ConversationSyncState,
     ExecutionBatch,
     InterviewInvitation,
+    JobApplication,
     RecruitmentAuditLog,
     RpaTask,
     StepExecution,
@@ -251,6 +252,17 @@ def cancel_workflow_communication(*, workflow_node_run, actor, now=None):
         for value in active_tasks.values_list("request_payload__step_id", flat=True)
         if value is not None
     }
+    for task in active_tasks:
+        if task.status == RpaTask.Status.CANCEL_REQUESTED:
+            continue
+        task.status = RpaTask.Status.CANCEL_REQUESTED
+        task.save(update_fields=["status", "updated_at"])
+        append_event(
+            task=task,
+            event="cancel_requested",
+            message="所属流程已取消，已通知本机 Worker 中断当前沟通任务",
+            data={"status": task.status},
+        )
     for task in tasks.filter(status=RpaTask.Status.PENDING):
         task.status = RpaTask.Status.CANCELLED
         task.error_code = "workflow_cancelled"
@@ -386,7 +398,7 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
 
 
 @transaction.atomic
-def sync_conversation_states(*, account, rows, actor=None):
+def sync_conversation_states(*, account, job, rows, actor=None):
     if not isinstance(rows, list):
         raise ValueError("沟通状态同步结果无效")
     synced = 0
@@ -397,16 +409,14 @@ def sync_conversation_states(*, account, rows, actor=None):
             continue
         name = str(row.get("name", "")).strip()
         applications = list(
-            account.jobs.filter(applications__candidate__name=name)
-            .values_list("applications__id", flat=True)
-            .distinct()[:2]
+            JobApplication.objects.filter(
+                job=job, job__boss_account=account, candidate__name=name
+            ).values_list("id", flat=True)[:2]
         )
         if len(applications) != 1:
             if name:
                 ambiguous += 1
             continue
-        from recruitment.models import JobApplication
-
         application = JobApplication.objects.get(pk=applications[0])
         unread = bool(row.get("unread"))
         ConversationSyncState.objects.update_or_create(
