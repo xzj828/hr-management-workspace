@@ -233,13 +233,21 @@ def message_sync_scopes_for_account(account):
 def effective_plan_state(plan):
     has_active_task = RpaTask.objects.filter(
         automation_plan_revision__plan=plan,
-        status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING],
+        status__in=[
+            RpaTask.Status.LEASED,
+            RpaTask.Status.RUNNING,
+            RpaTask.Status.CANCEL_REQUESTED,
+        ],
     ).exists()
     if plan.current_revision_id is not None and not has_active_task:
         shared_tasks = RpaTask.objects.filter(
             boss_account_id=plan.job.boss_account_id,
             action=RpaTask.Action.SYNC_CONVERSATIONS,
-            status__in=[RpaTask.Status.LEASED, RpaTask.Status.RUNNING],
+            status__in=[
+                RpaTask.Status.LEASED,
+                RpaTask.Status.RUNNING,
+                RpaTask.Status.CANCEL_REQUESTED,
+            ],
         ).values_list("request_payload", flat=True)
         for payload in shared_tasks:
             scopes = (payload or {}).get("passive_plan_scopes") if isinstance(payload, dict) else None

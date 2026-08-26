@@ -1438,8 +1438,9 @@ def complete_task_view(request, task_id):
                     job__boss_account=task.boss_account,
                     candidate__name=str(row.get("name", "")).strip(),
                 )
-                if allowed_job_ids is not None:
-                    application_queryset = application_queryset.filter(job_id__in=allowed_job_ids)
+                row_job_title = str(row.get("job_title", "")).strip()
+                if row_job_title:
+                    application_queryset = application_queryset.filter(job__title=row_job_title)
                 applications = list(application_queryset[:2])
                 if len(applications) != 1:
                     continue

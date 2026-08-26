@@ -622,11 +622,15 @@ def sync_conversation_states(*, account, rows, actor=None, allowed_job_ids=None)
         if not isinstance(row, dict):
             continue
         name = str(row.get("name", "")).strip()
-        jobs = account.jobs.filter(applications__candidate__name=name)
+        job_title = str(row.get("job_title", "")).strip()
+        application_queryset = JobApplication.objects.filter(
+            job__boss_account=account,
+            candidate__name=name,
+        )
+        if job_title:
+            application_queryset = application_queryset.filter(job__title=job_title)
         applications = list(
-            jobs
-            .values_list("applications__id", flat=True)
-            .distinct()[:2]
+            application_queryset.values_list("id", flat=True).distinct()[:2]
         )
         if len(applications) != 1:
             if name:
