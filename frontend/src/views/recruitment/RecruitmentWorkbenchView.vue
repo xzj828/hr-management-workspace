@@ -64,6 +64,11 @@ const planError = ref('')
 const planAction = ref('')
 const planActionError = ref('')
 const planVersionNotice = ref('')
+const pendingResumeApprovals = ref([])
+const approvalInboxLoading = ref(false)
+const approvalInboxError = ref('')
+const approvalActionId = ref('')
+const approvalNotice = ref('')
 const legacyEditBaseUnknown = ref(false)
 const editBase = reactive({
   active: false,
@@ -76,6 +81,7 @@ const summary = reactive({ worker: null, cli_available: false })
 const startRequest = reactive({ id: '', signature: '' })
 let documentLoadSequence = 0
 let planLoadSequence = 0
+let approvalLoadSequence = 0
 let planActionSequence = 0
 let planPollTimer = null
 let planPollInFlight = false
@@ -239,6 +245,20 @@ const resultsLink = computed(() => currentPlan.value?.current_run?.id ? {
   path: '/recruitment/results',
   query: { job: String(selectedJob.value?.id || ''), run: String(currentPlan.value.current_run.id), view: 'tasks' },
 } : null)
+const passiveApprovalInboxVisible = computed(() => (
+  currentPlan.value?.kind === 'passive_resume'
+  && ['starting', 'running', 'waiting_human'].includes(currentPlanState.value)
+))
+
+function approvalCandidate(approval) {
+  return approval?.payload?.items?.[0] || {}
+}
+
+function approvalExpiry(value) {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  return parsed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
 
 function requirementLines(value) {
   return [...new Set(String(value || '')
@@ -922,7 +942,10 @@ async function refreshCurrentPlan({ jobId = selectedJob.value?.id, silent = fals
   try {
     const payload = await api(`recruitment/automation-plans/?job=${encodeURIComponent(jobId)}`)
     const plan = planFromPayload(payload)
-    if (sequence === planLoadSequence) applyServerPlan(plan, jobId, { hydrateDraft })
+    if (sequence === planLoadSequence) {
+      applyServerPlan(plan, jobId, { hydrateDraft })
+      await refreshPendingResumeApprovals(plan, jobId)
+    }
     return plan
   } catch (error) {
     if (sequence === planLoadSequence && String(selectedJob.value?.id || '') === String(jobId)) {
@@ -967,6 +990,7 @@ async function controlPlan(action, { modifyAfter = false } = {}) {
     if (actionSequence === planActionSequence) {
       planLoadSequence += 1
       applyServerPlan(updated, capturedJobId)
+      await refreshPendingResumeApprovals(updated, capturedJobId)
       if (modifyAfter && componentAlive && String(selectedJob.value?.id || '') === String(capturedJobId)) enterPlanEdit()
     }
   } catch (error) {
@@ -1217,6 +1241,7 @@ async function startExecution({ busyAction = '' } = {}) {
     planLoadSequence += 1
     resetEditBase()
     applyServerPlan(plan, snapshot.job.id)
+    await refreshPendingResumeApprovals(plan, snapshot.job.id)
     persistWizardDraft(snapshot.job.id)
     startRequest.id = ''
     startRequest.signature = ''
@@ -1233,6 +1258,74 @@ async function startExecution({ busyAction = '' } = {}) {
     if (busyAction && planAction.value === busyAction) planAction.value = ''
     if (activeExecutionSnapshot === snapshot) activeExecutionSnapshot = null
     submitStage.value = ''
+  }
+}
+
+async function refreshPendingResumeApprovals(plan = currentPlan.value, jobId = selectedJob.value?.id) {
+  const sequence = ++approvalLoadSequence
+  const revision = planRevisionSnapshot(plan)
+  const generation = Number(plan?.control_generation ?? 0)
+  if (
+    !componentAlive
+    || !jobId
+    || plan?.kind !== 'passive_resume'
+    || !['starting', 'running', 'waiting_human'].includes(normalizePlanState(plan))
+    || !revision.id
+    || generation < 1
+  ) {
+    pendingResumeApprovals.value = []
+    approvalInboxError.value = ''
+    approvalInboxLoading.value = false
+    return []
+  }
+  approvalInboxLoading.value = true
+  try {
+    const query = new URLSearchParams({
+      status: 'draft',
+      action: 'request_resume',
+      job: String(jobId),
+      automation_plan_revision: String(revision.id),
+      automation_generation: String(generation),
+    })
+    const payload = await api(`recruitment/automation-approvals/?${query.toString()}`)
+    const approvals = listItems(payload)
+    if (
+      sequence === approvalLoadSequence
+      && componentAlive
+      && String(selectedJob.value?.id || '') === String(jobId)
+    ) {
+      pendingResumeApprovals.value = approvals
+      approvalInboxError.value = ''
+    }
+    return approvals
+  } catch (error) {
+    if (sequence === approvalLoadSequence) {
+      approvalInboxError.value = error.message || '待确认消息读取失败'
+    }
+    return []
+  } finally {
+    if (sequence === approvalLoadSequence) approvalInboxLoading.value = false
+  }
+}
+
+async function approveResumeRequest(approval) {
+  if (!approval?.id || approvalActionId.value) return
+  approvalActionId.value = String(approval.id)
+  approvalInboxError.value = ''
+  approvalNotice.value = ''
+  try {
+    await api(`recruitment/automation-approvals/${encodeURIComponent(approval.id)}/approve/`, {
+      method: 'POST',
+      body: '{}',
+    })
+    const candidate = approvalCandidate(approval)
+    pendingResumeApprovals.value = pendingResumeApprovals.value.filter((item) => String(item.id) !== String(approval.id))
+    approvalNotice.value = `${candidate.name || '候选人'}的消息已确认；Worker 将先发送话术，再点击“求简历”。`
+  } catch (error) {
+    approvalInboxError.value = error.message || '确认发送失败，请刷新后重试'
+    await refreshPendingResumeApprovals()
+  } finally {
+    approvalActionId.value = ''
   }
 }
 
@@ -1276,6 +1369,9 @@ watch(
     currentPlan.value = null
     planError.value = ''
     planActionError.value = ''
+    pendingResumeApprovals.value = []
+    approvalInboxError.value = ''
+    approvalNotice.value = ''
     planAction.value = ''
     startRequest.id = ''
     startRequest.signature = ''
@@ -1347,6 +1443,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   componentAlive = false
+  approvalLoadSequence += 1
   planActionSequence += 1
   planLoadSequence += 1
   documentLoadSequence += 1
@@ -1721,6 +1818,46 @@ onUnmounted(() => {
                 @modify="enterPlanEdit"
                 @restart="startExecution({ busyAction: 'restart' })"
               />
+
+              <section
+                v-if="passiveApprovalInboxVisible"
+                class="workbench-approval-inbox"
+                data-test="resume-approval-inbox"
+                aria-live="polite"
+              >
+                <header>
+                  <span><AppIcon name="workflow" :size="17" /></span>
+                  <div>
+                    <strong>新消息待确认</strong>
+                    <small>确认后才会给候选人发话术，并点击 BOSS“求简历”。</small>
+                  </div>
+                  <em v-if="pendingResumeApprovals.length">{{ pendingResumeApprovals.length }} 条</em>
+                </header>
+                <p v-if="approvalInboxLoading && !pendingResumeApprovals.length" class="workbench-submit-hint">正在检查新消息…</p>
+                <p v-else-if="!pendingResumeApprovals.length && !approvalInboxError" class="workbench-approval-empty">当前没有待确认的新消息，系统会按设置的间隔继续检查。</p>
+                <article
+                  v-for="approval in pendingResumeApprovals"
+                  :key="approval.id"
+                  class="workbench-approval-card"
+                  :data-test="`resume-approval-${approval.id}`"
+                >
+                  <div>
+                    <strong>{{ approvalCandidate(approval).name || '候选人' }}</strong>
+                    <small>{{ approvalCandidate(approval).job_title || selectedJob?.title }}<template v-if="approvalExpiry(approval.expires_at)"> · {{ approvalExpiry(approval.expires_at) }} 前确认</template></small>
+                  </div>
+                  <blockquote>{{ approval.payload?.message }}</blockquote>
+                  <button
+                    type="button"
+                    :disabled="Boolean(approvalActionId)"
+                    :data-test="`approve-resume-${approval.id}`"
+                    @click="approveResumeRequest(approval)"
+                  >
+                    {{ approvalActionId === String(approval.id) ? '正在确认…' : '确认发送并求简历' }}
+                  </button>
+                </article>
+                <p v-if="approvalInboxError" class="workbench-inline-error" role="alert">{{ approvalInboxError }}</p>
+                <p v-if="approvalNotice" class="workbench-approval-notice" role="status">{{ approvalNotice }}</p>
+              </section>
 
               <p class="workbench-safety"><AppIcon name="shield" :size="15" /> 外发、身份复核、额度与人工确认继续由服务端安全门控制。</p>
               <footer class="workbench-step-actions workbench-review-actions">
@@ -3685,6 +3822,108 @@ onUnmounted(() => {
   margin-top: var(--wb-space-4);
 }
 
+.workbench-approval-inbox {
+  display: grid;
+  gap: var(--wb-space-3);
+  margin-top: var(--wb-space-4);
+  padding: var(--wb-space-4);
+  border: var(--wb-border-width) solid var(--wb-color-primary);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface);
+}
+
+.workbench-approval-inbox > header {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: var(--wb-space-3);
+  align-items: center;
+}
+
+.workbench-approval-inbox > header > span {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-primary-dark);
+  background: var(--wb-color-primary-soft);
+}
+
+.workbench-approval-inbox > header > div,
+.workbench-approval-card > div {
+  display: grid;
+  gap: var(--wb-space-1);
+  min-width: 0;
+}
+
+.workbench-approval-inbox > header strong,
+.workbench-approval-card strong {
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-body);
+}
+
+.workbench-approval-inbox > header small,
+.workbench-approval-card small,
+.workbench-approval-empty {
+  margin: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-approval-inbox > header em {
+  padding: var(--wb-space-1) var(--wb-space-2);
+  border-radius: var(--wb-radius-pill);
+  color: var(--wb-color-primary-dark);
+  background: var(--wb-color-primary-soft);
+  font-size: var(--wb-font-size-small);
+  font-style: normal;
+  font-weight: var(--wb-font-weight-bold);
+}
+
+.workbench-approval-card {
+  display: grid;
+  grid-template-columns: minmax(130px, .6fr) minmax(220px, 1.4fr) auto;
+  gap: var(--wb-space-3);
+  align-items: center;
+  padding-top: var(--wb-space-3);
+  border-top: var(--wb-border-width) solid var(--wb-color-line);
+}
+
+.workbench-approval-card blockquote {
+  margin: 0;
+  padding: var(--wb-space-3);
+  border-left: 3px solid var(--wb-color-primary);
+  color: var(--wb-color-secondary);
+  background: var(--wb-color-section-soft);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-body);
+}
+
+.workbench-approval-card button {
+  min-height: 38px;
+  padding: 0 var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-primary-dark);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-surface);
+  background: var(--wb-color-primary-dark);
+  font: inherit;
+  font-size: var(--wb-font-size-small);
+  font-weight: var(--wb-font-weight-bold);
+}
+
+.workbench-approval-card button:disabled {
+  cursor: wait;
+  opacity: var(--wb-disabled-opacity);
+}
+
+.workbench-approval-notice {
+  margin: 0;
+  color: var(--wb-color-primary-dark);
+  font-size: var(--wb-font-size-small);
+  font-weight: var(--wb-font-weight-semibold);
+}
+
 @media (max-width: 720px) {
   .recruitment-workbench {
     align-content: start;
@@ -3786,6 +4025,14 @@ onUnmounted(() => {
   }
 
   .workbench-step-actions button {
+    width: 100%;
+  }
+
+  .workbench-approval-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-approval-card button {
     width: 100%;
   }
 

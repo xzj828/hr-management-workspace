@@ -45,6 +45,7 @@ function planFixture({
   isManagedWorkflow,
   revision = 2,
   revisionId = 401,
+  controlGeneration = 6,
 } = {}) {
   const runStatus = { completed: 'succeeded', stopped: 'cancelled' }[state] || state
   const currentRevision = {
@@ -62,6 +63,7 @@ function planFixture({
     desired_state: state === 'stopping' ? 'stopped' : state,
     effective_state: state,
     control_version: controlVersion,
+    control_generation: controlGeneration,
     current_revision: currentRevision,
     current_run: runId ? { id: runId, status: runStatus } : null,
   }
@@ -77,6 +79,7 @@ function baseApi(path) {
   if (path === 'recruitment/job-documents/?job=52') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation-plans/?job=52') return Promise.resolve({ results: [] })
+  if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [] })
   return Promise.reject(new Error(`unexpected path: ${path}`))
 }
 
@@ -944,6 +947,52 @@ describe('RecruitmentWorkbenchView', () => {
     })
     expect(wrapper.get('[data-test="operation-state"]').text()).toBe('正在停止')
     expect(wrapper.text()).toContain('安全收尾')
+  })
+
+  it('surfaces a recovered passive resume approval and confirms the exact message before execution', async () => {
+    const passive = planFixture({
+      kind: 'passive_resume',
+      config: { interval_minutes: 2, reply_message: '您好，方便发送一份简历吗？', core: [], bonus: [] },
+      revisionId: 451,
+      controlGeneration: 8,
+    })
+    const approval = {
+      id: 'approval-1',
+      action: 'request_resume',
+      status: 'draft',
+      automation_plan_revision: 451,
+      automation_generation: 8,
+      expires_at: '2026-08-27T10:30:00+08:00',
+      payload: {
+        message: '您好，方便发送一份简历吗？',
+        items: [{ name: '陈翔', job_title: 'Python 后端工程师' }],
+      },
+    }
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [passive] })
+      if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [approval] })
+      if (path === 'recruitment/automation-approvals/approval-1/approve/' && options?.method === 'POST') {
+        return Promise.resolve({ ...approval, status: 'approved', batch: { total_items: 1 } })
+      }
+      return baseApi(path)
+    })
+
+    ;({ wrapper } = await mountView({ job: '51' }))
+
+    expect(wrapper.get('[data-test="resume-approval-inbox"]').text()).toContain('陈翔')
+    expect(wrapper.get('[data-test="resume-approval-inbox"]').text()).toContain('您好，方便发送一份简历吗？')
+    expect(apiMock.mock.calls.find(([path]) => path.startsWith('recruitment/automation-approvals/?'))[0]).toContain('automation_plan_revision=451')
+    expect(apiMock.mock.calls.find(([path]) => path.startsWith('recruitment/automation-approvals/?'))[0]).toContain('automation_generation=8')
+
+    await wrapper.get('[data-test="approve-resume-approval-1"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/automation-approvals/approval-1/approve/', {
+      method: 'POST',
+      body: '{}',
+    })
+    expect(wrapper.text()).toContain('Worker 将先发送话术，再点击“求简历”')
+    expect(wrapper.find('[data-test="resume-approval-approval-1"]').exists()).toBe(false)
   })
 
   it('stops before editing and preserves the current per-job draft on step two', async () => {

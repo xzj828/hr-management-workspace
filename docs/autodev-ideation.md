@@ -43,7 +43,7 @@
 | W6 | BOSS 账号和职位管理 | P2, P5 | [x] 真实 Worker、双账号隔离窗口与等待登录状态已验收 | `RecruitmentAdminView.vue`, `backend/recruitment/rpa/` |
 | W7 | 推荐、搜索、深度匹配与候选人入库 | W6, P5 | [x] 代码完整 / 外部依赖 | `RecruitmentCandidatesView.vue`, `services/discovery.py` |
 | W8 | 候选人阶段与招聘看板 | W6, W7, P4 | [x] 完整 | `RecruitmentPipelineView.vue`, `RecruitmentDashboardView.vue` |
-| W9 | 沟通批次、简历索取/保存与面试邀约 | W7, P5 | [x] 2026-08-27 被动会话稳定 ID、真实应聘建档、首联求简历与附件归档链路验收完成；真实外发仍需 HR 批准 | `rpa/cli.py`, `services/communications.py`, `services/resumes.py` |
+| W9 | 沟通批次、简历索取/保存与面试邀约 | W7, P5 | [x] 2026-08-27 被动会话稳定 ID、真实应聘建档、作业台异步审批可见与停止后恢复、首联求简历及附件归档链路验收完成；真实外发仍需 HR 批准 | `rpa/cli.py`, `services/communications.py`, `services/conversation_ingestion.py`, `services/resumes.py`, `RecruitmentWorkbenchView.vue` |
 | W10 | 人工确认的招聘流程编排 | W6–W9, P5 | [x] 完整 | `WorkflowCanvas.vue`, `services/workflow_runtime.py` |
 | W11 | 演示数据与 PDF 简历预览 | P3, P6 | [x] 完整 | `recruitment/demo_data.py`, `RecruitmentDemoMenu.vue` |
 | W12 | 招聘记录归档与恢复 | P4 | [x] 管理后台当前/归档、恢复与确认交互完整 | `ArchivableViewSetMixin`, `ArchiveConfirmModal.vue`, `RecruitmentAdminView.vue` |

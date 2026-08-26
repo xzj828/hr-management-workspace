@@ -22,7 +22,11 @@ from .services.discovery import _fingerprint, import_discoveries, sync_discoveri
 from .services.communications import complete_communication_task
 from .services.communications import sync_conversation_states
 from .services.resumes import archive_online_resume_image, archive_pdf
-from .services.conversation_ingestion import ingest_conversation, process_pending_messages
+from .services.conversation_ingestion import (
+    ingest_conversation,
+    process_pending_messages,
+    recover_unfulfilled_resume_requests,
+)
 from .services.task_recovery import recover_stale_tasks
 from .services.account_status import apply_account_observation
 from .services.message_scheduling import schedule_due_conversation_syncs
@@ -1512,7 +1516,14 @@ def complete_task_view(request, task_id):
                         automation_generation=plan.control_generation,
                         workflow_run=plan.current_run,
                     )
+            recovered_approvals = 0
+            for plan in valid_plans.values():
+                recovered_approvals += recover_unfulfilled_resume_requests(
+                    plan=plan,
+                    actor=task.created_by,
+                )
             sync_result["attachments_archived"] = archived
+            sync_result["resume_approvals_recovered"] = recovered_approvals
             result = {"sync": sync_result}
             if scope_stopped:
                 completed_status = RpaTask.Status.CANCELLED

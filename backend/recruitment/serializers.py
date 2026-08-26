@@ -823,7 +823,8 @@ class AutomationApprovalSerializer(serializers.ModelSerializer):
         model = AutomationApproval
         fields = [
             "id", "idempotency_key", "action", "boss_account", "account_name", "payload",
-            "item_count", "status", "approved_by_name", "expires_at", "approved_at", "created_at",
+            "item_count", "status", "automation_plan_revision", "automation_generation",
+            "approved_by_name", "expires_at", "approved_at", "created_at",
         ]
         read_only_fields = fields
 

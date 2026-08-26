@@ -3,6 +3,7 @@ import json
 from dataclasses import dataclass
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -12,6 +13,7 @@ from recruitment.models import (
     ConversationAction,
     ConversationMessage,
     ConversationSyncState,
+    JobApplication,
     MessageAttachment,
     RecruitmentAutomationPlan,
     RecruitmentJob,
@@ -310,3 +312,102 @@ def process_pending_messages(
             )
         )
     return ConversationDecision(intent=intent, message=latest, attention=attention)
+
+
+@serialize_sqlite_lifecycle
+@transaction.atomic
+def recover_unfulfilled_resume_requests(
+    *,
+    plan,
+    actor,
+):
+    """Recreate current-generation approvals for processed replies that never reached execution."""
+    locked_plan = (
+        RecruitmentAutomationPlan.objects.select_for_update()
+        .select_related("job__boss_account", "current_revision")
+        .filter(pk=plan.pk)
+        .first()
+    )
+    if (
+        locked_plan is None
+        or locked_plan.kind != RecruitmentAutomationPlan.Kind.PASSIVE_RESUME
+        or locked_plan.desired_state != RecruitmentAutomationPlan.DesiredState.RUNNING
+        or locked_plan.current_revision_id is None
+        or locked_plan.job.archived_at is not None
+        or locked_plan.job.status != RecruitmentJob.Status.OPEN
+        or not locked_plan.job.boss_account.active
+        or locked_plan.job.boss_account.archived_at is not None
+    ):
+        return 0
+
+    now = timezone.now()
+    blocking_statuses = [
+        ConversationAction.Status.APPROVED,
+        ConversationAction.Status.PENDING,
+        ConversationAction.Status.RUNNING,
+        ConversationAction.Status.WAITING_HUMAN,
+        ConversationAction.Status.SUCCEEDED,
+    ]
+    applications = (
+        JobApplication.objects.select_for_update()
+        .select_related("candidate", "job")
+        .filter(
+            job=locked_plan.job,
+            archived_at__isnull=True,
+            conversation_state__isnull=False,
+        )
+        .order_by("id")
+    )
+    recovered = 0
+    for application in applications:
+        if application.resumes.filter(archived_at__isnull=True).exists():
+            continue
+        effective_action_exists = ConversationAction.objects.filter(
+            application=application,
+            action=ConversationAction.Action.REQUEST_RESUME,
+        ).filter(
+            Q(status__in=blocking_statuses)
+            | Q(
+                status=ConversationAction.Status.DRAFT,
+                approval__status="draft",
+                approval__expires_at__gt=now,
+            )
+        ).exists()
+        if effective_action_exists:
+            continue
+
+        state = application.conversation_state
+        latest_candidate_message = (
+            state.messages.filter(
+                direction=ConversationMessage.Direction.CANDIDATE,
+                processed_at__isnull=False,
+            )
+            .order_by("sent_at", "id")
+            .last()
+        )
+        if latest_candidate_message is None:
+            continue
+        payload = latest_candidate_message.raw_payload
+        if not isinstance(payload, dict) or payload.get("intent") != str(MessageIntent.REQUEST_RESUME):
+            continue
+        first_contact = not state.messages.filter(direction=ConversationMessage.Direction.HR).exists()
+        approval = _queue_resume_request(
+            application=application,
+            account=locked_plan.job.boss_account,
+            actor=actor,
+            message=(
+                locked_plan.current_revision.config_snapshot.get("reply_message")
+                or "您好，这边是招聘岗位，方便发送一份简历进一步沟通吗？"
+            ),
+            first_contact=first_contact,
+            source_message=latest_candidate_message,
+            automation_plan_revision=locked_plan.current_revision,
+            automation_generation=locked_plan.control_generation,
+        )
+        recovered += int(
+            approval is not None
+            and approval.status == "draft"
+            and approval.automation_plan_revision_id == locked_plan.current_revision_id
+            and approval.automation_generation == locked_plan.control_generation
+        )
+    return recovered

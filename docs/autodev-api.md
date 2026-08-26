@@ -191,7 +191,7 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/api/recruitment/automation-approvals/` | 确认记录 |
+| GET | `/api/recruitment/automation-approvals/` | 确认记录；支持 `status`、`action`、`job`、`automation_plan_revision`、`automation_generation` 精确过滤 |
 | POST | `/api/recruitment/automation-approvals/<id>/approve/` | 检查过期、归属和额度后批准 |
 | GET | `/api/recruitment/communication-actions/` | 沟通动作记录 |
 | POST | `/api/recruitment/communication-actions/prepare/` | 生成打招呼/索简历/面试确认快照 |
@@ -253,6 +253,8 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - 请求包含账号、应聘 ID 列表、动作、消息快照；面试动作使用结构化邀请字段。
 - 服务端重新检查账号授权和候选人归属，创建 draft approval，不直接发送。
 - 批准后按候选人生成独立步骤；部分失败不得重复成功项。
+
+周期被动同步产生的 `request_resume` 审批必须绑定当前 `automation_plan_revision` 与 `automation_generation`。招聘作业台只能显示当前岗位、当前修订和当前代际的 `draft` 审批；旧代审批即使仍可查询也不得批准。每次有效同步应幂等恢复已处理但未形成有效求简历动作的候选人来信，已有简历以及 `approved/pending/running/waiting_human/succeeded` 动作不得重新排队。
 
 ### GET `/api/recruitment/screening-results/?job=<id>`
 

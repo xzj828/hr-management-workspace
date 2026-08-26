@@ -27,6 +27,11 @@ from recruitment.models import (
     WorkflowRun,
     WorkflowTemplate,
 )
+from recruitment.services.conversation_ingestion import (
+    ingest_conversation,
+    process_pending_messages,
+    recover_unfulfilled_resume_requests,
+)
 
 
 class AutomationPlanApiTests(APITestCase):
@@ -120,6 +125,82 @@ class AutomationPlanApiTests(APITestCase):
             },
         )
         self.assertEqual(response.data["effective_state"], "waiting_human")
+
+    def test_passive_plan_recovers_processed_reply_after_old_generation_approval_was_rejected(self):
+        response = self._start(kind="passive_resume")
+        self.assertEqual(response.status_code, 201, response.data)
+        plan = RecruitmentAutomationPlan.objects.select_related("current_revision").get(job=self.job)
+        candidate = Candidate.objects.create(
+            identity_key="recovered-passive-candidate",
+            external_id="boss-conversation-42",
+            name="陈翔",
+        )
+        application = JobApplication.objects.create(candidate=candidate, job=self.job, source="boss")
+        ingest_conversation(
+            application=application,
+            account=self.account,
+            messages=[{"external_id": "m-42", "direction": "candidate", "content": "您好，岗位还在招聘吗？"}],
+        )
+        process_pending_messages(application=application, account=self.account)
+
+        self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 1)
+        old_approval = AutomationApproval.objects.get(
+            automation_plan_revision=plan.current_revision,
+            automation_generation=plan.control_generation,
+            action=AutomationApproval.Action.REQUEST_RESUME,
+        )
+        old_approval.status = AutomationApproval.Status.REJECTED
+        old_approval.save(update_fields=["status"])
+
+        plan.control_generation += 1
+        plan.save(update_fields=["control_generation", "updated_at"])
+        self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 1)
+        current = AutomationApproval.objects.get(
+            automation_plan_revision=plan.current_revision,
+            automation_generation=plan.control_generation,
+            action=AutomationApproval.Action.REQUEST_RESUME,
+        )
+        self.assertEqual(current.status, AutomationApproval.Status.DRAFT)
+        self.assertEqual(current.payload["message"], "您好，方便发送一份简历吗？")
+        self.assertTrue(current.payload["items"][0]["first_contact"])
+        self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 0)
+
+        current.status = AutomationApproval.Status.APPROVED
+        current.save(update_fields=["status"])
+        current.conversation_actions.update(status=ConversationAction.Status.SUCCEEDED)
+        plan.control_generation += 1
+        plan.save(update_fields=["control_generation", "updated_at"])
+        self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 0)
+        self.assertFalse(AutomationApproval.objects.filter(automation_generation=plan.control_generation).exists())
+
+    def test_approval_list_filters_to_current_passive_job_revision_and_generation(self):
+        response = self._start(kind="passive_resume")
+        self.assertEqual(response.status_code, 201, response.data)
+        plan = RecruitmentAutomationPlan.objects.get(job=self.job)
+        approval = AutomationApproval.objects.create(
+            idempotency_key="filtered-passive-approval",
+            action=AutomationApproval.Action.REQUEST_RESUME,
+            boss_account=self.account,
+            created_by=self.user,
+            automation_plan_revision=plan.current_revision,
+            automation_generation=plan.control_generation,
+            payload={"message": "请发送简历", "items": []},
+            item_count=1,
+            expires_at=timezone.now() + timedelta(minutes=30),
+        )
+        query = (
+            "/api/recruitment/automation-approvals/?status=draft&action=request_resume"
+            f"&job={self.job.pk}&automation_plan_revision={plan.current_revision_id}"
+            f"&automation_generation={plan.control_generation}"
+        )
+
+        listed = self.client.get(query)
+
+        self.assertEqual(listed.status_code, 200, listed.data)
+        self.assertEqual([item["id"] for item in listed.data["results"]], [str(approval.pk)])
+        self.assertEqual(listed.data["results"][0]["automation_plan_revision"], plan.current_revision_id)
+        self.assertEqual(listed.data["results"][0]["automation_generation"], plan.control_generation)
+        self.assertEqual(self.client.get(query.replace(f"job={self.job.pk}", "job=999999")).data["count"], 0)
 
     def test_running_or_waiting_plan_cannot_be_hot_replaced(self):
         first = self._start()

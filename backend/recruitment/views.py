@@ -848,9 +848,30 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        if self.request.user.is_superuser:
-            return queryset
-        return queryset.filter(boss_account__authorized_users=self.request.user)
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(boss_account__authorized_users=self.request.user)
+        params = self.request.query_params
+        status_value = str(params.get("status", "")).strip()
+        action_value = str(params.get("action", "")).strip()
+        if status_value and status_value not in AutomationApproval.Status.values:
+            return queryset.none()
+        if action_value and action_value not in AutomationApproval.Action.values:
+            return queryset.none()
+        if status_value in AutomationApproval.Status.values:
+            queryset = queryset.filter(status=status_value)
+        if action_value in AutomationApproval.Action.values:
+            queryset = queryset.filter(action=action_value)
+        for parameter in ("job", "automation_plan_revision", "automation_generation"):
+            value = str(params.get(parameter, "")).strip()
+            if value and not value.isdigit():
+                return queryset.none()
+            if not value:
+                continue
+            if parameter == "job":
+                queryset = queryset.filter(automation_plan_revision__plan__job_id=int(value))
+            else:
+                queryset = queryset.filter(**{parameter: int(value)})
+        return queryset.distinct()
 
     @action(detail=True, methods=["post"])
     @serialize_sqlite_lifecycle
