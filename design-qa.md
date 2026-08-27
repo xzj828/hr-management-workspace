@@ -66,6 +66,48 @@ final result: passed
 
 ---
 
+# 主动寻访条件浮层 Design QA（2026-08-27）
+
+## Scope
+
+- Source visual truth: `C:/Users/ADMINI~1/AppData/Local/Temp/codex-clipboard-2fbe6a50-36f8-4e34-9584-bad112fcbea0.png`
+- Implementation screenshot: `polish/design-qa-candidate-filter/top-layer-597x309.png`
+- Combined comparison input: `polish/design-qa-candidate-filter/comparison-1194x309.png`
+- Source pixels: 597 × 309; implementation focused crop: 597 × 309; browser CSS viewport: 1280 × 720 at devicePixelRatio 1.
+- State: “主动寻访条件”已展开，父卡片保持 `overflow: hidden`，浮层跨越卡片底边。
+
+## Full-view and Focused Comparison
+
+- The combined comparison places the original clipped state on the left and the revised open state on the right at equal pixel dimensions.
+- Focused evidence is sufficient because this change is isolated to one dropdown layer: the revised form begins at the trigger edge, remains fully opaque above the white card and teal stage, and is no longer clipped at the card bottom.
+- Runtime geometry: card bottom 242px; floating form top 170px and bottom 600px; `crossesCardBottom: true`; computed `position: fixed`; computed `z-index: 300`.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: unchanged from the source component; Chinese family, weights, sizes, line heights and wrapping are preserved.
+- Spacing and layout rhythm: trigger width and row spacing remain unchanged; only the expanded form leaves normal flow and gains a 6px anchor gap plus viewport edge protection.
+- Colors and visual tokens: the white/gold form, borders, selected pills and teal stage remain unchanged.
+- Image and asset fidelity: no new raster, SVG, icon or decorative asset is introduced.
+- Copy and content: all filter labels, options, helper copy and actions are unchanged.
+
+## Comparison History
+
+1. P1: the source state clipped the expanded filter form at the fixed-height workbench card, exposing the teal stage over the form and hiding remaining controls.
+   - Fix: teleported the form to `body`, positioned it against the trigger with a top-layer fixed overlay, and bounded its height to the available viewport space.
+   - Post-fix evidence: `polish/design-qa-candidate-filter/comparison-1194x309.png`; the form renders above the card and teal stage.
+2. P2: a fixed overlay can drift or become inaccessible during scroll, resize or short viewports.
+   - Fix: recalculate anchor geometry on scroll/resize, choose the side with more useful space, keep internal scrolling, close on outside pointer or Escape, and restore trigger focus.
+   - Post-fix evidence: browser geometry checks plus 3/3 focused component tests.
+
+## Findings
+
+- No actionable P0, P1 or P2 layer, clipping, keyboard, focus or viewport findings remain.
+- Final browser-rendered state has no new console error; the earlier temporary QA harness compiler warning was removed before the final capture.
+
+final result: passed
+
+---
+
 # 招聘看板像素还原与响应式 Design QA
 
 ## Evidence

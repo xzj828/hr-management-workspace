@@ -1,19 +1,36 @@
 import { mount } from '@vue/test-utils'
-import { ref } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { nextTick, ref } from 'vue'
+import { afterEach, describe, expect, it } from 'vitest'
 import CandidateFilterPanel from './CandidateFilterPanel.vue'
 import { defaultCandidateFilters } from '@/recruitmentCandidateFilters'
 
+const wrappers = []
+
 function mountPanel() {
-  return mount({
+  const wrapper = mount({
     components: { CandidateFilterPanel },
     setup() {
       const filters = ref(defaultCandidateFilters())
       return { filters }
     },
     template: '<CandidateFilterPanel v-model="filters" />',
-  })
+  }, { attachTo: document.body })
+  wrappers.push(wrapper)
+  return wrapper
 }
+
+function floatingForm() {
+  return document.body.querySelector('[data-test="candidate-filter-form"]')
+}
+
+async function clickFloating(selector) {
+  floatingForm().querySelector(selector).click()
+  await nextTick()
+}
+
+afterEach(() => {
+  wrappers.splice(0).forEach((wrapper) => wrapper.unmount())
+})
 
 describe('CandidateFilterPanel', () => {
   it('starts collapsed with unlimited filters and exposes every requested filter row', async () => {
@@ -23,33 +40,53 @@ describe('CandidateFilterPanel', () => {
     expect(wrapper.text()).toContain('不限条件')
     await wrapper.get('[data-test="candidate-filter-trigger"]').trigger('click')
 
-    expect(wrapper.get('[data-test="candidate-filter-form"]').text()).toContain('年龄')
-    expect(wrapper.text()).toContain('活跃度')
-    expect(wrapper.text()).toContain('近期没有看过')
-    expect(wrapper.text()).toContain('是否与同事交换简历')
-    expect(wrapper.text()).toContain('牛人关键词')
-    expect(wrapper.text()).toContain('院校')
-    expect(wrapper.text()).toContain('专业')
-    expect(wrapper.text()).toContain('跳槽频率')
-    expect(wrapper.text()).toContain('求职状态')
-    expect(wrapper.text()).toContain('学历要求')
+    const form = floatingForm()
+    expect(form.textContent).toContain('年龄')
+    expect(form.textContent).toContain('活跃度')
+    expect(form.textContent).toContain('近期没有看过')
+    expect(form.textContent).toContain('是否与同事交换简历')
+    expect(form.textContent).toContain('牛人关键词')
+    expect(form.textContent).toContain('院校')
+    expect(form.textContent).toContain('专业')
+    expect(form.textContent).toContain('跳槽频率')
+    expect(form.textContent).toContain('求职状态')
+    expect(form.textContent).toContain('学历要求')
+    expect(form.parentElement).toBe(document.body)
+    expect(getComputedStyle(form).position).toBe('fixed')
+    expect(Number(getComputedStyle(form).zIndex)).toBeGreaterThan(200)
   })
 
   it('selects single, multiple and age filters, then clears the white-gold form', async () => {
     const wrapper = mountPanel()
     await wrapper.get('[data-test="candidate-filter-trigger"]').trigger('click')
-    await wrapper.get('[data-test="filter-gender-female"]').trigger('click')
-    await wrapper.get('[data-test="filter-keyword-data_analysis"]').trigger('click')
-    await wrapper.get('[data-test="filter-keyword-new_media"]').trigger('click')
-    await wrapper.get('[data-test="filter-age-enable"]').trigger('click')
-    await wrapper.get('[data-test="filter-age-min"]').setValue('24')
+    await clickFloating('[data-test="filter-gender-female"]')
+    await clickFloating('[data-test="filter-keyword-data_analysis"]')
+    await clickFloating('[data-test="filter-keyword-new_media"]')
+    await clickFloating('[data-test="filter-age-enable"]')
 
-    expect(wrapper.get('[data-test="filter-gender-female"]').classes()).toContain('is-selected')
-    expect(wrapper.get('[data-test="filter-keyword-data_analysis"]').attributes('aria-pressed')).toBe('true')
+    const ageMin = floatingForm().querySelector('[data-test="filter-age-min"]')
+    ageMin.value = '24'
+    ageMin.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    expect(floatingForm().querySelector('[data-test="filter-gender-female"]').classList).toContain('is-selected')
+    expect(floatingForm().querySelector('[data-test="filter-keyword-data_analysis"]').getAttribute('aria-pressed')).toBe('true')
     expect(wrapper.get('[data-test="candidate-filter-trigger"]').text()).toContain('已选 3 项')
 
-    await wrapper.get('[data-test="candidate-filter-clear"]').trigger('click')
-    expect(wrapper.get('[data-test="filter-gender-any"]').classes()).toContain('is-selected')
+    await clickFloating('[data-test="candidate-filter-clear"]')
+    expect(floatingForm().querySelector('[data-test="filter-gender-any"]').classList).toContain('is-selected')
     expect(wrapper.get('[data-test="candidate-filter-trigger"]').text()).toContain('不限条件')
+  })
+
+  it('closes the top-layer panel with Escape and restores focus to the trigger', async () => {
+    const wrapper = mountPanel()
+    const trigger = wrapper.get('[data-test="candidate-filter-trigger"]')
+    await trigger.trigger('click')
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+
+    expect(floatingForm()).toBeNull()
+    expect(document.activeElement).toBe(trigger.element)
   })
 })

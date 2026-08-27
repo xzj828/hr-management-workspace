@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import {
   CANDIDATE_FILTER_GROUPS,
@@ -17,6 +17,9 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue'])
 
 const open = ref(false)
+const trigger = ref(null)
+const floatingForm = ref(null)
+const floatingStyle = ref({ position: 'fixed', zIndex: 300 })
 const filters = computed(() => normalizeCandidateFilters(props.modelValue))
 const selectedCount = computed(() => candidateFilterCount(filters.value))
 const summary = computed(() => candidateFilterSummary(filters.value))
@@ -58,18 +61,91 @@ function clearAge() {
 function clearAll() {
   emit('update:modelValue', defaultCandidateFilters())
 }
+
+function updateFloatingPosition() {
+  if (!open.value || !trigger.value) return
+
+  const edge = 12
+  const gap = 6
+  const maxPanelHeight = 430
+  const minUsefulHeight = 180
+  const rect = trigger.value.getBoundingClientRect()
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const availableWidth = Math.max(0, viewportWidth - edge * 2)
+  const width = Math.min(rect.width || 320, availableWidth)
+  const left = Math.min(Math.max(edge, rect.left), Math.max(edge, viewportWidth - edge - width))
+  const spaceBelow = Math.max(0, viewportHeight - rect.bottom - gap - edge)
+  const spaceAbove = Math.max(0, rect.top - gap - edge)
+  const openAbove = spaceBelow < minUsefulHeight && spaceAbove > spaceBelow
+  const availableHeight = openAbove ? spaceAbove : spaceBelow
+
+  floatingStyle.value = {
+    position: 'fixed',
+    zIndex: 300,
+    left: `${left}px`,
+    width: `${width}px`,
+    maxHeight: `${Math.max(120, Math.min(maxPanelHeight, availableHeight))}px`,
+    top: openAbove ? 'auto' : `${rect.bottom + gap}px`,
+    bottom: openAbove ? `${viewportHeight - rect.top + gap}px` : 'auto',
+  }
+}
+
+function closePanel() {
+  open.value = false
+}
+
+function togglePanel() {
+  open.value = !open.value
+}
+
+function handlePointerDown(event) {
+  if (trigger.value?.contains(event.target) || floatingForm.value?.contains(event.target)) return
+  closePanel()
+}
+
+function handleKeydown(event) {
+  if (event.key !== 'Escape') return
+  closePanel()
+  trigger.value?.focus()
+}
+
+function bindFloatingListeners() {
+  window.addEventListener('resize', updateFloatingPosition)
+  window.addEventListener('scroll', updateFloatingPosition, true)
+  document.addEventListener('pointerdown', handlePointerDown, true)
+  document.addEventListener('keydown', handleKeydown)
+}
+
+function unbindFloatingListeners() {
+  window.removeEventListener('resize', updateFloatingPosition)
+  window.removeEventListener('scroll', updateFloatingPosition, true)
+  document.removeEventListener('pointerdown', handlePointerDown, true)
+  document.removeEventListener('keydown', handleKeydown)
+}
+
+watch(open, async (value) => {
+  unbindFloatingListeners()
+  if (!value) return
+  await nextTick()
+  updateFloatingPosition()
+  bindFloatingListeners()
+})
+
+onBeforeUnmount(unbindFloatingListeners)
 </script>
 
 <template>
   <section class="candidate-filter" data-test="candidate-filter">
     <button
+      ref="trigger"
       class="candidate-filter__trigger"
       data-test="candidate-filter-trigger"
       type="button"
       :aria-expanded="open"
       aria-controls="candidate-filter-form"
       :disabled="disabled"
-      @click="open = !open"
+      @click="togglePanel"
     >
       <span>
         <strong>主动寻访条件</strong>
@@ -79,7 +155,17 @@ function clearAll() {
       <AppIcon name="chevron-down" :size="15" :class="{ 'is-open': open }" />
     </button>
 
-    <div v-if="open" id="candidate-filter-form" class="candidate-filter__form" data-test="candidate-filter-form">
+    <Teleport to="body">
+      <div
+        v-if="open"
+        id="candidate-filter-form"
+        ref="floatingForm"
+        class="candidate-filter__form"
+        data-test="candidate-filter-form"
+        role="dialog"
+        aria-label="主动寻访条件"
+        :style="floatingStyle"
+      >
       <div class="candidate-filter__row candidate-filter__age">
         <span class="candidate-filter__label">年龄</span>
         <div class="candidate-filter__options">
@@ -161,17 +247,19 @@ function clearAll() {
       <footer class="candidate-filter__actions">
         <small>筛选条件会随本次主动寻访方案一并保存。</small>
         <button class="candidate-filter__clear" data-test="candidate-filter-clear" type="button" @click="clearAll">清除</button>
-        <button class="candidate-filter__confirm" data-test="candidate-filter-confirm" type="button" @click="open = false">确定</button>
+        <button class="candidate-filter__confirm" data-test="candidate-filter-confirm" type="button" @click="closePanel">确定</button>
       </footer>
-    </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
 <style scoped>
 .candidate-filter {
+  position: relative;
   grid-column: 1 / -1;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid #eadfce;
   border-radius: 12px;
   color: #3f3428;
@@ -237,10 +325,15 @@ function clearAll() {
 }
 
 .candidate-filter__form {
+  position: fixed;
+  z-index: 300;
   max-height: 430px;
   overflow-y: auto;
-  border-top: 1px solid #eadfce;
+  overscroll-behavior: contain;
+  border: 1px solid #eadfce;
+  border-radius: 12px;
   background: #fff;
+  box-shadow: 0 20px 48px rgba(63, 52, 40, .2);
 }
 
 .candidate-filter__row {

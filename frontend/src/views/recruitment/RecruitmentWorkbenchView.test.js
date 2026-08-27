@@ -101,7 +101,12 @@ async function mountView(query = {}) {
   })
   await router.push({ name: 'recruitment-workbench', query })
   await router.isReady()
-  const wrapper = mount(RecruitmentWorkbenchView, { global: { plugins: [router] } })
+  const wrapper = mount(RecruitmentWorkbenchView, {
+    global: {
+      plugins: [router],
+      stubs: { Teleport: true },
+    },
+  })
   await flushPromises()
   return { wrapper, router }
 }
