@@ -90,6 +90,7 @@ async function mountView(query = {}) {
     history: createMemoryHistory(),
     routes: [
       { path: '/recruitment/results', name: 'recruitment-results', component: { template: '<div />' } },
+      { path: '/recruitment/tasks/:planId', name: 'recruitment-task-detail', component: { template: '<div />' } },
       { path: '/recruitment/workbench', name: 'recruitment-workbench', component: { template: '<div />' } },
       { path: '/recruitment/candidates', name: 'recruitment-candidates', component: { template: '<div />' } },
       { path: '/recruitment/resumes', name: 'recruitment-resumes', component: { template: '<div />' } },
@@ -270,6 +271,34 @@ describe('RecruitmentResultsView', () => {
     expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-runs/run-archive/')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('历史运行')
     expect(wrapper.get('[aria-label="流程运行状态"]').text()).toContain('历史运行')
+  })
+
+  it('links plan-managed runs to task details and separates deleted tasks', async () => {
+    const currentRun = run({ id: 'run-current', template_name: '当前任务', automation_plan: 301 })
+    const archivedRun = run({
+      id: 'run-removed',
+      template_name: '已删除任务',
+      automation_plan: 302,
+      automation_plan_archived_at: '2026-08-27T02:00:00+08:00',
+    })
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/workflow-runs/') return Promise.resolve({ results: [currentRun, archivedRun] })
+      if (path === 'recruitment/search-campaigns/' || path === 'recruitment/human-attentions/') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/screening-results/?job=1') return Promise.resolve(screeningPayload([]))
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'tasks' })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('当前任务')
+    expect(wrapper.get('[data-test="tasks-view"]').text()).not.toContain('已删除任务')
+    const taskLink = wrapper.findAllComponents(RouterLinkStub).find((link) => link.text().includes('查看任务'))
+    expect(taskLink.props('to')).toMatchObject({ name: 'recruitment-task-detail', params: { planId: 301 } })
+
+    await wrapper.get('[data-test="status-filter"]').setValue('archived')
+    await flushPromises()
+    expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('已删除任务')
+    expect(wrapper.get('[data-test="tasks-view"]').text()).not.toContain('当前任务')
   })
 
   it('recovers the job from a run-only legacy URL', async () => {

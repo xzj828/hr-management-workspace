@@ -118,6 +118,12 @@ class CommunicationWorkerTests(SimpleTestCase):
 
         def stable_action(account, external_id, *, message="", first_contact=False, job_title=""):
             runner.calls.append(("request_resume_stable", external_id, message, first_contact, job_title))
+            return {
+                "verified": True,
+                "greeting_verified": first_contact,
+                "resume_requested": True,
+                "observed_external_id": external_id,
+            }
 
         runner.request_resume_by_external_id = stable_action
 

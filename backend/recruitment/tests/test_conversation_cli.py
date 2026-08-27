@@ -46,25 +46,33 @@ class ConversationCliTests(SimpleTestCase):
             ["send", "--text", "您好，方便发送一份简历吗？", "--request-resume"],
         )
 
-    @patch("recruitment.rpa.playwright_adapter.BrowserInventory")
+    @patch.object(BossCliRunner, "_run_chat_bridge")
     @patch("recruitment.rpa.cli.subprocess.run")
-    def test_stable_first_contact_refreshes_opens_and_rechecks_platform_id(self, run, inventory):
+    def test_stable_first_contact_refreshes_opens_and_rechecks_platform_id(self, run, bridge):
         run.return_value = SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")
-        inventory.return_value.conversation_rows.return_value = [{
+        snapshot = {
             "index": 3,
             "external_id": "conversation-101",
             "name": "林然",
             "job_title": "测试工程师",
             "preview": "你好",
             "unread_count": 1,
-            "selected": False,
-        }]
-        inventory.return_value.selected_conversation.return_value = {
+            "selected": True,
+            "messages": [{"direction": "candidate", "content": "你好"}],
+        }
+        selected = {
             "external_id": "conversation-101",
             "name": "林然",
             "job_title": "测试工程师",
             "selected": True,
         }
+        bridge.side_effect = [
+            {"ok": True, "conversation": snapshot},
+            {"ok": True, "conversation": selected},
+            {"ok": True, "receipt": {**selected, "sent": True, "verified": True}},
+            {"ok": True, "conversation": selected},
+            {"ok": True, "conversation": selected},
+        ]
 
         self.runner.request_resume_by_external_id(
             self.account,
@@ -75,17 +83,77 @@ class ConversationCliTests(SimpleTestCase):
         )
 
         commands = [call.args[0][1:] for call in run.call_args_list]
-        self.assertEqual(commands[0], ["list"])
-        self.assertEqual(commands[1], ["chat", "林然", "--index", "3", "--strict"])
         self.assertEqual(
-            commands[2],
-            ["send", "--text", "您好，方便发送一份简历吗？", "--request-resume"],
+            commands,
+            [
+                ["send", "--text", "您好，方便发送一份简历吗？"],
+                ["action", "request-attachment-resume"],
+            ],
         )
-        self.assertGreaterEqual(inventory.return_value.selected_conversation.call_count, 2)
-        inventory.return_value.conversation_rows.assert_called_once_with(
+        operations = [call.args[1] for call in bridge.call_args_list]
+        self.assertEqual(operations, ["open", "selected", "wait_outgoing", "selected", "selected"])
+        wait_payload = bridge.call_args_list[2].args[2]
+        self.assertEqual(wait_payload["external_id"], "conversation-101")
+        self.assertEqual(wait_payload["message"], "您好，方便发送一份简历吗？")
+        self.assertEqual(wait_payload["previous_count"], 0)
+
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_stable_first_contact_never_requests_resume_without_message_receipt(self, run, bridge):
+        run.return_value = SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")
+        snapshot = {
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+            "messages": [],
+        }
+        selected = {
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+        }
+        bridge.side_effect = [
+            {"ok": True, "conversation": snapshot},
+            {"ok": True, "conversation": selected},
+            BossCliError("发送后未确认聊天区出现新的己方消息"),
+        ]
+
+        with self.assertRaises(BossCliError):
+            self.runner.request_resume_by_external_id(
+                self.account,
+                "conversation-101",
+                message="您好，方便发送一份简历吗？",
+                first_contact=True,
+                job_title="测试工程师",
+            )
+
+        commands = [call.args[0][1:] for call in run.call_args_list]
+        self.assertEqual(commands, [["send", "--text", "您好，方便发送一份简历吗？"]])
+
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    def test_job_scoped_conversations_do_not_run_cli_list_first(self, bridge):
+        bridge.return_value = {"ok": True, "rows": [{
+            "index": 1,
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+            "preview": "你好",
+            "unread_count": 1,
+            "selected": False,
+        }]}
+
+        output = self.runner.conversations(
+            self.account,
+            unread=True,
             job_title="测试工程师",
-            unread=False,
         )
+
+        bridge.assert_called_once_with(
+            self.account,
+            "list",
+            {"job_title": "测试工程师", "unread": True},
+        )
+        self.assertIn("external_id:conversation-101", output)
 
     @patch("recruitment.rpa.cli.subprocess.run")
     def test_send_text_rejects_line_breaks_before_subprocess(self, run):

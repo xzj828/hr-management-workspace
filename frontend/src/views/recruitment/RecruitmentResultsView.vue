@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
@@ -9,6 +9,11 @@ import WorkflowRunPanel from '@/components/WorkflowRunPanel.vue'
 import { stageColumns } from '@/recruitment'
 import { createRequestId } from '@/recruitmentJobs'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
+
+const props = defineProps({
+  embedded: { type: Boolean, default: false },
+  autoRefreshMs: { type: Number, default: 0 },
+})
 
 const context = useRecruitmentContextStore()
 const route = useRoute()
@@ -112,6 +117,7 @@ const statusOptions = [
   { value: 'in_progress', label: '执行中' },
   { value: 'succeeded', label: '已完成' },
   { value: 'failed', label: '失败 / 已取消' },
+  { value: 'archived', label: '已删除任务' },
 ]
 const visibleStatusOptions = computed(() => statusOptions.some((option) => option.value === statusFilter.value)
   ? statusOptions
@@ -126,6 +132,8 @@ const statusLabels = {
 const currentJobId = computed(() => currentJob.value ? String(currentJob.value.id) : '')
 const jobRuns = computed(() => resources.runs.items.filter((item) => {
   if (String(item.job || '') !== currentJobId.value) return false
+  const wantsArchived = statusFilter.value === 'archived'
+  if (Boolean(item.automation_plan_archived_at) !== wantsArchived) return false
   const account = String(route.query.account || '')
   return !account || String(item.boss_account || item.account || '') === account
 }))
@@ -145,6 +153,7 @@ const jobAttentions = computed(() => resources.attentions.items.filter((item) =>
 
 function matchesStatus(status, group) {
   if (group === 'all') return true
+  if (group === 'archived') return true
   if (group === 'needs_action') return ['waiting_human', 'paused'].includes(status)
   if (group === 'in_progress') return ['queued', 'running'].includes(status)
   if (group === 'succeeded') return status === 'succeeded'
@@ -887,11 +896,25 @@ watch(
   },
   { immediate: true },
 )
+
+let resultsPollTimer = null
+onMounted(() => {
+  if (props.autoRefreshMs > 0) {
+    resultsPollTimer = globalThis.setInterval(() => {
+      if (!isRefreshing.value) loadResults()
+    }, props.autoRefreshMs)
+  }
+})
+
+onUnmounted(() => {
+  if (resultsPollTimer) globalThis.clearInterval(resultsPollTimer)
+  resultsPollTimer = null
+})
 </script>
 
 <template>
-  <div class="page-stack results-center">
-    <header class="page-hero page-hero--compact results-hero">
+  <div :class="['page-stack', 'results-center', { 'is-embedded': embedded }]">
+    <header v-if="!embedded" class="page-hero page-hero--compact results-hero">
       <div>
         <h2>结果中心</h2>
         <p v-if="currentJob">{{ currentJob.title }} · 自动化结果、人工事项和候选人进度集中处理</p>
@@ -911,7 +934,7 @@ watch(
 
     <template v-else>
       <div class="results-overview">
-        <section class="results-context" aria-label="当前结果范围">
+        <section v-if="!embedded" class="results-context" aria-label="当前结果范围">
           <label class="results-context__job"><span>当前岗位</span><select :value="currentJobId" data-test="job-filter" @change="chooseJob"><option v-for="job in context.jobs" :key="job.id" :value="String(job.id)">{{ job.title }} · {{ job.account_name || '未绑定账号' }}</option></select><small>招聘目标 {{ currentJob.headcount || '未设置' }} 人</small></label>
           <label><span>任务运行</span><select v-model="selectedRunId" data-test="run-filter"><option value="">该岗位全部运行</option><option v-for="run in jobRuns" :key="run.id" :value="String(run.id)">{{ run.template_name || '自动化任务' }} · {{ statusLabel(run.status) }} · {{ formatDateTime(run.created_at) }}</option></select></label>
           <label><span>结果状态</span><select v-model="statusFilter" data-test="status-filter"><option v-for="option in visibleStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
@@ -1004,7 +1027,7 @@ watch(
                 <span>{{ run.target_candidate_count ?? run.target_count ?? '—' }}</span>
                 <div class="results-table-progress"><div class="results-progress"><i :style="{ width: `${runProgress(run)}%` }"></i></div><small>{{ runProgress(run) }}%</small></div>
                 <time>{{ formatDateTime(run.started_at || run.created_at || run.updated_at) }}</time>
-                <span class="run-list__actions"><button type="button" :aria-expanded="expandedRunId === String(run.id)" @click="toggleRunDetail(run.id)">查看运行详情</button><button type="button" :data-test="`manage-run-${run.id}`" @click="openRunPanel(run)">处理运行</button></span>
+                <span class="run-list__actions"><RouterLink v-if="run.automation_plan" :to="{ name: 'recruitment-task-detail', params: { planId: run.automation_plan }, query: { job: currentJobId, run: run.id, view: 'tasks', status: run.automation_plan_archived_at ? 'archived' : undefined } }">查看任务</RouterLink><button type="button" :aria-expanded="expandedRunId === String(run.id)" @click="toggleRunDetail(run.id)">查看运行详情</button><button type="button" :data-test="`manage-run-${run.id}`" @click="openRunPanel(run)">处理运行</button></span>
                 <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
                 <section v-if="expandedRunId === String(run.id)" class="run-detail" :aria-label="`${run.template_name || '自动化任务'}运行详情`">
                   <div>

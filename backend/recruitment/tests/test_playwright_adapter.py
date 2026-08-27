@@ -137,6 +137,77 @@ class PlaywrightAdapterTests(SimpleTestCase):
             BrowserInventory(53470).conversation_rows()
 
     @patch("recruitment.rpa.playwright_adapter.sync_playwright")
+    def test_open_conversation_scopes_before_clicking_stable_id(self, sync_playwright):
+        page = MagicMock()
+        browser = MagicMock(contexts=[MagicMock(pages=[page])])
+        playwright = sync_playwright.return_value.__enter__.return_value
+        playwright.chromium.connect_over_cdp.return_value = browser
+        inventory = BrowserInventory(53470)
+        events = []
+        target = {
+            "index": 2,
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+            "unread_count": 1,
+            "selected": False,
+        }
+        row_locator = MagicMock()
+        row_locator.nth.return_value.click.side_effect = lambda: events.append("click")
+        page.locator.return_value = row_locator
+
+        with patch.object(inventory, "_conversation_page", return_value=page), patch.object(
+            inventory,
+            "_select_conversation_scope",
+            side_effect=lambda *args, **kwargs: events.append("scope"),
+        ) as select_scope, patch.object(
+            inventory,
+            "_conversation_rows",
+            side_effect=lambda *args, **kwargs: events.append("rows") or [target],
+        ), patch.object(
+            inventory,
+            "_current_conversation_messages",
+            side_effect=lambda *args, **kwargs: events.append("messages") or [],
+        ):
+            opened = inventory.open_conversation(
+                "conversation-101",
+                job_title="测试工程师",
+                unread=True,
+            )
+
+        self.assertEqual(events, ["scope", "rows", "click", "messages"])
+        select_scope.assert_called_once_with(
+            page,
+            job_title="测试工程师",
+            unread=True,
+        )
+        row_locator.nth.assert_called_once_with(1)
+        self.assertTrue(opened["selected"])
+        self.assertEqual(opened["external_id"], "conversation-101")
+
+    @patch("recruitment.rpa.playwright_adapter.sync_playwright")
+    def test_wait_for_outgoing_message_requires_new_exact_message_on_selected_chat(self, sync_playwright):
+        page = MagicMock()
+        browser = MagicMock(contexts=[MagicMock(pages=[page])])
+        playwright = sync_playwright.return_value.__enter__.return_value
+        playwright.chromium.connect_over_cdp.return_value = browser
+        inventory = BrowserInventory(53470)
+
+        with patch.object(inventory, "_conversation_page", return_value=page):
+            inventory.wait_for_outgoing_message(
+                "conversation-101",
+                "您好，方便发送一份简历吗？",
+                previous_count=1,
+                job_title="测试工程师",
+            )
+
+        arguments = page.wait_for_function.call_args.kwargs["arg"]
+        self.assertEqual(arguments["externalId"], "conversation-101")
+        self.assertEqual(arguments["jobTitle"], "测试工程师")
+        self.assertEqual(arguments["message"], "您好，方便发送一份简历吗？")
+        self.assertEqual(arguments["previousCount"], 1)
+
+    @patch("recruitment.rpa.playwright_adapter.sync_playwright")
     def test_pdf_export_requires_expected_candidate_on_boss_page(self, sync_playwright):
         page = MagicMock()
         page.url = "https://www.zhipin.com/web/geek/resume"

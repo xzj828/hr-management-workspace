@@ -1043,6 +1043,7 @@ class RecruitmentAutomationPlan(models.Model):
         blank=True,
         related_name="updated_recruitment_automation_plans",
     )
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

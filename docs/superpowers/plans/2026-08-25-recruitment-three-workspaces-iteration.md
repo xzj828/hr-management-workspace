@@ -77,3 +77,70 @@
 - 静态与测试：Django `check`、`migrate --check`、`makemigrations --check --dry-run` 通过；`accounts + attendance + recruitment.tests` 共 322 项通过；前端 37 个文件、150 项 Vitest 通过；Vite 生产构建通过。
 - 运行时：本地实际打开招聘作业台、结果中心和管理后台；作业台显示完整同页配置与业务可读阻塞，结果中心从服务端恢复，管理后台显示隔离浏览器恢复说明；旧候选人 URL 保留 `job/candidate/filter` 并重定向结果中心。
 - API：以授权用户调用 jobs、workflow-runs、search-campaigns、human-attentions、rpa-tasks 均返回 200 和真实服务端数据结构。
+
+## W16 独立招聘任务详情增量（2026-08-27）
+
+执行策略：`single`。本增量由当前对话中的单一实现者串行完成，不启动子 Agent，也不引入新依赖。
+
+### Task 1：补齐业务任务的可恢复生命周期
+
+- 目标文件：`backend/recruitment/models.py`、新 migration、`serializers.py`、`views.py`、`services/lifecycle.py`、后端测试。
+- 输入：岗位唯一 `RecruitmentAutomationPlan`、现有停止围栏与通用归档服务。
+- 输出：Plan `archived_at`、默认/归档查询、归档/恢复动作、启动时恢复、Workflow Run 的 Plan 深链字段。
+- 依赖：无。
+- 风险：不能把活动任务伪装为已删除；归档不能删除 Revision、Run、RPA Task、证据或候选结果。
+- 回滚：迁移仅增加可空字段；前端可退回结果中心深链，不影响既有 Plan 状态机。
+- acceptance_criteria:
+  - 活动、等待人工、暂停或停止中的 Plan 归档返回 409，终态 Plan 可归档和恢复。
+  - 默认 Plan 列表不返回归档记录，`archived=1` 只返回归档记录。
+  - 重新启动已归档 Plan 时清除 `archived_at`，保留历史 Revision 与 Run。
+  - 未授权用户不能读取、控制、归档或恢复其他账号的 Plan。
+- status: completed
+
+### Task 2：新增结果中心视觉体系下的任务详情页
+
+- 目标文件：`frontend/src/views/recruitment/RecruitmentTaskDetailView.vue`、相邻测试、`router.js`、`RecruitmentResultsView.vue`。
+- 输入：Plan 详情、当前 Run、结果中心现有四视图和视觉 token。
+- 输出：隐藏详情路由、任务状态与操作头部、嵌入式结果中心、局部轮询、Loading/Empty/Normal/Error 四态。
+- 依赖：Task 1。
+- 风险：结果中心组件在新路由下必须继续按 `job/run` 丢弃过期响应，不能加载旧岗位数据。
+- acceptance_criteria:
+  - `/recruitment/tasks/:planId` 刷新后可从服务端恢复岗位、运行和方案状态。
+  - 页面颜色、排版、圆角、间距、表格、状态徽标与 `RecruitmentResultsView.vue` 使用同一组视觉值。
+  - 运行中可停止或停止并修改；终态可修改、重新开启或删除；归档态可恢复。
+  - 停止中显示安全收尾，不提前显示已停止；局部轮询失败保留最后成功内容。
+- status: completed
+
+### Task 3：改造作业台和结果中心入口
+
+- 目标文件：`RecruitmentWorkbenchView.vue`、`RecruitmentResultsView.vue` 及相邻测试。
+- 输入：原子 Plan 启动返回、任务详情路由、Workflow Run 的 Plan 字段。
+- 输出：成功后清草稿并跳转；`new=1` 空白作业台；`editPlan` 修改回流；结果中心任务行详情入口和已删除筛选。
+- 依赖：Task 1、Task 2。
+- 风险：启动失败、409 或路由失败不能清空用户输入；同一岗位仍只允许一个活动 Plan。
+- acceptance_criteria:
+  - 原子启动成功后使用任务详情路由替换作业台历史记录，并只在成功后清除对应会话草稿。
+  - “继续创建任务”进入空白 Step 1，不自动选择上次岗位或恢复已执行草稿。
+  - “修改任务”以不可变 Revision 回填作业台，重新执行生成新版本而非热改运行配置。
+  - 结果中心默认隐藏已归档 Plan 的运行，并可在“已删除任务”筛选中进入详情恢复。
+- status: completed
+
+### Task 4：回归验证与文档同步
+
+- 目标文件：前后端测试、`docs/autodev-*.md`、本计划。
+- 输入：Task 1–3 的实现。
+- 输出：迁移检查、Django 检查与定向测试、Vitest、Vite 生产构建、完成状态同步。
+- 依赖：Task 1–3。
+- acceptance_criteria:
+  - `python manage.py check`、`makemigrations --check --dry-run` 和相关 Django 测试通过。
+  - 招聘工作台、结果中心、任务详情的 Vitest 通过，前端生产构建通过。
+  - 设计文档记录任务详情、归档边界、路由和数据字段，且没有占位或降阶实现。
+- status: completed
+
+### W16 验收记录
+
+- 契约与红线：4 个 Task 的 acceptance criteria 已逐条满足；未发现占位、Mock 核心数据、技术降阶或新增依赖。
+- 后端：Django `check`、`makemigrations --check --dry-run` 通过；`recruitment.tests` 456 项通过，另补充并通过 Plan 跨账号读取/控制/归档/恢复的权限用例。
+- 前端：Vitest 42 个文件、255 项全部通过；Vite 生产构建通过。任务详情覆盖恢复、停止并修改、终态删除/恢复和错误四态；作业台覆盖启动跳转与 `new=1` 空白重置；结果中心覆盖任务深链与已删除筛选。
+- 运行时：本地生产构建、静态资源和登录页加载正常；招聘真实数据页因独立浏览器会话未登录标记为 `NOT_VERIFIED`，未代填或绕过凭据。API 与组件测试已覆盖同一数据和操作链。
+- review_result：按用户要求未启动独立 Reviewer Agent；当前对话完成单人差异审查、权限补测、全量回归与 `git diff --check`，结论 PASS。

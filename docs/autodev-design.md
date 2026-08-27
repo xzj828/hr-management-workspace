@@ -26,7 +26,7 @@
 | 数据 | SQLite 默认；环境变量启用 PostgreSQL |
 | 文件 | Django FileField，本地 media；python-docx、openpyxl、pypdf/pdfium、RapidOCR |
 | 服务 | Waitress 8 线程、WhiteNoise 静态资源 |
-| 自动化 | 本机 RPA Worker、Playwright、`@joohw/boss-cli` 0.6.6 验证版本 |
+| 自动化 | 本机 RPA Worker、`@joohw/boss-cli` 0.6.6 及其同版本 Puppeteer 会话桥接；Playwright 仅保留非会话兼容能力 |
 | 测试 | Django TestCase/APITestCase、Vitest、Vue Test Utils、jsdom |
 | 运行平台 | Windows PowerShell/CMD，一键初始化、启动、备份和改密 |
 
@@ -206,9 +206,21 @@
 
 ### 被动获取简历稳定身份闭环（2026-08-26）
 
-- 被动同步以 BOSS 会话行的 `.geek-item[data-id]` 作为账号内平台稳定身份。固定 CLI 负责进入列表和执行受控动作，项目 Playwright 适配层负责读取稳定 ID 与打开后的选中态复核；姓名、列表序号和组合指纹都不能单独授权外发。
+- 被动同步以 BOSS 会话行的 `.geek-item[data-id]` 作为账号内平台稳定身份。项目通过固定 CLI 自带的同版本 Puppeteer 桥接层完成职位/未读筛选、稳定 ID 打开、选中态复核和附件下载，固定 CLI 只执行已经复核的发送与原生求简历动作；Python Playwright 不得接入受管 BOSS 会话，否则会关闭当前 CDP 浏览器。姓名、列表序号和组合指纹都不能单独授权外发。
 - 首次标准被动 Run 读取冻结岗位 scope 的会话列表，只打开未读行与当前选中行，用于建立真实 `Candidate`、`CandidateExternalIdentity`、`JobApplication` 并恢复上次失败后仍选中的已读消息；持续订阅仍只轮询未读，禁止把全部历史会话重新激活。
 - 新会话只有在稳定 ID 存在且岗位在冻结 scope 内唯一匹配时才允许建档。服务端完成身份解析后把 application ID 写入当前回写上下文，消息和附件持久化不得再次按姓名猜测。
 - 首次求简历是一个受审批保护的复合外部动作：发送 HR 确认的话术后调用 BOSS 原生“求简历”；已有 HR 消息时只调用原生动作。每次执行前刷新稳定 ID，打开会话后再次核对选中行 `data-id`，任何歧义或结果不确定都转人工且不重试。
 - BOSS 沟通发现按“冻结职位 scope → 未读/全部状态 → 稳定 ID 行”的顺序收窄。账号共享的多个被动岗位逐岗位应用精确职位筛选并合并结果；筛选后的每行仍必须携带稳定 ID 和精确职位，发送前重新应用同一职位 scope 并复核选中行，不能用职位筛选制造姓名唯一性。
 - 停止岗位计划会在同一 fence 下取消尚未开始的审批、沟通批次和发送任务。工作台只有在确认接口返回真实沟通批次后才能提示已排队，并在运行态持续说明停止的取消后果。
+- 职位筛选、未读/全部筛选和 stable ID 点击属于同一个适配器原子定位动作；目标职位路径不得先调用会重置列表的 CLI `list`，也不得再用会重新筛选的 CLI `chat --index`。首次联系只有在聊天 DOM 验证到一条新的、与批准快照完全一致的己方消息后，才能继续执行原生“求简历”。
+- Puppeteer 桥接仅从已配置的 `@joohw/boss-cli` 包根加载其固定 `puppeteer-core`，以 JSON stdin 接收参数、最小环境和固定 argv 启动；结束时只 `disconnect()`，绝不 `browser.close()`。附件下载前再次复核 stable ID、展示名和职位，并把 PDF 限制在 `MEDIA_ROOT/rpa-incoming` 后交给服务端做路径、格式、哈希和归档验证。
+- 被动计划当前代际存在有效草稿沟通审批时，有效状态为 `waiting_human`；这只改变用户可见状态，不跳过人工确认，也不停止后台订阅。
+
+### 独立招聘任务详情（W16，2026-08-27）
+
+- 招聘作业台只负责准备和原子开启任务。启动成功后清除该岗位的会话草稿，并使用隐藏详情路由 `/recruitment/tasks/:planId` 替换作业台历史记录；启动失败或冲突时保留全部输入。
+- 任务详情以岗位唯一 `RecruitmentAutomationPlan` 为稳定业务身份，以 `current_revision/current_run` 展示当前方案和本轮结果。页面复用结果中心按 `job/run` 组合的读模型，不创建第二套候选、简历或人工事项数据。
+- `RecruitmentAutomationPlan.archived_at` 只控制业务任务在当前列表中的可见性。归档不得物理删除 Plan、Revision、Workflow Run、RPA Task、证据或候选业务结果；活动、暂停、等待人工与停止中的 Plan 不能归档。
+- 启动已归档 Plan 时在同一服务端事务中恢复可见性，再按现有不可变 Revision 与 control generation 规则开启。Workflow Run 读模型暴露所属 Plan 和归档状态，用于任务详情深链与结果中心当前/已删除过滤。
+- “修改任务”不热改运行配置：活动态先建立停止 fence，再把当前不可变 Revision 回填作业台；重新执行继续通过 `start_plan` 生成受乐观版本保护的新版本。
+- 多任务仍遵守“每岗位一个 Plan”。不同岗位可以同时处于活动状态；共享 BOSS 账号的外部浏览器动作继续由账号锁与 Worker 租约安全串行。

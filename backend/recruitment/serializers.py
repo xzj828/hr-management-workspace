@@ -609,13 +609,19 @@ class WorkflowRunSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="boss_account.name", read_only=True)
     version_number = serializers.IntegerField(source="version.version", read_only=True)
     template_name = serializers.CharField(source="version.template.name", read_only=True)
+    automation_plan = serializers.IntegerField(
+        source="automation_plan_revision.plan_id", read_only=True, allow_null=True
+    )
+    automation_plan_archived_at = serializers.DateTimeField(
+        source="automation_plan_revision.plan.archived_at", read_only=True, allow_null=True
+    )
 
     class Meta:
         model = WorkflowRun
         fields = [
             "id", "version", "version_number", "template_name", "boss_account", "account_name",
             "job", "actor", "mode", "status", "idempotency_key", "graph_snapshot", "input_snapshot",
-            "automation_plan_revision", "automation_generation",
+            "automation_plan_revision", "automation_plan", "automation_plan_archived_at", "automation_generation",
             "result", "error_code", "error_message", "started_at", "completed_at", "created_at",
             "updated_at", "node_runs", "events",
         ]
@@ -877,7 +883,7 @@ class RecruitmentAutomationPlanSerializer(serializers.ModelSerializer):
         fields = [
             "id", "job", "job_title", "boss_account", "kind", "desired_state",
             "effective_state", "actual_state", "control_version", "control_generation",
-            "current_revision", "current_run", "current_run_status", "created_at", "updated_at",
+            "current_revision", "current_run", "current_run_status", "archived_at", "created_at", "updated_at",
         ]
         read_only_fields = fields
 

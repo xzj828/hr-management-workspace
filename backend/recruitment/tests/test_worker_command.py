@@ -306,8 +306,8 @@ class WorkerEngineTests(SimpleTestCase):
             def conversations(self, account, unread=False, job_title=""):
                 return "1. 同名候选人｜产品经理｜external_id:conversation-safe｜未读 1"
 
-            def open_chat_by_external_id(self, account, external_id, *, job_title=""):
-                self.stable_ids.append((external_id, job_title))
+            def open_chat_by_external_id(self, account, external_id, *, job_title="", unread=False):
+                self.stable_ids.append((external_id, job_title, unread))
                 return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 2026-08-26 09:00 你好")
 
             def open_chat(self, account, name):
@@ -320,7 +320,7 @@ class WorkerEngineTests(SimpleTestCase):
             runner,
         )
 
-        self.assertEqual(runner.stable_ids, [("conversation-safe", "产品经理")])
+        self.assertEqual(runner.stable_ids, [("conversation-safe", "产品经理", True)])
         self.assertEqual(outcome["result"]["conversations"][0]["messages"][0]["content"], "你好")
 
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")

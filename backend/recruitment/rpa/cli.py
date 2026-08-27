@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -372,6 +373,64 @@ class BossCliRunner:
             raise BossCliError("boss-cli 参数包含非法字符")
         return [*self.invocation.command, *args]
 
+    def _boss_cli_package_root(self):
+        if len(self.invocation.prefix) != 1:
+            raise BossCliError("Puppeteer 会话桥接需要 @joohw/boss-cli JavaScript 入口")
+        entry = Path(self.invocation.prefix[0]).resolve()
+        try:
+            package_root = entry.parents[2]
+        except IndexError as exc:
+            raise BossCliError("无法确认 @joohw/boss-cli 安装目录") from exc
+        package_json = package_root / "package.json"
+        try:
+            metadata = json.loads(package_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise BossCliError("无法读取 @joohw/boss-cli 安装信息") from exc
+        if metadata.get("name") != "@joohw/boss-cli" or package_root not in entry.parents:
+            raise BossCliError("Puppeteer 会话桥接仅允许使用已配置的 @joohw/boss-cli")
+        return package_root
+
+    def _run_chat_bridge(self, account, operation, payload=None, *, timeout_seconds=120):
+        bridge = Path(__file__).with_name("boss_chat_bridge.mjs").resolve()
+        if not bridge.is_file():
+            raise BossCliError("Puppeteer 会话桥接文件不存在")
+        request = {
+            "operation": str(operation),
+            "port": int(account.cdp_port),
+            **(payload or {}),
+        }
+        command = [
+            self.invocation.executable,
+            str(bridge),
+            str(self._boss_cli_package_root()),
+        ]
+        run_kwargs = {
+            "shell": False,
+            "capture_output": True,
+            "timeout": timeout_seconds,
+            "env": self._account_env(account),
+            "input": json.dumps(request, ensure_ascii=False).encode("utf-8"),
+        }
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            completed = subprocess.run(command, **run_kwargs)
+        except subprocess.TimeoutExpired as exc:
+            raise BossCliTimeout("Puppeteer 会话桥接执行超时") from exc
+        except OSError as exc:
+            raise BossCliError(f"Puppeteer 会话桥接无法启动：{exc}") from exc
+        stdout = _decode_output(completed.stdout)
+        stderr = _decode_output(completed.stderr)
+        if completed.returncode != 0:
+            raise BossCliError(stderr.strip() or stdout.strip() or "Puppeteer 会话桥接失败")
+        try:
+            result = json.loads(stdout)
+        except ValueError as exc:
+            raise BossCliError("Puppeteer 会话桥接未返回有效 JSON") from exc
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise BossCliError("Puppeteer 会话桥接回执无效")
+        return result
+
     def start_login(self, account):
         try:
             return subprocess.Popen(
@@ -437,17 +496,14 @@ class BossCliRunner:
         job_name = str(job_title or "").strip()
         if len(job_name) > 120 or "\n" in job_name or "\r" in job_name:
             raise BossCliError("BOSS 沟通职位筛选值无效")
-        # The fixed CLI can select unread/all but cannot scope by job.  Enter
-        # the all list first, then let the managed Playwright adapter apply the
-        # exact job before the unread filter.
-        args = ["list"] if job_name else (["list", "--unread"] if unread else ["list"])
-        self._run(args, env=self._account_env(account), timeout_seconds=120)
-        from recruitment.rpa.playwright_adapter import BrowserInventory
-
-        rows = BrowserInventory(account.cdp_port).conversation_rows(
-            job_title=job_name,
-            unread=unread,
-        ) if job_name else BrowserInventory(account.cdp_port).conversation_rows()
+        result = self._run_chat_bridge(
+            account,
+            "list",
+            {"job_title": job_name, "unread": bool(unread)},
+        )
+        rows = result.get("rows")
+        if not isinstance(rows, list):
+            raise BossCliError("Puppeteer 会话列表回执无效")
         lines = []
         for row in rows:
             parts = [
@@ -502,9 +558,14 @@ class BossCliRunner:
         )
 
     def _assert_selected_conversation(self, account, external_id, *, job_title=""):
-        from recruitment.rpa.playwright_adapter import BrowserInventory
-
-        selected = BrowserInventory(account.cdp_port).selected_conversation()
+        result = self._run_chat_bridge(
+            account,
+            "selected",
+            {"external_id": str(external_id), "job_title": str(job_title)},
+        )
+        selected = result.get("conversation")
+        if not isinstance(selected, dict):
+            raise BossCliError("Puppeteer 当前会话回执无效")
         if str(selected.get("external_id", "")).strip() != str(external_id).strip():
             raise BossCliError("打开后的 BOSS 会话稳定 ID 与批准目标不一致")
         expected_job = str(job_title or "").strip()
@@ -512,56 +573,136 @@ class BossCliRunner:
             raise BossCliError("打开后的 BOSS 会话职位与批准目标不一致")
         return selected
 
-    def open_chat_by_external_id(self, account, external_id, *, job_title=""):
-        from recruitment.rpa.conversations import parse_conversation_list
-
+    def open_chat_by_external_id(self, account, external_id, *, job_title="", unread=False):
         normalized = str(external_id or "").strip()
         if not normalized or len(normalized) > 160:
             raise BossCliError("候选人平台稳定 ID 无效")
-        rows = parse_conversation_list(self.conversations(account, job_title=job_title))
-        matches = [row for row in rows if str(row.get("external_id", "")).strip() == normalized]
-        if len(matches) != 1:
-            raise BossCliError("无法按平台稳定 ID 唯一定位 BOSS 会话")
-        row = matches[0]
-        result = self._run(
-            ["chat", row["name"], "--index", str(row["index"]), "--strict"],
-            env=self._account_env(account),
-            timeout_seconds=120,
+        result = self._run_chat_bridge(
+            account,
+            "open",
+            {
+                "external_id": normalized,
+                "job_title": str(job_title),
+                "unread": bool(unread),
+            },
         )
-        selected = self._assert_selected_conversation(account, normalized, job_title=job_title)
-        if str(selected.get("name", "")).strip() != str(row.get("name", "")).strip():
-            raise BossCliError("打开后的 BOSS 会话展示身份与刷新快照不一致")
-        return result
+        snapshot = result.get("conversation")
+        if not isinstance(snapshot, dict):
+            raise BossCliError("Puppeteer 打开会话回执无效")
+        role = {"candidate": "candidate", "hr": "you", "system": "system"}
+        lines = [f"成功进入候选人聊天：{snapshot['name']}", "", "完整聊天消息："]
+        for message in snapshot.get("messages", []):
+            tag = role.get(str(message.get("direction", "")))
+            content = str(message.get("content", "")).strip()
+            if tag and content:
+                lines.append(f"[{tag}] {content}")
+        return CliResult(returncode=0, stdout="\n".join(lines), stderr="")
 
     def request_resume_by_external_id(
         self, account, external_id, *, message="", first_contact=False, job_title=""
     ):
-        self.open_chat_by_external_id(account, external_id, job_title=job_title)
+        opened = self.open_chat_by_external_id(account, external_id, job_title=job_title)
         self._assert_selected_conversation(account, external_id, job_title=job_title)
         if first_contact:
+            from recruitment.rpa.conversations import parse_chat_messages
+
             normalized = str(message or "").strip()
             if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
                 raise BossCliError("首次联系求简历必须提供 1 到 1000 个字符的单行话术")
-            return self._run(
-                ["send", "--text", normalized, "--request-resume"],
+            previous_count = sum(
+                1 for item in parse_chat_messages(opened.stdout)
+                if item.get("direction") == "hr"
+                and " ".join(str(item.get("content", "")).split()).strip() == normalized
+            )
+            self._run(
+                ["send", "--text", normalized],
                 env=self._account_env(account),
                 timeout_seconds=120,
             )
-        return self._run(
+            receipt = self._run_chat_bridge(
+                account,
+                "wait_outgoing",
+                {
+                    "external_id": str(external_id),
+                    "job_title": str(job_title),
+                    "message": normalized,
+                    "previous_count": previous_count,
+                },
+            )
+            if not isinstance(receipt.get("receipt"), dict) or receipt["receipt"].get("verified") is not True:
+                raise BossCliError("发送后未确认聊天区出现新的己方消息")
+            self._assert_selected_conversation(account, external_id, job_title=job_title)
+        action = self._run(
             ["action", "request-attachment-resume"],
             env=self._account_env(account),
             timeout_seconds=120,
         )
+        selected = self._assert_selected_conversation(account, external_id, job_title=job_title)
+        return {
+            "verified": True,
+            "greeting_verified": bool(first_contact),
+            "resume_requested": True,
+            "expected_external_id": str(external_id),
+            "observed_external_id": str(selected.get("external_id", "")),
+            "adapter_output": action.stdout.strip()[:500],
+        }
 
     def send_text_by_external_id(self, account, external_id, message, *, job_title=""):
+        from recruitment.rpa.conversations import parse_chat_messages
+
         normalized = str(message or "").strip()
         if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
             raise BossCliError("发送内容必须为 1 到 1000 个字符的单行文本")
-        self.open_chat_by_external_id(account, external_id, job_title=job_title)
+        opened = self.open_chat_by_external_id(account, external_id, job_title=job_title)
         self._assert_selected_conversation(account, external_id, job_title=job_title)
-        return self._run(
+        previous_count = sum(
+            1 for item in parse_chat_messages(opened.stdout)
+            if item.get("direction") == "hr"
+            and " ".join(str(item.get("content", "")).split()).strip() == normalized
+        )
+        result = self._run(
             ["send", "--text", normalized], env=self._account_env(account), timeout_seconds=120
         )
+        receipt = self._run_chat_bridge(
+            account,
+            "wait_outgoing",
+            {
+                "external_id": str(external_id),
+                "job_title": str(job_title),
+                "message": normalized,
+                "previous_count": previous_count,
+            },
+        )
+        confirmed = receipt.get("receipt") if isinstance(receipt, dict) else None
+        if not isinstance(confirmed, dict) or confirmed.get("verified") is not True:
+            raise BossCliError("发送后未确认聊天区出现新的己方消息")
+        selected = self._assert_selected_conversation(account, external_id, job_title=job_title)
+        return {
+            "sent": True,
+            "verified": True,
+            "expected_external_id": str(external_id),
+            "observed_external_id": str(selected.get("external_id", "")),
+            "adapter_output": result.stdout.strip()[:500],
+        }
+
+    def download_resume_attachments(
+        self, account, external_id, expected_name, output_dir, *, job_title=""
+    ):
+        result = self._run_chat_bridge(
+            account,
+            "download_attachments",
+            {
+                "external_id": str(external_id),
+                "expected_name": str(expected_name),
+                "job_title": str(job_title),
+                "output_dir": str(Path(output_dir).resolve()),
+            },
+            timeout_seconds=120,
+        )
+        attachments = result.get("attachments")
+        if not isinstance(attachments, list):
+            raise BossCliError("Puppeteer 简历附件回执无效")
+        return attachments
 
     def send_text(self, account, name, message):
         normalized = str(message or "").strip()

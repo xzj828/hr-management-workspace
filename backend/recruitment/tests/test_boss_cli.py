@@ -79,6 +79,41 @@ class BossCliRunnerTests(SimpleTestCase):
         self.assertEqual(rows[0]["external_id"], "job-101")
         self.assertFalse(run.call_args.kwargs["shell"])
 
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_chat_bridge_uses_bundled_puppeteer_fixed_argv_and_json_stdin(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, json.dumps({"ok": True, "rows": []}).encode("utf-8"), b""
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            node = root / "node.exe"
+            entry = root / "boss-cli" / "dist" / "cli" / "index.js"
+            entry.parent.mkdir(parents=True)
+            entry.touch()
+            node.touch()
+            (root / "boss-cli" / "package.json").write_text(
+                json.dumps({"name": "@joohw/boss-cli", "version": "0.6.6"}),
+                encoding="utf-8",
+            )
+            runner = BossCliRunner(cli_path=[str(node), str(entry)])
+
+            with patch.dict(os.environ, {"RPA_WORKER_TOKEN": "must-not-leak"}):
+                result = runner._run_chat_bridge(
+                    self.account,
+                    "list",
+                    {"job_title": "测试工程师", "unread": True},
+                )
+
+        command = run.call_args.args[0]
+        request = json.loads(run.call_args.kwargs["input"].decode("utf-8"))
+        self.assertTrue(command[1].endswith("boss_chat_bridge.mjs"))
+        self.assertTrue(command[2].endswith("boss-cli"))
+        self.assertEqual(request["port"], 53470)
+        self.assertEqual(request["job_title"], "测试工程师")
+        self.assertFalse(run.call_args.kwargs["shell"])
+        self.assertNotIn("RPA_WORKER_TOKEN", run.call_args.kwargs["env"])
+        self.assertTrue(result["ok"])
+
     @patch("recruitment.rpa.cli.subprocess.Popen")
     def test_login_launcher_uses_fixed_argv_minimal_env_and_no_pipes(self, popen):
         runner = BossCliRunner(cli_path=["C:/Program Files/nodejs/node.exe", "C:/safe/boss-cli.js"])

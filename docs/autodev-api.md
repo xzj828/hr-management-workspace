@@ -301,7 +301,7 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 
 规范化后的 `candidate_filters` 必须原样进入标准工作流搜索节点、`SearchCampaign.criteria` 与 `AutomationApproval.payload`，使草稿恢复、版本冲突、审批摘要和审计链看到同一份确定性搜索条件。当前固定 BOSS CLI 未暴露的筛选能力只保存和传递，不得在结果或日志中宣称已经应用到平台页面；适配器未来支持时从同一快照消费，不另建旁路配置。
 
-| Chrome/Edge | 独立用户目录 + loopback CDP + Playwright | 人工登录、状态观察、目标核验、PDF | 受管端口/路径；不绕验证；不使用日常资料 |
+| Chrome/Edge | 独立用户目录 + loopback CDP；会话链路使用 CLI 同版本 Puppeteer bridge | 人工登录、状态观察、职位/未读筛选、稳定身份核验、消息回执、附件 PDF | 受管端口/路径；bridge 只 disconnect 不 close；不绕验证；不使用日常资料 |
 | 飞书打卡 Excel | 人工上传 `.xlsx` | 单向导入 | 类型/大小/哈希、原文件留档 |
 | 模型服务 | 仅保存个人兼容 API 配置 | [待确认] 当前无实际调用端点 | Key 加密；不应默认发送候选人/员工敏感数据 |
 
@@ -313,3 +313,16 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - Worker 必须先在 BOSS 页面精确选择冻结职位，再切换未读/全部状态；账号共享的多个被动岗位逐岗位读取并按 stable ID 合并，任何职位筛选歧义或跨 scope 重复 stable ID 都失败关闭。
 - `request_resume_by_external_id` 必须在同一次执行中重新应用批准快照的职位 scope、刷新列表、按 stable ID 唯一解析、以该快照序号打开，并复核选中行 stable ID、展示名和职位，再发送已批准话术并调用 BOSS 原生“求简历”。
 - 作业台只有在确认接口返回沟通批次且批次中至少存在一个 `pending` 执行步骤时，才能提示动作已排队；审批提交期间禁止同时停止或重启岗位计划，计划控制期间也禁止提交审批。
+- Worker 的目标职位会话适配器必须在一次调用中按“精确职位 → 未读/全部 → stable ID”定位并点击，返回选中会话消息；不得先通过 CLI 切换账号级列表，也不得把 CLI 序号作为跨筛选快照的动作目标。同步调用必须把原始 `unread` 范围传到打开动作。
+- 首次 `request_resume` 必须把文字发送和原生求简历拆开：发送后以选中 stable ID 下新增的精确己方消息作为成功回执，随后才允许求简历。缺少新增消息回执时任务进入 `waiting_human/external_result_uncertain`，不得自动重试或继续求简历。
+- 会话读取、打开、消息回执和附件下载由本地 `boss_chat_bridge.mjs` 通过固定 CLI 包内的 `puppeteer-core` 执行；bridge 输入为 JSON stdin，Node/脚本/包根均为固定 argv，继承最小账号环境。bridge 只能断开自身 CDP 连接，不得关闭受管浏览器。`request_resume` 成功回执必须明确包含 `greeting_verified`（首次联系时）、`resume_requested` 及与批准目标一致的 `observed_external_id`。
+
+### 独立招聘任务详情与可恢复删除（W16，2026-08-27）
+
+- `RecruitmentAutomationPlan` 新增可空、索引字段 `archived_at`。该字段只表示业务任务从当前列表移除，不改变不可变 Revision、当前 Run、control version/generation 或任何审计对象。
+- `GET /api/recruitment/automation-plans/` 默认只返回未归档 Plan；`archived=1` 只返回归档 Plan。详情读取遵循相同过滤和账号授权范围。
+- `POST /api/recruitment/automation-plans/<id>/archive/` 仅允许 `stopped/failed/completed` 等终态且不存在活动租约的 Plan；否则返回 409。成功返回包含 `archived_at` 的完整 Plan。
+- `POST /api/recruitment/automation-plans/<id>/restore/?archived=1` 清除 `archived_at`，不重新启动任务；`archived=1` 用于在归档查询范围内解析对象，重新运行仍须显式调用原子 start 命令。
+- `POST /api/recruitment/automation-plans/start/` 发现既有归档 Plan 时在事务中恢复后开启；幂等请求、乐观版本、Revision 和 generation 规则不变。
+- `RecruitmentAutomationPlanSerializer` 增加 `archived_at`。`WorkflowRunSerializer` 增加只读 `automation_plan` 与 `automation_plan_archived_at`，从 `automation_plan_revision.plan` 投影，供结果中心生成稳定任务详情链接和已删除过滤。
+- 归档与恢复使用现有 `RecruitmentWritePermission` 和授权账号查询；其他用户的 Plan 继续返回 404。

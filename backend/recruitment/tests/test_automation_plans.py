@@ -125,6 +125,127 @@ class AutomationPlanApiTests(APITestCase):
             },
         )
         self.assertEqual(response.data["effective_state"], "waiting_human")
+        run_response = self.client.get(
+            f"/api/recruitment/workflow-runs/{response.data['current_run']['id']}/"
+        )
+        self.assertEqual(run_response.status_code, 200, run_response.data)
+        self.assertEqual(run_response.data["automation_plan"], response.data["id"])
+        self.assertIsNone(run_response.data["automation_plan_archived_at"])
+
+    def test_terminal_plan_can_be_archived_filtered_and_restored(self):
+        plan = RecruitmentAutomationPlan.objects.create(
+            job=self.job,
+            kind=RecruitmentAutomationPlan.Kind.ACTIVE_RESUME_SEARCH,
+            created_by=self.user,
+        )
+
+        archived = self.client.post(
+            f"/api/recruitment/automation-plans/{plan.pk}/archive/",
+            {},
+            format="json",
+        )
+        self.assertEqual(archived.status_code, 200, archived.data)
+        self.assertIsNotNone(archived.data["archived_at"])
+        current = self.client.get(
+            f"/api/recruitment/automation-plans/?job={self.job.pk}"
+        )
+        self.assertEqual(current.data["results"], [])
+        removed = self.client.get(
+            f"/api/recruitment/automation-plans/?job={self.job.pk}&archived=1"
+        )
+        self.assertEqual([item["id"] for item in removed.data["results"]], [plan.pk])
+
+        restored = self.client.post(
+            f"/api/recruitment/automation-plans/{plan.pk}/restore/?archived=1",
+            {},
+            format="json",
+        )
+        self.assertEqual(restored.status_code, 200, restored.data)
+        self.assertIsNone(restored.data["archived_at"])
+
+    def test_active_plan_must_stop_before_archive(self):
+        started = self._start()
+        self.assertEqual(started.status_code, 201, started.data)
+
+        archived = self.client.post(
+            f"/api/recruitment/automation-plans/{started.data['id']}/archive/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(archived.status_code, 409, archived.data)
+        self.assertIn("先停止", archived.data["detail"])
+
+    def test_starting_archived_plan_restores_visibility_without_losing_identity(self):
+        plan = RecruitmentAutomationPlan.objects.create(
+            job=self.job,
+            kind=RecruitmentAutomationPlan.Kind.ACTIVE_RESUME_SEARCH,
+            created_by=self.user,
+            archived_at=timezone.now(),
+        )
+
+        started = self._start(expected=plan.control_version)
+
+        self.assertEqual(started.status_code, 200, started.data)
+        self.assertEqual(started.data["id"], plan.pk)
+        self.assertIsNone(started.data["archived_at"])
+        plan.refresh_from_db()
+        self.assertIsNone(plan.archived_at)
+
+    def test_plan_lifecycle_is_hidden_from_unauthorized_account_users(self):
+        other_account = BossAccount.objects.create(
+            name="其他招聘账号",
+            browser_profile="other-plan-account",
+            cdp_port=54102,
+            login_status=BossAccount.LoginStatus.READY,
+            status=BossAccount.Status.READY,
+        )
+        other_job = RecruitmentJob.objects.create(
+            boss_account=other_account,
+            external_id="other-plan-job",
+            title="其他岗位",
+            owner=self.user,
+        )
+        other_plan = RecruitmentAutomationPlan.objects.create(
+            job=other_job,
+            kind=RecruitmentAutomationPlan.Kind.ACTIVE_RESUME_SEARCH,
+            created_by=self.user,
+        )
+        control_payload = {
+            "request_id": str(uuid.uuid4()),
+            "expected_control_version": other_plan.control_version,
+        }
+
+        self.assertEqual(
+            self.client.get(f"/api/recruitment/automation-plans/{other_plan.pk}/").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/recruitment/automation-plans/{other_plan.pk}/stop/",
+                control_payload,
+                format="json",
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/recruitment/automation-plans/{other_plan.pk}/archive/",
+                {},
+                format="json",
+            ).status_code,
+            404,
+        )
+        other_plan.archived_at = timezone.now()
+        other_plan.save(update_fields=["archived_at", "updated_at"])
+        self.assertEqual(
+            self.client.post(
+                f"/api/recruitment/automation-plans/{other_plan.pk}/restore/?archived=1",
+                {},
+                format="json",
+            ).status_code,
+            404,
+        )
 
     def test_passive_plan_recovers_processed_reply_after_old_generation_approval_was_rejected(self):
         response = self._start(kind="passive_resume")
@@ -163,6 +284,11 @@ class AutomationPlanApiTests(APITestCase):
         self.assertEqual(current.status, AutomationApproval.Status.DRAFT)
         self.assertEqual(current.payload["message"], "您好，方便发送一份简历吗？")
         self.assertTrue(current.payload["items"][0]["first_contact"])
+        status_response = self.client.get(
+            f"/api/recruitment/automation-plans/?job={self.job.pk}"
+        )
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.data["results"][0]["effective_state"], "waiting_human")
         self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 0)
 
         current.status = AutomationApproval.Status.APPROVED

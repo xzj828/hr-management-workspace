@@ -188,37 +188,86 @@ class BrowserInventory:
             timeout=18_000,
         )
 
+    def _conversation_page(self, browser):
+        pages = [
+            page for context in browser.contexts for page in context.pages
+            if str(page.url).startswith("https://www.zhipin.com/")
+        ]
+        if not pages:
+            raise BrowserConnectionError("未找到已登录的 BOSS 页面")
+        page = pages[-1]
+        if not str(page.url).startswith("https://www.zhipin.com/web/chat/index"):
+            page.goto(
+                "https://www.zhipin.com/web/chat/index",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+        page.wait_for_selector(".chat-top-job .chat-select-job", timeout=15_000)
+        page.wait_for_selector(".chat-message-filter-left", timeout=15_000)
+        return page
+
+    @staticmethod
+    def _conversation_rows(page):
+        return page.locator(".geek-item").evaluate_all(
+            r"""items => items.map((el, index) => {
+              const norm = (value) => (value || '').replace(/\s+/g, ' ').trim();
+              const badge = norm(el.querySelector('.badge-count')?.textContent);
+              const digits = badge.replace(/\D/g, '');
+              return {
+                index: index + 1,
+                external_id: norm(el.getAttribute('data-id')),
+                name: norm(el.querySelector('.geek-name')?.textContent),
+                job_title: norm(el.querySelector('.source-job')?.textContent),
+                preview: norm(el.querySelector('.push-text')?.textContent),
+                unread_count: digits ? (parseInt(digits, 10) || 0) : 0,
+                selected: el.classList.contains('selected'),
+              };
+            }).filter((row) => row.external_id && row.name)""",
+        )
+
+    @staticmethod
+    def _current_conversation_messages(page):
+        return page.locator(".chat-message-list:visible").last.evaluate(
+            r"""list => {
+              const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+              let currentTime = '';
+              const messages = [];
+              for (const item of list.querySelectorAll('.message-item')) {
+                const time = norm(item.querySelector('.message-time .time')?.textContent);
+                if (time) currentTime = time;
+                const friend = item.querySelector('.item-friend');
+                const mine = item.querySelector('.item-myself');
+                const system = item.querySelector('.item-system');
+                let direction = '';
+                let content = '';
+                if (friend) {
+                  direction = 'candidate';
+                  content = norm(friend.querySelector('.text > span')?.textContent)
+                    || norm(friend.querySelector('.message-card-top-title')?.textContent)
+                    || norm(friend.querySelector('.text')?.textContent);
+                } else if (mine) {
+                  direction = 'hr';
+                  content = norm(mine.querySelector('.text span')?.textContent)
+                    || norm(mine.querySelector('.text')?.textContent);
+                } else if (system) {
+                  direction = 'system';
+                  content = norm(system.querySelector('.message-card-top-title')?.textContent)
+                    || norm(system.querySelector('.text span')?.textContent);
+                }
+                if (direction && content) messages.push({ direction, content, sent_at: currentTime });
+              }
+              return messages;
+            }""",
+        )
+
     def conversation_rows(self, *, job_title="", unread=None):
         try:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.connect_over_cdp(self.endpoint)
-                pages = [
-                    page for context in browser.contexts for page in context.pages
-                    if str(page.url).startswith("https://www.zhipin.com/")
-                ]
-                if not pages:
-                    raise BrowserConnectionError("未找到已登录的 BOSS 页面")
-                page = pages[-1]
-                if not str(page.url).startswith("https://www.zhipin.com/web/chat/index"):
-                    raise BrowserConnectionError("当前不在 BOSS 沟通列表页")
+                page = self._conversation_page(browser)
                 if str(job_title or "").strip():
                     self._select_conversation_scope(page, job_title=job_title, unread=bool(unread))
-                rows = page.locator(".geek-item").evaluate_all(
-                    r"""items => items.map((el, index) => {
-                      const norm = (value) => (value || '').replace(/\s+/g, ' ').trim();
-                      const badge = norm(el.querySelector('.badge-count')?.textContent);
-                      const digits = badge.replace(/\D/g, '');
-                      return {
-                        index: index + 1,
-                        external_id: norm(el.getAttribute('data-id')),
-                        name: norm(el.querySelector('.geek-name')?.textContent),
-                        job_title: norm(el.querySelector('.source-job')?.textContent),
-                        preview: norm(el.querySelector('.push-text')?.textContent),
-                        unread_count: digits ? (parseInt(digits, 10) || 0) : 0,
-                        selected: el.classList.contains('selected'),
-                      };
-                    }).filter((row) => row.external_id && row.name)""",
-                )
+                rows = self._conversation_rows(page)
                 external_ids = [str(row.get("external_id", "")).strip() for row in rows]
                 if len(external_ids) != len(set(external_ids)):
                     raise BrowserConnectionError("BOSS 沟通列表存在重复稳定 ID")
@@ -227,6 +276,84 @@ class BrowserInventory:
             raise
         except PlaywrightError as exc:
             raise BrowserConnectionError(f"无法读取 BOSS 沟通列表：{exc}") from exc
+
+    def open_conversation(self, external_id, *, job_title, unread=False):
+        normalized_id = str(external_id or "").strip()
+        expected_job = self._conversation_job_title(job_title)
+        if not normalized_id or len(normalized_id) > 160:
+            raise BrowserConnectionError("候选人平台稳定 ID 无效")
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(self.endpoint)
+                page = self._conversation_page(browser)
+                self._select_conversation_scope(page, job_title=expected_job, unread=bool(unread))
+                rows = self._conversation_rows(page)
+                matches = [
+                    row for row in rows
+                    if str(row.get("external_id", "")).strip() == normalized_id
+                    and self._conversation_job_title(row.get("job_title", "")) == expected_job
+                ]
+                if len(matches) != 1:
+                    raise BrowserConnectionError("无法在指定职位范围内唯一定位 BOSS 会话")
+                target = matches[0]
+                page.locator(".geek-item").nth(int(target["index"]) - 1).click()
+                page.wait_for_function(
+                    r"""target => {
+                      const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+                      const selected = document.querySelector('.geek-item.selected');
+                      const selectedId = norm(selected?.getAttribute('data-id'));
+                      const selectedName = norm(selected?.querySelector('.geek-name')?.textContent);
+                      const selectedJob = norm(selected?.querySelector('.source-job')?.textContent);
+                      const detailName = norm(document.querySelector('.base-info-single-container .name-box')?.textContent);
+                      return selectedId === target.externalId
+                        && selectedName === target.name
+                        && selectedJob === target.jobTitle
+                        && detailName === target.name
+                        && !!document.querySelector('#boss-chat-editor-input');
+                    }""",
+                    arg={
+                        "externalId": normalized_id,
+                        "name": target["name"],
+                        "jobTitle": expected_job,
+                    },
+                    timeout=15_000,
+                )
+                page.wait_for_selector(".chat-message-list:visible", timeout=15_000)
+                return {**target, "selected": True, "messages": self._current_conversation_messages(page)}
+        except BrowserConnectionError:
+            raise
+        except PlaywrightError as exc:
+            raise BrowserConnectionError(f"无法打开 BOSS 沟通会话：{exc}") from exc
+
+    def wait_for_outgoing_message(self, external_id, message, *, previous_count, job_title):
+        normalized_id = str(external_id or "").strip()
+        normalized_message = " ".join(str(message or "").split()).strip()
+        expected_job = self._conversation_job_title(job_title)
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(self.endpoint)
+                page = self._conversation_page(browser)
+                page.wait_for_function(
+                    r"""expected => {
+                      const norm = value => (value || '').replace(/\s+/g, ' ').trim();
+                      const selected = document.querySelector('.geek-item.selected');
+                      if (norm(selected?.getAttribute('data-id')) !== expected.externalId) return false;
+                      if (norm(selected?.querySelector('.source-job')?.textContent) !== expected.jobTitle) return false;
+                      const messages = Array.from(document.querySelectorAll(
+                        '.chat-message-list:visible .message-item .item-myself .text span'
+                      )).map(item => norm(item.textContent));
+                      return messages.filter(value => value === expected.message).length > expected.previousCount;
+                    }""",
+                    arg={
+                        "externalId": normalized_id,
+                        "jobTitle": expected_job,
+                        "message": normalized_message,
+                        "previousCount": int(previous_count),
+                    },
+                    timeout=15_000,
+                )
+        except PlaywrightError as exc:
+            raise BrowserConnectionError("发送后未确认聊天区出现新的己方消息") from exc
 
     def selected_conversation(self):
         selected = [row for row in self.conversation_rows() if row.get("selected")]

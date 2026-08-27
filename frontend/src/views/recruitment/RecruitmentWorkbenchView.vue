@@ -59,6 +59,7 @@ const autoStartRequested = ref(false)
 const submitting = ref(false)
 const submitStage = ref('')
 const currentPlan = ref(null)
+const archivedPlan = ref(null)
 const planLoading = ref(false)
 const planError = ref('')
 const planAction = ref('')
@@ -665,6 +666,8 @@ function navigateWizardStep(step, { replace = false } = {}) {
   wizardError.value = ''
   persistWizardDraft()
   const query = { ...route.query, step: guarded }
+  delete query.new
+  delete query.editPlan
   if (selectedJob.value?.id) query.job = String(selectedJob.value.id)
   const navigation = replace ? router.replace : router.push
   navigation.call(router, { name: route.name, query }).catch(() => {})
@@ -737,6 +740,8 @@ function applyOperationDraft(draft) {
 
 function replaceJobQuery(jobId, { step } = {}) {
   const query = { ...route.query }
+  delete query.new
+  delete query.editPlan
   if (jobId) query.job = String(jobId)
   else delete query.job
   if (step) query.step = step
@@ -812,6 +817,7 @@ function invalidateRouteJob(jobId) {
   planLoadSequence += 1
   planActionSequence += 1
   currentPlan.value = null
+  archivedPlan.value = null
   planError.value = ''
   planActionError.value = ''
   planAction.value = ''
@@ -942,7 +948,13 @@ async function refreshCurrentPlan({ jobId = selectedJob.value?.id, silent = fals
   try {
     const payload = await api(`recruitment/automation-plans/?job=${encodeURIComponent(jobId)}`)
     const plan = planFromPayload(payload)
+    let removedPlan = null
+    if (!plan) {
+      const archivedPayload = await api(`recruitment/automation-plans/?job=${encodeURIComponent(jobId)}&archived=1`)
+      removedPlan = planFromPayload(archivedPayload)
+    }
     if (sequence === planLoadSequence) {
+      archivedPlan.value = removedPlan
       applyServerPlan(plan, jobId, { hydrateDraft })
       await refreshPendingResumeApprovals(plan, jobId)
     }
@@ -1038,10 +1050,18 @@ async function loadWorkbench() {
     workflowVersions.value = versionResult.status === 'fulfilled' ? listItems(versionResult.value) : []
     if (summaryResult.status === 'fulfilled') Object.assign(summary, summaryResult.value)
     else loadError.value = `自动化服务状态读取失败：${summaryResult.reason?.message || '请稍后重试'}`
-    const hasValidSelection = alignInitialSelection()
+    const createFresh = routeQueryValue(route.query.new) === '1'
+    if (createFresh) {
+      context.invalidateSelection({ userId: auth.user?.id || context.loadedUserId, reason: '' })
+      selectedAccountId.value = ''
+      resetWizardFields()
+    }
+    const hasValidSelection = createFresh ? false : alignInitialSelection()
     if (hasValidSelection) {
       const wizardDraftRestored = restoreWizardDraft(selectedJob.value?.id)
-      await refreshCurrentPlan({ jobId: selectedJob.value?.id, hydrateDraft: !wizardDraftRestored })
+      const plan = await refreshCurrentPlan({ jobId: selectedJob.value?.id, hydrateDraft: !wizardDraftRestored })
+      const editPlanId = routeQueryValue(route.query.editPlan)
+      if (plan && editPlanId && String(plan.id) === editPlanId) enterPlanEdit()
     }
   } catch (error) {
     loadError.value = error.message || '招聘作业台加载失败'
@@ -1222,7 +1242,7 @@ async function startExecution({ busyAction = '' } = {}) {
       config: snapshot.config,
       expected_control_version: editBase.active && editBase.jobId === String(snapshot.job.id)
         ? editBase.controlVersion
-        : Number(currentPlan.value?.control_version ?? 0),
+        : Number(currentPlan.value?.control_version ?? archivedPlan.value?.control_version ?? 0),
     }
     if (snapshot.workflow.customId) command.workflow_version = Number(snapshot.workflow.customId)
     const signature = JSON.stringify(command)
@@ -1241,11 +1261,23 @@ async function startExecution({ busyAction = '' } = {}) {
     planLoadSequence += 1
     resetEditBase()
     applyServerPlan(plan, snapshot.job.id)
-    await refreshPendingResumeApprovals(plan, snapshot.job.id)
-    persistWizardDraft(snapshot.job.id)
     startRequest.id = ''
     startRequest.signature = ''
     submitStage.value = ''
+    try {
+      await router.replace({
+        name: 'recruitment-task-detail',
+        params: { planId: String(plan.id) },
+        query: {
+          job: String(snapshot.job.id),
+          run: plan.current_run?.id ? String(plan.current_run.id) : undefined,
+          view: 'tasks',
+        },
+      })
+      removeSessionItem(wizardStorageKey(snapshot.job.id))
+    } catch {
+      submitError.value = '任务已经创建，但任务详情页未能打开；你可以使用下方“查看结果”继续。'
+    }
   } catch (error) {
     if (error.status === 409 && snapshot) {
       await refreshCurrentPlan({ jobId: snapshot.job.id, silent: true })
@@ -1371,6 +1403,7 @@ watch(
     planActionSequence += 1
     documents.value = []
     currentPlan.value = null
+    archivedPlan.value = null
     planError.value = ''
     planActionError.value = ''
     pendingResumeApprovals.value = []

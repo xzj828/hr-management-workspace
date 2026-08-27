@@ -372,7 +372,7 @@ def execute_request_resume(task, account, runner):
             "error_message": "当前 BOSS 适配器只能按姓名索要简历，请由 HR 人工处理",
         }
     try:
-        stable_action(
+        receipt = stable_action(
             account,
             external_id,
             message=str(payload.get("message", "")),
@@ -386,10 +386,27 @@ def execute_request_resume(task, account, runner):
             "error_code": "external_result_uncertain",
             "error_message": "打招呼或求简历可能已执行，请在 BOSS 中人工核查；系统不会自动重试",
         }
+    receipt_confirmed = (
+        isinstance(receipt, dict)
+        and receipt.get("verified") is True
+        and receipt.get("resume_requested") is True
+        and str(receipt.get("observed_external_id", "")).strip() == external_id
+    )
+    if bool(payload.get("first_contact", False)):
+        receipt_confirmed = receipt_confirmed and receipt.get("greeting_verified") is True
+    if not receipt_confirmed:
+        return {
+            "status": "waiting_human",
+            "result": {},
+            "error_code": "external_result_uncertain",
+            "error_message": "打招呼或求简历回执不完整，请在 BOSS 中人工核查；系统不会自动重试",
+        }
     return {
         "status": "succeeded",
         "result": {
             "verified": True,
+            "greeting_verified": bool(receipt.get("greeting_verified", False)),
+            "resume_requested": True,
             "target_name": name,
             "conversation_index": refreshed.get("index"),
             "expected_external_id": external_id,
@@ -581,11 +598,21 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
                     account,
                     external_id,
                     job_title=str(row.get("job_title", "")).strip(),
+                    unread=not backfill_conversations,
                 )
             else:
                 opened = runner.open_chat(account, row["name"])
             row["messages"] = parse_chat_messages(opened.stdout)
-            row["attachments"] = BrowserInventory(account.cdp_port).download_resume_attachments(row["name"], incoming)
+            download_attachments = getattr(runner, "download_resume_attachments", None)
+            if not callable(download_attachments):
+                raise BossCliError("当前 BOSS 适配器不支持安全的简历附件下载")
+            row["attachments"] = download_attachments(
+                account,
+                external_id,
+                row["name"],
+                incoming,
+                job_title=str(row.get("job_title", "")).strip(),
+            )
         except (BossCliError, BrowserConnectionError) as exc:
             row["sync_error"] = str(exc)
         if checkpoint is not None and not checkpoint("after_open_chat", sequence):

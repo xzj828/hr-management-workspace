@@ -79,6 +79,8 @@ function baseApi(path) {
   if (path === 'recruitment/job-documents/?job=52') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation-plans/?job=52') return Promise.resolve({ results: [] })
+  if (path === 'recruitment/automation-plans/?job=51&archived=1') return Promise.resolve({ results: [] })
+  if (path === 'recruitment/automation-plans/?job=52&archived=1') return Promise.resolve({ results: [] })
   if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [] })
   return Promise.reject(new Error(`unexpected path: ${path}`))
 }
@@ -89,6 +91,7 @@ async function mountView(query = {}) {
     routes: [
       { path: '/recruitment/workbench', name: 'recruitment-workbench', component: RecruitmentWorkbenchView },
       { path: '/recruitment/results', name: 'recruitment-results', component: { template: '<div>results</div>' } },
+      { path: '/recruitment/tasks/:planId', name: 'recruitment-task-detail', component: { template: '<div>task detail</div>' } },
       { path: '/recruitment/admin', name: 'recruitment-admin', component: { template: '<div>admin</div>' } },
     ],
   })
@@ -604,11 +607,12 @@ describe('RecruitmentWorkbenchView', () => {
   })
 
   it('automatically starts an active search with one atomic command after prechecks pass', async () => {
+    let router
     apiMock.mockImplementation((path, options) => {
       if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') return Promise.resolve(planFixture())
       return baseApi(path)
     })
-    ;({ wrapper } = await mountView())
+    ;({ wrapper, router } = await mountView())
     await goToPlan(wrapper, { core: '3 年 Python 经验\n熟悉 Django', bonus: 'AI 项目经验\nToB 经验' })
     await wrapper.get('[data-test="scheme-active"]').setValue(true)
     await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
@@ -644,9 +648,25 @@ describe('RecruitmentWorkbenchView', () => {
       .filter(([, options]) => options?.method === 'POST')
       .map(([path]) => path)
     expect(writePaths).toEqual(['recruitment/automation-plans/start/'])
+    expect(router.currentRoute.value.name).toBe('recruitment-task-detail')
+    expect(router.currentRoute.value.params.planId).toBe('301')
+    expect(router.currentRoute.value.query).toMatchObject({ job: '51', run: 'run-77', view: 'tasks' })
     expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
     expect(wrapper.get('[data-test="operation-results"]').attributes('href')).toContain('run=run-77')
     expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
+  })
+
+  it('opens a blank first step for a fresh task instead of restoring the last job', async () => {
+    apiMock.mockImplementation((path) => baseApi(path))
+    const context = useRecruitmentContextStore()
+    context.selectJob(51, { userId: 9 })
+
+    ;({ wrapper } = await mountView({ new: '1' }))
+
+    expect(context.selectedJobId).toBe('')
+    expect(wrapper.get('[data-test="workbench-job"]').element.value).toBe('')
+    expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="complete-context-step"]').attributes()).toHaveProperty('disabled')
   })
 
   it('guards the atomic start command against double clicks', async () => {

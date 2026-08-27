@@ -17,7 +17,12 @@ class LifecycleConflict(APIException):
     default_code = "lifecycle_conflict"
 
 
-ACTIVE_TASK_STATUSES = {RpaTask.Status.PENDING, RpaTask.Status.LEASED, RpaTask.Status.RUNNING}
+ACTIVE_TASK_STATUSES = {
+    RpaTask.Status.PENDING,
+    RpaTask.Status.LEASED,
+    RpaTask.Status.RUNNING,
+    RpaTask.Status.CANCEL_REQUESTED,
+}
 
 
 def _stop_plan_for_lifecycle(*, plan, actor):
@@ -44,6 +49,8 @@ def _account_for(instance):
         return instance
     if isinstance(instance, RecruitmentJob):
         return instance.boss_account
+    if isinstance(instance, RecruitmentAutomationPlan):
+        return instance.job.boss_account
     if isinstance(instance, JobApplication):
         return instance.job.boss_account
     if isinstance(instance, RpaTask):
@@ -191,6 +198,18 @@ def archive_object(*, instance, actor):
     elif isinstance(locked, RpaTask):
         if locked.status in ACTIVE_TASK_STATUSES:
             raise LifecycleConflict("运行中的任务不能归档，请先取消或等待任务结束")
+        update_fields = ["archived_at", "updated_at"]
+    elif isinstance(locked, RecruitmentAutomationPlan):
+        from recruitment.services.automation_plans import effective_plan_state
+
+        current_state = effective_plan_state(locked)
+        if current_state not in {"stopped", "failed", "completed", "cancelled"}:
+            raise LifecycleConflict("任务仍在运行、暂停、等待人工或安全收尾，请先停止并等待结束")
+        if RpaTask.objects.filter(
+            automation_plan_revision__plan=locked,
+            status__in=ACTIVE_TASK_STATUSES,
+        ).exists():
+            raise LifecycleConflict("任务仍有执行项正在处理，请等待安全收尾后再删除")
         update_fields = ["archived_at", "updated_at"]
     elif isinstance(locked, WorkflowTemplate):
         locked.versions.filter(status=WorkflowVersion.Status.ENABLED).update(status=WorkflowVersion.Status.DISABLED)

@@ -1219,7 +1219,9 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
 
 
 class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = WorkflowRun.objects.select_related("version__template", "boss_account", "job", "actor").prefetch_related("node_runs", "events")
+    queryset = WorkflowRun.objects.select_related(
+        "version__template", "boss_account", "job", "actor", "automation_plan_revision__plan"
+    ).prefetch_related("node_runs", "events")
     serializer_class = WorkflowRunSerializer
     permission_classes = [RecruitmentWritePermission]
 
@@ -1344,7 +1346,7 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(self.get_serializer(advance_run(run, executor=execute_workflow_node)).data)
 
 
-class RecruitmentAutomationPlanViewSet(viewsets.ReadOnlyModelViewSet):
+class RecruitmentAutomationPlanViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = RecruitmentAutomationPlan.objects.select_related(
         "job__boss_account",
         "current_revision__workflow_version",

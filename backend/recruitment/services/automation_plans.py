@@ -3,7 +3,7 @@ import json
 from dataclasses import dataclass
 
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 
@@ -336,6 +336,16 @@ def effective_plan_state(plan):
     if plan.kind == RecruitmentAutomationPlan.Kind.PASSIVE_RESUME:
         # The bootstrap workflow may finish, while the account poller remains a
         # durable subscription until HR explicitly stops the plan.
+        if (
+            plan.current_revision_id
+            and AutomationApproval.objects.filter(
+                automation_plan_revision_id=plan.current_revision_id,
+                automation_generation=plan.control_generation,
+                action=AutomationApproval.Action.REQUEST_RESUME,
+                status=AutomationApproval.Status.DRAFT,
+            ).filter(Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())).exists()
+        ):
+            return "waiting_human"
         return RecruitmentAutomationPlan.DesiredState.RUNNING
     if has_active_task:
         return RecruitmentAutomationPlan.DesiredState.RUNNING
@@ -602,6 +612,7 @@ def start_plan(
         created_by=actor,
     )
     plan.desired_state = RecruitmentAutomationPlan.DesiredState.RUNNING
+    plan.archived_at = None
     plan.kind = kind
     plan.control_generation = next_generation
     plan.control_version += 1
@@ -612,7 +623,7 @@ def start_plan(
     plan.updated_by = actor
     plan.save(update_fields=[
         "desired_state", "kind", "control_generation", "control_version", "current_revision",
-        "current_run", "managed_template", "last_control_request_id", "last_control_action", "updated_by", "updated_at",
+        "current_run", "managed_template", "last_control_request_id", "last_control_action", "updated_by", "archived_at", "updated_at",
     ])
     run = create_run(
         version=workflow_version,
