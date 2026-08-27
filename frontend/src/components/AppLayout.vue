@@ -26,8 +26,10 @@ const collapsed = ref(false)
 const modelSettingsOpen = ref(false)
 
 const currentModule = computed(() => moduleForRoute(route))
-const isResultsWorkspace = computed(() => ['recruitment-results', 'recruitment-task-detail'].includes(String(route.name)))
-const activeTopNavigationName = computed(() => route.name === 'recruitment-task-detail' ? 'recruitment-results' : route.name)
+const isResultsWorkspace = computed(() => ['recruitment-results', 'recruitment-tasks', 'recruitment-task-detail'].includes(String(route.name)))
+const activeTopNavigationName = computed(() => (
+  ['recruitment-tasks', 'recruitment-task-detail'].includes(String(route.name)) ? 'recruitment-results' : route.name
+))
 const topNavigation = computed(() => navigationForModule(currentModule.value).filter((item) => (
   item.name !== 'recruitment-admin' || auth.canManage
 )))

@@ -47,6 +47,7 @@ async function mountView(apiImplementation, query = {}) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
+      { path: '/recruitment/tasks', name: 'recruitment-tasks', component: { template: '<div>tasks</div>' } },
       { path: '/recruitment/tasks/:planId', name: 'recruitment-task-detail', component: RecruitmentTaskDetailView },
       { path: '/recruitment/workbench', name: 'recruitment-workbench', component: { template: '<div>workbench</div>' } },
       { path: '/recruitment/results', name: 'recruitment-results', component: { template: '<div>results</div>' } },
@@ -92,6 +93,8 @@ describe('RecruitmentTaskDetailView', () => {
     expect(wrapper.find('[data-test="stop-task"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="stop-modify-task"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="archive-task"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="results-nav-business"]').attributes('href')).toContain('job=51')
+    expect(wrapper.get('[data-test="results-nav-business"]').attributes('href')).toContain('run=run-77')
   })
 
   it('stops an active task before returning its immutable revision to the workbench', async () => {
@@ -171,6 +174,6 @@ describe('RecruitmentTaskDetailView', () => {
     expect(wrapper.find('[data-test="task-detail-error"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('任务不存在')
     expect(wrapper.text()).toContain('重新加载')
-    expect(wrapper.text()).toContain('返回结果中心')
+    expect(wrapper.text()).toContain('返回招聘任务')
   })
 })

@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
+import RecruitmentResultsNavigation from '@/components/RecruitmentResultsNavigation.vue'
 import RecruitmentResultsView from './RecruitmentResultsView.vue'
 
 const route = useRoute()
@@ -79,15 +80,7 @@ const approvalInboxVisible = computed(() => (
   plan.value?.kind === 'passive_resume'
   && ['starting', 'running', 'waiting_human'].includes(state.value)
 ))
-const resultsTo = computed(() => ({
-  name: 'recruitment-results',
-  query: {
-    job: plan.value?.job ? String(plan.value.job) : undefined,
-    run: plan.value?.current_run?.id ? String(plan.value.current_run.id) : undefined,
-    view: 'tasks',
-    status: plan.value?.archived_at ? 'archived' : undefined,
-  },
-}))
+const tasksTo = { name: 'recruitment-tasks' }
 
 function requestId() {
   return globalThis.crypto?.randomUUID?.()
@@ -339,6 +332,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page-stack task-detail">
+    <RecruitmentResultsNavigation />
     <section v-if="loading" class="task-detail-card task-detail-loading" data-test="task-detail-loading" aria-live="polite">
       <span></span><span></span><span></span>
       <p>正在从服务端恢复招聘任务与运行结果…</p>
@@ -348,14 +342,14 @@ onUnmounted(() => {
       <AppIcon name="alert-circle" :size="25" />
       <div><strong>任务详情暂时无法加载</strong><p>{{ loadError }}</p></div>
       <button class="secondary-button" type="button" @click="loadPlan()">重新加载</button>
-      <RouterLink class="secondary-button" to="/recruitment/results">返回结果中心</RouterLink>
+      <RouterLink class="secondary-button" :to="tasksTo">返回招聘任务</RouterLink>
     </section>
 
     <template v-else-if="plan">
       <header class="task-detail-hero">
         <div class="task-detail-heading">
           <nav aria-label="面包屑">
-            <RouterLink :to="resultsTo"><AppIcon name="chevron-left" :size="12" />结果中心</RouterLink>
+            <RouterLink :to="tasksTo"><AppIcon name="chevron-left" :size="12" />招聘任务</RouterLink>
             <span>/</span><span>任务详情</span>
           </nav>
           <div class="task-detail-title-row">

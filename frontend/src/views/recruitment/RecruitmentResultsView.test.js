@@ -90,6 +90,7 @@ async function mountView(query = {}) {
     history: createMemoryHistory(),
     routes: [
       { path: '/recruitment/results', name: 'recruitment-results', component: { template: '<div />' } },
+      { path: '/recruitment/tasks', name: 'recruitment-tasks', component: { template: '<div />' } },
       { path: '/recruitment/tasks/:planId', name: 'recruitment-task-detail', component: { template: '<div />' } },
       { path: '/recruitment/workbench', name: 'recruitment-workbench', component: { template: '<div />' } },
       { path: '/recruitment/candidates', name: 'recruitment-candidates', component: { template: '<div />' } },

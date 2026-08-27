@@ -107,6 +107,28 @@ describe('AppLayout navigation hierarchy', () => {
     expect(resultLink.classes()).toContain('top-navigation__link--active')
   })
 
+  it('treats the visible recruitment task list as a result-center page', () => {
+    routerState.route = {
+      name: 'recruitment-tasks',
+      meta: { module: 'recruitment', recruitmentScope: 'global', resultCenterChild: true },
+      query: {},
+    }
+    const wrapper = mount(AppLayout, {
+      global: {
+        stubs: {
+          RouterLink: { props: ['to'], template: '<a><slot /></a>' },
+          RouterView: true,
+          RecruitmentJobContext: true,
+          ModelSwitcher: ModelSwitcherStub,
+        },
+      },
+    })
+
+    expect(wrapper.get('.shell').classes()).toContain('shell--results')
+    const resultLink = wrapper.findAll('.top-navigation__link').find((link) => link.text().includes('结果中心'))
+    expect(resultLink.classes()).toContain('top-navigation__link--active')
+  })
+
   it('hides management navigation from viewer roles', () => {
     useAuthStore().user = { id: 8, username: 'viewer', role: 'viewer' }
     const wrapper = mount(AppLayout, {

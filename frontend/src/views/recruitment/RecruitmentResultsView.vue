@@ -6,6 +6,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import ResumeIntelligencePanel from '@/components/ResumeIntelligencePanel.vue'
 import ScreeningDecisionDrawer from '@/components/ScreeningDecisionDrawer.vue'
 import WorkflowRunPanel from '@/components/WorkflowRunPanel.vue'
+import RecruitmentResultsNavigation from '@/components/RecruitmentResultsNavigation.vue'
 import { stageColumns } from '@/recruitment'
 import { createRequestId } from '@/recruitmentJobs'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
@@ -914,6 +915,7 @@ onUnmounted(() => {
 
 <template>
   <div :class="['page-stack', 'results-center', { 'is-embedded': embedded }]">
+    <RecruitmentResultsNavigation v-if="!embedded" />
     <header v-if="!embedded" class="page-hero page-hero--compact results-hero">
       <div>
         <h2>结果中心</h2>
