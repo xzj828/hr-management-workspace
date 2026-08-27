@@ -14,6 +14,8 @@ const payload = () => ({
   today_actions: [
     { key: 'to_contact', label: '待联系候选人', count: 5, route: '/recruitment/candidates?stage=to_contact', priority: 'high' },
     { key: 'to_screen', label: '待筛选简历', count: 4, route: '/recruitment/resumes', priority: 'high' },
+    { key: 'to_interview', label: '待安排面试', count: 2, route: '/recruitment/pipeline?stage=to_interview', priority: 'high' },
+    { key: 'waiting_human', label: '待人工处理', count: 0, route: '/recruitment/automation', priority: 'normal' },
   ],
   alerts: [{ key: 'account-1', severity: 'high', title: '招聘主账号需要处理', detail: '等待人工处理', route: '/recruitment/automation', action_label: '查看账号' }],
   funnel: [
@@ -44,33 +46,28 @@ describe('RecruitmentDashboardView', () => {
     apiMock.mockResolvedValue(payload())
   })
 
-  it('renders the complete HR operations dashboard', async () => {
+  it('renders the selected recruitment board hierarchy', async () => {
     const wrapper = mount(RecruitmentDashboardView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('今日工作')
+    expect(wrapper.text()).toContain('今日优先')
     expect(wrapper.text()).toContain('风险提醒')
-    expect(wrapper.text()).toContain('招聘漏斗')
-    expect(wrapper.text()).toContain('近 7 天趋势')
     expect(wrapper.text()).toContain('职位进度')
-    expect(wrapper.text()).toContain('最近自动化')
-    expect(wrapper.text()).toContain('简历初筛进度')
-    expect(wrapper.text()).toContain('待人工复核')
+    expect(wrapper.text()).toContain('关键数据')
+    expect(wrapper.text()).toContain('创建招聘任务')
     expect(wrapper.text()).toContain('产品经理')
-    expect(wrapper.text()).toContain('待筛选 3')
-    expect(wrapper.text()).toContain('待面试 2')
+    expect(wrapper.text()).toContain('当前阶段：录用推进')
     expect(wrapper.text()).toContain('50%')
     expect(wrapper.findAll('[data-test="dashboard-metric"]')).toHaveLength(5)
-    expect(wrapper.findAll('[data-test="trend-day"]')).toHaveLength(7)
-    expect(wrapper.findAll('[data-test^="intelligence-metric-"]')).toHaveLength(4)
+    expect(wrapper.findAll('[data-test^="today-action-"]')).toHaveLength(4)
   })
 
-  it('opens the filtered resume workspace from an intelligence count', async () => {
+  it('opens the task creation workspace from the primary action', async () => {
     const wrapper = mount(RecruitmentDashboardView)
     await flushPromises()
 
-    await wrapper.get('[data-test="intelligence-metric-pending_hr_review"]').trigger('click')
-    expect(pushMock).toHaveBeenCalledWith('/recruitment/resumes?filter=pending_hr_review')
+    await wrapper.get('.dashboard-create').trigger('click')
+    expect(pushMock).toHaveBeenCalledWith('/recruitment/workbench?new=1')
   })
 
   it('opens a job workspace from its progress card', async () => {
@@ -116,5 +113,19 @@ describe('RecruitmentDashboardView', () => {
 
     expect(wrapper.text()).toContain('看板加载失败')
     expect(wrapper.text()).toContain('招聘看板')
+    expect(wrapper.text()).toContain('重新加载')
+  })
+
+  it('can recover from a dashboard loading error without leaving the page', async () => {
+    apiMock.mockRejectedValueOnce(new Error('看板加载失败')).mockResolvedValueOnce(payload())
+
+    const wrapper = mount(RecruitmentDashboardView)
+    await flushPromises()
+    await wrapper.get('[data-test="dashboard-retry"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('今日优先')
+    expect(wrapper.text()).not.toContain('看板加载失败')
   })
 })

@@ -26,11 +26,11 @@ const route = useRoute()
 const router = useRouter()
 
 const tabs = [
-  { id: 'accounts', label: 'BOSS 账号与浏览器', shortLabel: '账号与浏览器' },
-  { id: 'jobs', label: '职位同步', shortLabel: '职位同步' },
-  { id: 'workflows', label: '流程方案', shortLabel: '流程方案' },
-  { id: 'models', label: '模型管理', shortLabel: '模型管理' },
-  { id: 'diagnostics', label: '系统诊断', shortLabel: '系统诊断' },
+  { id: 'accounts', label: 'BOSS 账号与浏览器', shortLabel: '账号与浏览器', description: '账号与浏览器是任务执行的起点，用于打开独立窗口并完成受控操作。' },
+  { id: 'jobs', label: '职位同步', shortLabel: '职位同步', description: '从 BOSS 同步职位到系统，仅接收已发布记录，本页不直接修改线上职位。' },
+  { id: 'workflows', label: '流程方案', shortLabel: '流程方案', description: '业务 HR 在作业台选择已启用方案；只有需要改变节点与安全门时才进入高级编排。' },
+  { id: 'models', label: '模型管理', shortLabel: '模型管理', description: '管理当前登录账号的个人模型连接；切换只影响之后创建的 AI 任务。' },
+  { id: 'diagnostics', label: '系统诊断', shortLabel: '系统诊断', description: '查看阻塞项、任务与健康状态，快速定位业务与技术问题。' },
 ]
 
 function normalizeSection(value) {
@@ -40,6 +40,7 @@ function normalizeSection(value) {
 }
 
 const activeTab = ref(normalizeSection(route.query.section))
+const activeTabCopy = computed(() => tabs.find((tab) => tab.id === activeTab.value) || tabs[0])
 const loading = ref(true)
 const refreshing = ref(false)
 const error = ref('')
@@ -784,15 +785,14 @@ onUnmounted(() => {
   <div class="page-stack recruitment-admin">
     <header class="admin-hero">
       <div>
-        <span class="eyebrow">Recruitment Administration</span>
         <div class="admin-hero__title-row">
-          <h2>管理后台</h2>
-          <button v-if="auth.canManage" class="admin-button admin-button--quiet" type="button" :disabled="refreshing" @click="loadAdmin({ silent: true })">
-            <AppIcon name="refresh" :size="16" />{{ refreshing ? '刷新中…' : '刷新状态' }}
-          </button>
+          <h2>{{ activeTabCopy.shortLabel }}</h2>
         </div>
-        <p>低频设置与技术状态集中在这里；业务 HR 的准备和执行留在招聘作业台。</p>
+        <p>{{ activeTabCopy.description }}</p>
       </div>
+      <button v-if="auth.canManage" class="admin-button admin-refresh" type="button" :disabled="refreshing" @click="loadAdmin({ silent: true })">
+        <AppIcon name="refresh" :size="15" />{{ refreshing ? '刷新中…' : '刷新' }}
+      </button>
     </header>
 
     <nav v-if="auth.canManage" class="admin-tabs" aria-label="管理后台子导航">
@@ -831,11 +831,6 @@ onUnmounted(() => {
     <template v-else-if="auth.canManage">
       <section v-if="activeTab === 'accounts'" class="admin-section">
         <header class="admin-section__header">
-          <div>
-            <span class="admin-kicker">ISOLATED BROWSERS</span>
-            <h3>BOSS 账号与隔离浏览器</h3>
-            <p>每个账号使用独立浏览器目录。浏览器未启动时，先提交启动任务，再在新窗口完成登录。</p>
-          </div>
           <div class="admin-header-actions">
             <div class="admin-segmented" aria-label="账号记录范围">
               <button type="button" :class="{ active: !archiveView.accounts }" :aria-pressed="!archiveView.accounts" @click="setArchiveView('accounts', false)">当前</button>
@@ -868,6 +863,7 @@ onUnmounted(() => {
               <span :class="['account-status', archiveView.accounts ? 'is-offline' : `is-${accountStatus(account)}`]">{{ archiveView.accounts ? '已归档' : accountStatusLabel(account) }}</span>
             </header>
             <div class="account-last-check"><span>最近检查</span><strong>{{ formatDate(account.last_checked_at) }}</strong></div>
+            <span :class="['account-health', accountRuntimeBlocked ? 'is-blocked' : 'is-ready']">{{ accountRuntimeBlocked ? '受限' : '健康' }}</span>
             <p :class="accountStatus(account) === 'ready' ? 'account-ready' : 'account-blocker'">{{ archiveView.accounts ? '账号已停用；隔离目录和历史任务仍保留。' : accountGuidance(account) }}</p>
             <p
               v-if="accountFeedback[account.id]"
@@ -917,11 +913,6 @@ onUnmounted(() => {
 
       <section v-else-if="activeTab === 'jobs'" class="admin-section">
         <header class="admin-section__header">
-          <div>
-            <span class="admin-kicker">POSITION SYNC</span>
-            <h3>从 BOSS 同步职位</h3>
-            <p>这里只负责把已发布职位同步到系统，不在此处创建、编辑或关闭 BOSS 线上职位。</p>
-          </div>
           <div class="admin-segmented" aria-label="职位记录范围">
             <button type="button" :class="{ active: !archiveView.jobs }" :aria-pressed="!archiveView.jobs" @click="setArchiveView('jobs', false)">当前</button>
             <button type="button" :class="{ active: archiveView.jobs }" :aria-pressed="archiveView.jobs" data-test="archived-jobs" @click="setArchiveView('jobs', true)">已归档</button>
@@ -1001,11 +992,6 @@ onUnmounted(() => {
 
       <section v-else-if="activeTab === 'workflows'" class="admin-section">
         <header class="admin-section__header">
-          <div>
-            <span class="admin-kicker">WORKFLOW GOVERNANCE</span>
-            <h3>流程方案</h3>
-            <p>业务 HR 在作业台选择已启用方案；只有需要改变节点与安全门时才进入高级编排。</p>
-          </div>
           <div class="admin-header-actions">
             <div class="admin-segmented" aria-label="流程记录范围">
               <button type="button" :class="{ active: !archiveView.workflows }" :aria-pressed="!archiveView.workflows" @click="setArchiveView('workflows', false)">当前</button>
@@ -1018,11 +1004,14 @@ onUnmounted(() => {
         <div v-if="archiveView.workflows && archiveLoading.workflows" class="admin-empty"><strong>正在读取归档流程…</strong></div>
         <div v-else-if="archiveView.workflows && archiveError.workflows" class="admin-empty" role="alert"><strong>归档流程加载失败</strong><p>{{ archiveError.workflows }}</p><button class="admin-button admin-button--quiet" type="button" @click="loadArchived('workflows')">重新加载归档流程</button></div>
         <div v-else-if="archiveView.workflows && archivedWorkflowRows.length" class="workflow-list">
+          <div class="workflow-list__head"><span>方案名称</span><span>版本</span><span>节点数</span><span>状态</span><span>操作</span></div>
           <article v-for="row in archivedWorkflowRows" :key="row.template.id">
             <div class="workflow-list__identity">
-              <i><AppIcon name="workflow" :size="18" /></i>
-              <div><strong>{{ row.template.name }}</strong><span>{{ row.version ? `最近版本 ${row.version.version}` : '暂无版本' }} · 已归档</span></div>
+              <strong>{{ row.template.name }}</strong>
+              <small v-if="!row.version">尚无可用版本</small>
             </div>
+            <span class="workflow-list__meta">{{ row.version ? row.version.version : '—' }}</span>
+            <span class="workflow-list__meta">{{ row.version?.nodes?.length || 0 }}</span>
             <span class="workflow-status is-disabled">已归档</span>
             <div class="workflow-list__actions">
               <button class="admin-button admin-button--quiet" type="button" :disabled="actionBusy[`restore:workflow:${row.template.id}`]" @click="restoreLifecycle('workflow', row.template)">{{ actionBusy[`restore:workflow:${row.template.id}`] ? '恢复中…' : '恢复流程' }}</button>
@@ -1030,11 +1019,14 @@ onUnmounted(() => {
           </article>
         </div>
         <div v-else-if="!archiveView.workflows && currentWorkflowRows.length" class="workflow-list">
+          <div class="workflow-list__head"><span>方案名称</span><span>版本</span><span>节点数</span><span>状态</span><span>操作</span></div>
           <article v-for="row in currentWorkflowRows" :key="`${row.template.id}:${row.version?.id || 'empty'}`">
             <div class="workflow-list__identity">
-              <i><AppIcon name="workflow" :size="18" /></i>
-              <div><strong>{{ row.template.name }}</strong><span>{{ row.version ? `版本 ${row.version.version} · ${row.version.nodes?.length || 0} 个节点` : '尚无可用版本' }}</span></div>
+              <strong>{{ row.template.name }}</strong>
+              <small v-if="!row.version">尚无可用版本</small>
             </div>
+            <span class="workflow-list__meta">{{ row.version?.version || '—' }}</span>
+            <span class="workflow-list__meta">{{ row.version?.nodes?.length || 0 }}</span>
             <span :class="['workflow-status', `is-${row.version?.status || 'disabled'}`]">{{ row.version ? workflowStatusLabel(row.version.status) : '待配置' }}</span>
             <div class="workflow-list__actions">
               <button v-if="row.version" class="admin-button admin-button--quiet" type="button" :data-test="`edit-admin-workflow-${row.version.id}`" @click="editWorkflow(row.version)">基于此版本编排</button>
@@ -1067,40 +1059,37 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-else-if="activeTab === 'models'" class="admin-section">
+      <section v-else-if="activeTab === 'models'" class="admin-section admin-section--models">
         <header class="admin-section__header">
-          <div>
-            <span class="admin-kicker">MODEL CONNECTION</span>
-            <h3>模型管理</h3>
-            <p>管理当前登录账号的个人模型连接；切换只影响之后创建的 AI 任务。</p>
-          </div>
           <button class="admin-button admin-button--primary" data-test="open-model-config" type="button" :disabled="modelMutationBusy" @click="openModelDrawer()"><AppIcon name="plus" :size="16" />新增自定义模型</button>
         </header>
         <p v-if="modelActionMessage" class="model-action-message" aria-live="polite">{{ modelActionMessage }}</p>
-        <div v-if="credentials.loading" class="model-list-loading" aria-live="polite"><i></i><i></i><i></i></div>
-        <div v-else-if="credentials.profiles.length" class="model-profile-list">
-          <article v-for="profile in credentials.profiles" :key="profile.id" :class="{ 'is-active': profile.is_active }">
-            <div class="model-card__icon"><AppIcon :name="profile.is_active ? 'check-circle' : 'sparkles'" :size="22" /></div>
-            <div class="model-card__body">
-              <span>{{ profile.is_active ? '当前使用' : '已保存模型' }}</span>
-              <strong>{{ profile.name }}</strong>
-              <p>{{ profile.model }} · {{ profile.api_url }}</p>
-              <small>{{ profile.has_api_key ? `API Key 已加密保存 ····${profile.key_last4}` : '尚未保存 API Key' }}</small>
-            </div>
-            <div class="model-card__actions">
-              <button v-if="!profile.is_active" class="admin-button admin-button--primary" type="button" :disabled="modelMutationBusy" @click="activateModel(profile)">{{ String(credentials.switchingId) === String(profile.id) ? '切换中…' : '切换到此模型' }}</button>
-              <span v-else class="model-active-chip">当前使用</span>
-              <button class="admin-button admin-button--quiet" type="button" :disabled="modelMutationBusy" @click="testModel(profile)">{{ String(credentials.testingId) === String(profile.id) ? '连接中…' : '测试连接' }}</button>
-              <button class="admin-link" type="button" :disabled="modelMutationBusy" @click="openModelDrawer(profile)">编辑</button>
-              <button class="admin-link admin-link--danger" type="button" :disabled="modelMutationBusy" :aria-label="`永久删除模型 ${profile.name}`" @click="requestLifecycle('model', profile)">{{ String(credentials.deletingId) === String(profile.id) ? '删除中…' : '删除' }}</button>
-            </div>
-          </article>
-        </div>
-        <div v-else class="admin-empty">
-          <AppIcon name="sparkles" :size="24" />
-          <strong>尚未配置模型</strong>
-          <p>添加一个 OpenAI 兼容模型后，就能在顶栏快速切换。</p>
-          <button class="admin-button admin-button--primary" type="button" @click="openModelDrawer()">新增自定义模型</button>
+        <div class="model-table-shell">
+          <div class="model-profile-list__head"><span>模型名称</span><span>模型类型</span><span>配置来源</span><span>状态</span><span>创建时间</span><span>操作</span></div>
+          <div v-if="credentials.loading" class="model-list-loading" aria-live="polite"><i></i><i></i><i></i></div>
+          <div v-else-if="credentials.profiles.length" class="model-profile-list">
+            <article v-for="profile in credentials.profiles" :key="profile.id" :class="{ 'is-active': profile.is_active }">
+              <div class="model-card__icon"><AppIcon :name="profile.is_active ? 'check-circle' : 'sparkles'" :size="20" /></div>
+              <div class="model-card__body">
+                <strong>{{ profile.name }}</strong>
+                <p>{{ profile.model }} · {{ profile.api_url }}</p>
+                <small>{{ profile.has_api_key ? `API Key 已加密保存 ····${profile.key_last4}` : '尚未保存 API Key' }}</small>
+              </div>
+              <div class="model-card__actions">
+                <button v-if="!profile.is_active" class="admin-button admin-button--primary" type="button" :disabled="modelMutationBusy" @click="activateModel(profile)">{{ String(credentials.switchingId) === String(profile.id) ? '切换中…' : '切换到此模型' }}</button>
+                <span v-else class="model-active-chip">当前使用</span>
+                <button class="admin-button admin-button--quiet" type="button" :disabled="modelMutationBusy" @click="testModel(profile)">{{ String(credentials.testingId) === String(profile.id) ? '连接中…' : '测试连接' }}</button>
+                <button class="admin-link" type="button" :disabled="modelMutationBusy" @click="openModelDrawer(profile)">编辑</button>
+                <button class="admin-link admin-link--danger" type="button" :disabled="modelMutationBusy" :aria-label="`永久删除模型 ${profile.name}`" @click="requestLifecycle('model', profile)">{{ String(credentials.deletingId) === String(profile.id) ? '删除中…' : '删除' }}</button>
+              </div>
+            </article>
+          </div>
+          <div v-else class="admin-empty">
+            <AppIcon name="sparkles" :size="24" />
+            <strong>尚未配置模型</strong>
+            <p>添加一个 OpenAI 兼容模型后，就能在顶栏快速切换。</p>
+            <button class="admin-button admin-button--primary" type="button" @click="openModelDrawer()">新增自定义模型</button>
+          </div>
         </div>
         <div class="model-boundary">
           <strong>数据边界</strong>
@@ -1110,11 +1099,6 @@ onUnmounted(() => {
 
       <section v-else class="admin-section">
         <header class="admin-section__header">
-          <div>
-            <span class="admin-kicker">SYSTEM HEALTH</span>
-            <h3>系统诊断</h3>
-            <p>先看阻塞项，再下钻最近任务日志；业务页面不再展示 Worker、端口和技术事件。</p>
-          </div>
           <div class="admin-segmented" aria-label="任务记录范围">
             <button type="button" :class="{ active: !archiveView.diagnostics }" :aria-pressed="!archiveView.diagnostics" @click="setArchiveView('diagnostics', false)">最近任务</button>
             <button type="button" :class="{ active: archiveView.diagnostics }" :aria-pressed="archiveView.diagnostics" data-test="archived-tasks" @click="setArchiveView('diagnostics', true)">已归档</button>
@@ -1735,5 +1719,704 @@ onUnmounted(() => {
   .admin-tabs button { transition: none; }
   .admin-loading i { animation: none; }
   .model-list-loading i { animation: none; }
+}
+
+/* Selected visual truth: Editorial Administration. */
+.recruitment-admin {
+  --admin-radius-panel: 10px;
+  --admin-radius-control: 7px;
+  --admin-radius-status: 6px;
+  --admin-control-height: 36px;
+  --admin-control-height-compact: 32px;
+  --admin-tab-height: 42px;
+  --admin-page-title: 20px;
+  --admin-section-title: 16px;
+  --admin-row-min: 54px;
+  min-height: calc(100vh - 64px);
+  align-content: start;
+  gap: 0;
+  margin: -28px -34px -42px;
+  padding: 24px 28px 40px;
+  background: #fbfcfd;
+}
+
+.admin-hero {
+  min-height: 54px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--admin-space-5);
+  padding: 0 0 var(--admin-space-2);
+}
+.admin-hero > div { min-width: 0; }
+.admin-hero__title-row { gap: var(--admin-space-2); }
+.admin-hero h2 {
+  margin: 0 0 var(--admin-space-1);
+  font-size: var(--admin-page-title);
+  line-height: 1.3;
+  letter-spacing: -.02em;
+}
+.admin-hero p { max-width: 760px; font-size: 12px; line-height: 1.55; }
+.admin-refresh {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 4px;
+  color: var(--admin-muted);
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+}
+.admin-refresh:not(:disabled):hover { color: var(--admin-brand-dark); background: transparent; }
+
+.admin-tabs {
+  gap: 30px;
+  min-height: var(--admin-tab-height);
+  margin-bottom: var(--admin-space-4);
+  border-color: color-mix(in srgb, var(--admin-line) 76%, transparent);
+}
+.admin-tabs button {
+  min-height: var(--admin-tab-height);
+  padding: 0 1px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.admin-tabs button.active { font-weight: 600; box-shadow: inset 0 -2px var(--admin-brand); }
+
+.admin-section {
+  gap: var(--admin-space-3);
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.admin-section__header {
+  min-height: 38px;
+  align-items: center;
+  flex-direction: row;
+  gap: var(--admin-space-3);
+  padding: 0;
+  border: 0;
+}
+.admin-section__header > .admin-button { align-self: center; }
+.admin-header-actions { gap: var(--admin-space-3); }
+
+.admin-button { font-size: 11px; }
+.admin-button--primary { color: #fff; background: var(--admin-brand); }
+.admin-button--primary:not(:disabled):hover { background: var(--admin-brand-dark); }
+.admin-button--quiet { background: #fff; }
+.admin-segmented {
+  gap: 2px;
+  padding: 3px;
+  border-color: color-mix(in srgb, var(--admin-line) 80%, transparent);
+  background: #f7f9fa;
+}
+.admin-segmented button { min-height: 30px; padding: 0 12px; font-size: 10px; }
+.admin-segmented button.active { color: var(--admin-brand-dark); }
+
+.account-runtime-blocker,
+.admin-notice,
+.admin-error {
+  border-radius: var(--admin-radius-panel);
+}
+
+.account-grid { gap: var(--admin-space-3); }
+.account-card {
+  grid-template-columns: minmax(190px, .8fr) minmax(160px, .55fr) auto;
+  grid-template-areas:
+    "identity check health"
+    "actions actions actions"
+    "guidance guidance guidance"
+    "technical technical technical"
+    "feedback feedback feedback";
+  gap: var(--admin-space-2) var(--admin-space-5);
+  min-height: 0;
+  padding: var(--admin-space-4);
+  border: 1px solid var(--admin-line);
+  border-radius: var(--admin-radius-panel);
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .025);
+}
+.account-card:last-child { border-bottom: 1px solid var(--admin-line); }
+.account-card > header strong { font-size: 14px; }
+.account-last-check { align-self: center; }
+.account-health {
+  grid-area: health;
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 6px;
+  color: var(--admin-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+.account-health::before { width: 6px; height: 6px; border-radius: 50%; background: var(--admin-warning); content: ''; }
+.account-health.is-ready { color: var(--admin-brand-dark); }
+.account-health.is-ready::before { background: var(--admin-brand); }
+.account-card > footer { gap: var(--admin-space-3); }
+.account-card > footer .admin-button { min-height: 32px; }
+.account-blocker,
+.account-ready {
+  padding: var(--admin-space-2) 0 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--admin-line) 70%, transparent);
+  font-size: 11px;
+}
+.account-technical summary { font-size: 10px; }
+.account-technical dl { margin-top: var(--admin-space-2); }
+
+.sync-console,
+.admin-table-shell,
+.workflow-list,
+.workflow-editor-shell,
+.model-table-shell,
+.model-boundary,
+.diagnostic-grid {
+  overflow: hidden;
+  border: 1px solid var(--admin-line);
+  border-radius: var(--admin-radius-panel);
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .025);
+}
+.sync-console {
+  grid-template-columns: minmax(280px, 1.2fr) minmax(280px, 1fr) auto;
+  align-items: end;
+  padding: var(--admin-space-4);
+  border-bottom: 1px solid var(--admin-line);
+}
+.sync-console select { min-height: 36px; font-size: 11px; }
+.sync-readiness { min-height: 36px; }
+.sync-readiness strong { font-size: 12px; }
+.sync-readiness small { font-size: 10px; }
+.admin-table-shell + .admin-table-shell,
+.diagnostic-grid + .admin-table-shell { border-top: 1px solid var(--admin-line); }
+.admin-table-shell > header { padding: 12px 16px; }
+.admin-table-shell th { height: 32px; padding: 7px 14px; font-size: 9px; }
+.admin-table-shell td { height: 48px; padding: 10px 14px; font-size: 11px; }
+
+.workflow-list__head,
+.workflow-list > article {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 86px 86px 100px minmax(250px, auto);
+  align-items: center;
+  column-gap: var(--admin-space-3);
+}
+.workflow-list__head {
+  min-height: 34px;
+  padding: 0 var(--admin-space-4);
+  color: var(--admin-muted);
+  border-bottom: 1px solid var(--admin-line);
+  background: #fafbfc;
+  font-size: 9px;
+}
+.workflow-list > article {
+  min-height: 50px;
+  gap: var(--admin-space-3);
+  padding: 8px var(--admin-space-4);
+}
+.workflow-list__identity { display: block; }
+.workflow-list__identity strong { font-size: 11px; }
+.workflow-list__identity small { display: block; margin-top: 2px; color: var(--admin-muted); font-size: 9px; }
+.workflow-list__meta { color: var(--admin-muted); font-size: 10px; }
+.workflow-list__actions { justify-content: flex-end; min-width: 0; }
+.workflow-list__actions .admin-button { min-height: 30px; padding-inline: 10px; }
+
+.model-table-shell { min-height: 280px; }
+.model-profile-list__head {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr 90px 120px 90px;
+  gap: var(--admin-space-3);
+  min-height: 34px;
+  align-items: center;
+  padding: 0 var(--admin-space-4);
+  color: var(--admin-muted);
+  border-bottom: 1px solid var(--admin-line);
+  background: #fafbfc;
+  font-size: 9px;
+}
+.model-table-shell > .admin-empty { min-height: 240px; }
+.model-profile-list > article { min-height: 58px; padding: 10px var(--admin-space-4); }
+.model-boundary { padding: 12px 16px; background: #f7fafb; }
+.model-boundary strong { font-size: 12px; }
+.model-boundary p { font-size: 10px; }
+
+.diagnostic-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--admin-line); }
+.diagnostic-grid > article { min-height: 96px; padding: 14px 14px 14px 28px; }
+.diagnostic-grid > article::before { left: 12px; top: 18px; width: 6px; height: 6px; }
+.diagnostic-grid span { font-size: 9px; }
+.diagnostic-grid strong { font-size: 13px; }
+.diagnostic-grid p { font-size: 9px; }
+
+.recruitment-admin .admin-empty .admin-button--primary {
+  color: #fff;
+  border-color: transparent;
+  background: var(--admin-brand);
+}
+.recruitment-admin .admin-empty .admin-button--primary:not(:disabled):hover { color: #fff; border-color: transparent; background: var(--admin-brand-dark); }
+
+@media (max-width: 1050px) {
+  .recruitment-admin { margin: -28px -20px -42px; padding-inline: 20px; }
+  .sync-console { grid-template-columns: 1fr 1fr; }
+  .workflow-list__head,
+  .workflow-list > article { grid-template-columns: minmax(200px, 1fr) 64px 64px 86px minmax(180px, auto); }
+}
+
+@media (max-width: 720px) {
+  .recruitment-admin { margin: -20px -14px -32px; padding: 18px 14px 32px; }
+  .admin-hero { min-height: 58px; }
+  .admin-tabs { gap: 22px; margin-bottom: var(--admin-space-3); }
+  .admin-section__header { align-items: stretch; }
+  .account-card {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "identity health"
+      "check check"
+      "actions actions"
+      "guidance guidance"
+      "technical technical"
+      "feedback feedback";
+  }
+  .account-health { align-self: start; }
+  .sync-console { grid-template-columns: 1fr; }
+  .workflow-list { overflow-x: auto; }
+  .workflow-list__head,
+  .workflow-list > article { min-width: 800px; }
+  .model-profile-list__head { min-width: 760px; }
+  .model-table-shell { overflow-x: auto; }
+  .diagnostic-grid { grid-template-columns: 1fr; }
+}
+
+/* Comfortable desktop scale: fluid from compact laptops through 4K monitors. */
+.recruitment-admin {
+  --admin-control-height: clamp(38px, 2.25vw, 44px);
+  --admin-control-height-compact: clamp(34px, 2vw, 40px);
+  --admin-tab-height: clamp(49px, 3vw, 58px);
+  --admin-page-title: clamp(24px, 1.5vw, 30px);
+  --admin-section-title: clamp(17px, 1.05vw, 21px);
+  --admin-row-min: clamp(56px, 3.5vw, 68px);
+  width: 100%;
+  max-width: 2000px;
+  min-height: calc(100vh - clamp(68px, 4.15vw, 80px));
+  margin: 0 auto;
+  padding: clamp(28px, 2.2vw, 46px) clamp(28px, 2.45vw, 52px) clamp(42px, 3vw, 64px);
+}
+
+.admin-hero {
+  min-height: clamp(66px, 4.3vw, 84px);
+  gap: clamp(20px, 1.5vw, 30px);
+  padding-bottom: clamp(10px, .8vw, 16px);
+}
+.admin-hero h2 {
+  margin-bottom: clamp(5px, .4vw, 8px);
+  line-height: 1.22;
+}
+.admin-hero p {
+  max-width: 980px;
+  font-size: clamp(13px, .78vw, 16px);
+  line-height: 1.65;
+}
+.admin-refresh {
+  min-height: clamp(34px, 2vw, 40px);
+  gap: 7px;
+  padding-inline: 8px;
+  font-size: clamp(12px, .72vw, 14px);
+}
+.admin-refresh .app-icon {
+  width: clamp(16px, 1vw, 19px);
+  height: clamp(16px, 1vw, 19px);
+}
+
+.admin-tabs {
+  gap: clamp(29px, 2.2vw, 46px);
+  min-height: var(--admin-tab-height);
+  margin-bottom: clamp(18px, 1.4vw, 28px);
+}
+.admin-tabs button {
+  min-height: var(--admin-tab-height);
+  font-size: clamp(13px, .78vw, 16px);
+}
+.admin-tabs button.active { box-shadow: inset 0 -3px var(--admin-brand); }
+
+.admin-section { gap: clamp(15px, 1.15vw, 23px); }
+.admin-section__header {
+  min-height: clamp(44px, 2.8vw, 54px);
+  gap: clamp(14px, 1vw, 20px);
+}
+.admin-header-actions { gap: clamp(14px, 1vw, 20px); }
+.admin-button {
+  min-height: var(--admin-control-height);
+  gap: clamp(7px, .5vw, 10px);
+  padding-inline: clamp(15px, 1vw, 20px);
+  border-radius: clamp(7px, .5vw, 9px);
+  font-size: clamp(12px, .72vw, 14px);
+}
+.admin-button .app-icon {
+  width: clamp(16px, 1vw, 19px);
+  height: clamp(16px, 1vw, 19px);
+}
+.admin-segmented { padding: 4px; }
+.admin-segmented button {
+  min-height: clamp(32px, 1.95vw, 38px);
+  padding-inline: clamp(13px, .9vw, 18px);
+  border-radius: clamp(6px, .45vw, 8px);
+  font-size: clamp(11px, .68vw, 13px);
+}
+
+.account-grid { gap: clamp(15px, 1vw, 20px); }
+.account-card {
+  grid-template-columns: minmax(230px, .8fr) minmax(190px, .55fr) auto;
+  gap: clamp(12px, .85vw, 17px) clamp(26px, 2vw, 40px);
+  min-height: clamp(202px, 13vw, 250px);
+  padding: clamp(21px, 1.45vw, 29px);
+  border-radius: clamp(10px, .7vw, 14px);
+}
+.account-card > header { gap: clamp(9px, .65vw, 13px); }
+.account-card > header strong { font-size: clamp(15px, .92vw, 18px); }
+.account-status {
+  min-height: clamp(25px, 1.5vw, 29px);
+  padding-inline: clamp(9px, .65vw, 13px);
+  font-size: clamp(11px, .65vw, 13px);
+}
+.account-last-check { gap: 4px; }
+.account-last-check span,
+.account-health,
+.account-technical summary { font-size: clamp(11px, .65vw, 13px); }
+.account-last-check strong { font-size: clamp(13px, .78vw, 16px); }
+.account-health { gap: 8px; }
+.account-health::before { width: 7px; height: 7px; }
+.account-card > footer { gap: clamp(10px, .75vw, 15px); }
+.account-card > footer .admin-button { min-height: clamp(36px, 2.1vw, 41px); }
+.account-blocker,
+.account-ready {
+  padding-top: clamp(11px, .8vw, 16px);
+  font-size: clamp(12px, .72vw, 14px);
+  line-height: 1.65;
+}
+.account-technical dl { font-size: clamp(11px, .66vw, 13px); }
+
+.sync-console {
+  grid-template-columns: minmax(320px, 1.2fr) minmax(320px, 1fr) auto;
+  gap: clamp(18px, 1.4vw, 28px);
+  padding: clamp(20px, 1.45vw, 29px);
+  border-radius: clamp(10px, .7vw, 14px);
+}
+.sync-console label > span { font-size: clamp(11px, .68vw, 13px); }
+.sync-console select {
+  min-height: var(--admin-control-height);
+  font-size: clamp(12px, .72vw, 14px);
+}
+.sync-readiness { min-height: var(--admin-control-height); }
+.sync-readiness strong { font-size: clamp(13px, .78vw, 16px); }
+.sync-readiness small { font-size: clamp(11px, .65vw, 13px); }
+
+.admin-table-shell,
+.workflow-list,
+.model-table-shell,
+.model-boundary,
+.diagnostic-grid { border-radius: clamp(10px, .7vw, 14px); }
+.admin-table-shell > header { padding: clamp(15px, 1vw, 20px) clamp(18px, 1.2vw, 24px); }
+.admin-table-shell > header strong { font-size: clamp(14px, .86vw, 17px); }
+.admin-table-shell > header span { font-size: clamp(11px, .65vw, 13px); }
+.admin-table-shell th {
+  height: clamp(39px, 2.4vw, 47px);
+  padding: 9px clamp(15px, 1vw, 20px);
+  font-size: clamp(10px, .62vw, 12px);
+}
+.admin-table-shell td {
+  height: var(--admin-row-min);
+  padding: clamp(12px, .8vw, 16px) clamp(15px, 1vw, 20px);
+  font-size: clamp(12px, .72vw, 14px);
+}
+
+.workflow-list__head,
+.workflow-list > article {
+  grid-template-columns: minmax(280px, 1fr) clamp(72px, 5vw, 96px) clamp(72px, 5vw, 96px) clamp(94px, 6vw, 116px) minmax(270px, auto);
+  column-gap: clamp(14px, 1vw, 20px);
+}
+.workflow-list__head {
+  min-height: clamp(39px, 2.4vw, 47px);
+  padding-inline: clamp(18px, 1.2vw, 24px);
+  font-size: clamp(10px, .62vw, 12px);
+}
+.workflow-list > article {
+  min-height: var(--admin-row-min);
+  padding: clamp(10px, .7vw, 14px) clamp(18px, 1.2vw, 24px);
+}
+.workflow-list__identity strong { font-size: clamp(12px, .72vw, 14px); }
+.workflow-list__identity small,
+.workflow-list__meta { font-size: clamp(10px, .62vw, 12px); }
+.workflow-status { font-size: clamp(10px, .62vw, 12px); }
+.workflow-list__actions .admin-button {
+  min-height: clamp(34px, 2vw, 40px);
+  padding-inline: clamp(11px, .8vw, 16px);
+}
+
+.model-table-shell { min-height: clamp(330px, 24vw, 460px); }
+.model-profile-list__head {
+  min-height: clamp(39px, 2.4vw, 47px);
+  padding-inline: clamp(18px, 1.2vw, 24px);
+  font-size: clamp(10px, .62vw, 12px);
+}
+.model-table-shell > .admin-empty { min-height: clamp(288px, 21vw, 410px); }
+.model-profile-list > article {
+  min-height: var(--admin-row-min);
+  padding: clamp(12px, .8vw, 16px) clamp(18px, 1.2vw, 24px);
+}
+.model-boundary { padding: clamp(15px, 1vw, 20px) clamp(18px, 1.2vw, 24px); }
+.model-boundary strong { font-size: clamp(14px, .82vw, 16px); }
+.model-boundary p { font-size: clamp(11px, .65vw, 13px); }
+
+.diagnostic-grid > article {
+  min-height: clamp(118px, 7.5vw, 144px);
+  padding: clamp(18px, 1.2vw, 24px) clamp(18px, 1.2vw, 24px) clamp(18px, 1.2vw, 24px) clamp(34px, 2.2vw, 44px);
+}
+.diagnostic-grid > article::before {
+  left: clamp(16px, 1vw, 20px);
+  top: clamp(23px, 1.5vw, 29px);
+  width: 7px;
+  height: 7px;
+}
+.diagnostic-grid span { font-size: clamp(10px, .62vw, 12px); }
+.diagnostic-grid strong { font-size: clamp(15px, .9vw, 18px); }
+.diagnostic-grid p { font-size: clamp(11px, .65vw, 13px); line-height: 1.6; }
+
+.admin-empty { min-height: clamp(220px, 16vw, 310px); }
+.admin-empty strong { font-size: clamp(14px, .86vw, 17px); }
+.admin-empty p { font-size: clamp(12px, .72vw, 14px); }
+
+@media (max-width: 1100px) {
+  .recruitment-admin { padding: 24px 24px 40px; }
+  .sync-console { grid-template-columns: 1fr 1fr; }
+  .workflow-list__head,
+  .workflow-list > article { grid-template-columns: minmax(250px, 1fr) 70px 70px 90px minmax(250px, auto); }
+}
+
+@media (max-width: 900px) {
+  .recruitment-admin { min-height: calc(100vh - 68px); padding: 22px 20px 36px; }
+  .admin-tabs { gap: 24px; overflow-x: auto; }
+  .admin-section__header { align-items: stretch; }
+  .account-card {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "identity health"
+      "check check"
+      "actions actions"
+      "guidance guidance"
+      "technical technical"
+      "feedback feedback";
+  }
+  .sync-console { grid-template-columns: 1fr; }
+  .workflow-list,
+  .model-table-shell { overflow-x: auto; }
+  .workflow-list__head,
+  .workflow-list > article { min-width: 900px; }
+  .model-profile-list__head { min-width: 820px; }
+  .diagnostic-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (min-width: 2200px) {
+  .recruitment-admin { box-shadow: 0 0 0 1px rgba(226, 232, 240, .55); }
+}
+
+/* Readability floor: the admin UI stays legible on 1280px laptops and scales up on larger monitors. */
+.recruitment-admin {
+  --admin-control-height: clamp(46px, 2.55vw, 54px);
+  --admin-control-height-compact: clamp(42px, 2.35vw, 50px);
+  --admin-tab-height: clamp(58px, 3.25vw, 68px);
+  --admin-page-title: clamp(30px, 1.85vw, 38px);
+  --admin-section-title: clamp(20px, 1.2vw, 25px);
+  --admin-row-min: clamp(68px, 3.8vw, 80px);
+  min-height: calc(100vh - clamp(74px, 4.45vw, 88px));
+  padding: clamp(32px, 2.35vw, 50px) clamp(30px, 2.5vw, 56px) clamp(48px, 3.2vw, 72px);
+}
+
+.admin-hero {
+  min-height: clamp(84px, 5vw, 102px);
+  padding-bottom: clamp(14px, .9vw, 18px);
+}
+.admin-hero h2 { line-height: 1.16; letter-spacing: -.035em; }
+.admin-hero p {
+  max-width: 1080px;
+  font-size: clamp(16px, .94vw, 19px);
+  line-height: 1.65;
+}
+.admin-refresh {
+  min-height: var(--admin-control-height-compact);
+  gap: 9px;
+  padding-inline: 12px;
+  font-size: clamp(15px, .84vw, 17px);
+}
+.admin-refresh .app-icon,
+.admin-button .app-icon {
+  width: clamp(20px, 1.12vw, 23px);
+  height: clamp(20px, 1.12vw, 23px);
+}
+
+.admin-tabs {
+  gap: clamp(34px, 2.45vw, 52px);
+  margin-bottom: clamp(22px, 1.55vw, 32px);
+}
+.admin-tabs button { font-size: clamp(16px, .92vw, 19px); }
+
+.admin-section { gap: clamp(19px, 1.25vw, 26px); }
+.admin-section__header { min-height: clamp(50px, 3vw, 62px); }
+.admin-button {
+  padding-inline: clamp(18px, 1.15vw, 24px);
+  border-radius: clamp(8px, .55vw, 11px);
+  font-size: clamp(15px, .86vw, 18px);
+}
+.admin-segmented { padding: 5px; }
+.admin-segmented button {
+  min-height: clamp(38px, 2.15vw, 46px);
+  padding-inline: clamp(16px, 1vw, 22px);
+  font-size: clamp(14px, .8vw, 16px);
+}
+
+.account-grid { gap: clamp(18px, 1.15vw, 24px); }
+.account-card {
+  grid-template-columns: minmax(270px, .8fr) minmax(220px, .55fr) auto;
+  gap: clamp(16px, 1vw, 21px) clamp(30px, 2.1vw, 46px);
+  min-height: clamp(270px, 15.5vw, 320px);
+  padding: clamp(26px, 1.7vw, 36px);
+}
+.account-card > header { gap: clamp(11px, .7vw, 15px); }
+.account-card > header strong { font-size: clamp(19px, 1.08vw, 22px); }
+.account-status {
+  min-height: clamp(31px, 1.7vw, 36px);
+  padding-inline: clamp(11px, .7vw, 15px);
+  font-size: clamp(14px, .78vw, 16px);
+}
+.account-last-check span,
+.account-health,
+.account-technical summary { font-size: clamp(14px, .78vw, 16px); }
+.account-last-check strong { font-size: clamp(16px, .9vw, 19px); }
+.account-health::before { width: 9px; height: 9px; }
+.account-card > footer { gap: clamp(12px, .8vw, 17px); }
+.account-card > footer .admin-button { min-height: var(--admin-control-height-compact); }
+.account-blocker,
+.account-ready {
+  padding-top: clamp(14px, .9vw, 19px);
+  font-size: clamp(15px, .84vw, 17px);
+  line-height: 1.65;
+}
+.account-technical dl { font-size: clamp(14px, .78vw, 16px); line-height: 1.7; }
+
+.sync-console {
+  grid-template-columns: minmax(360px, 1.2fr) minmax(350px, 1fr) auto;
+  gap: clamp(22px, 1.5vw, 32px);
+  padding: clamp(25px, 1.65vw, 34px);
+}
+.sync-console label > span { font-size: clamp(14px, .8vw, 16px); }
+.sync-console select { font-size: clamp(15px, .86vw, 18px); }
+.sync-readiness strong { font-size: clamp(16px, .92vw, 19px); }
+.sync-readiness small { font-size: clamp(14px, .78vw, 16px); }
+
+.admin-table-shell > header { padding: clamp(19px, 1.2vw, 25px) clamp(21px, 1.35vw, 28px); }
+.admin-table-shell > header strong { font-size: clamp(18px, 1vw, 21px); }
+.admin-table-shell > header span { font-size: clamp(14px, .78vw, 16px); }
+.admin-table-shell th {
+  height: clamp(48px, 2.7vw, 56px);
+  padding: 11px clamp(18px, 1.15vw, 24px);
+  font-size: clamp(13px, .74vw, 15px);
+}
+.admin-table-shell td {
+  padding: clamp(15px, .9vw, 19px) clamp(18px, 1.15vw, 24px);
+  font-size: clamp(15px, .86vw, 18px);
+}
+
+.workflow-list__head,
+.workflow-list > article {
+  grid-template-columns: minmax(300px, 1fr) clamp(82px, 5.3vw, 104px) clamp(82px, 5.3vw, 104px) clamp(106px, 6.4vw, 126px) minmax(300px, auto);
+  column-gap: clamp(16px, 1.1vw, 23px);
+}
+.workflow-list__head {
+  min-height: clamp(48px, 2.7vw, 56px);
+  padding-inline: clamp(21px, 1.35vw, 28px);
+  font-size: clamp(13px, .74vw, 15px);
+}
+.workflow-list > article { padding: clamp(13px, .8vw, 17px) clamp(21px, 1.35vw, 28px); }
+.workflow-list__identity strong { font-size: clamp(15px, .86vw, 18px); }
+.workflow-list__identity small,
+.workflow-list__meta { font-size: clamp(13px, .74vw, 15px); }
+.workflow-status { font-size: clamp(13px, .74vw, 15px); }
+.workflow-list__actions .admin-button {
+  min-height: var(--admin-control-height-compact);
+  padding-inline: clamp(14px, .9vw, 19px);
+}
+
+@media (max-width: 1400px) {
+  .workflow-list__head,
+  .workflow-list > article {
+    grid-template-columns: minmax(270px, 1fr) 72px 72px 92px minmax(260px, auto);
+    column-gap: 15px;
+  }
+}
+
+.model-table-shell { min-height: clamp(390px, 26vw, 520px); }
+.model-profile-list__head {
+  min-height: clamp(48px, 2.7vw, 56px);
+  padding-inline: clamp(21px, 1.35vw, 28px);
+  font-size: clamp(13px, .74vw, 15px);
+}
+.model-table-shell > .admin-empty { min-height: clamp(336px, 23vw, 466px); }
+.model-boundary strong { font-size: clamp(18px, 1vw, 21px); }
+.model-boundary p { font-size: clamp(15px, .84vw, 17px); line-height: 1.65; }
+
+/* Model management is intentionally one readability step larger than the other dense admin tables. */
+.admin-section--models > .admin-section__header .admin-button { font-size: clamp(17px, .96vw, 20px); }
+.admin-section--models .model-profile-list__head {
+  min-height: clamp(54px, 3vw, 62px);
+  font-size: clamp(16px, .9vw, 18px);
+}
+.admin-section--models .model-profile-list > article {
+  min-height: clamp(82px, 4.6vw, 96px);
+  padding-block: clamp(17px, 1vw, 22px);
+}
+.admin-section--models .model-card__body > strong { font-size: clamp(20px, 1.12vw, 23px); }
+.admin-section--models .model-card__body p { font-size: clamp(17px, .96vw, 20px); line-height: 1.55; }
+.admin-section--models .model-card__body small { font-size: clamp(15px, .84vw, 17px); }
+.admin-section--models .model-card__actions :is(.admin-button, .admin-link) { font-size: clamp(16px, .9vw, 18px); }
+.admin-section--models .model-active-chip { font-size: clamp(15px, .84vw, 17px); }
+.admin-section--models .model-action-message { font-size: clamp(16px, .9vw, 18px); }
+.admin-section--models .model-table-shell > .admin-empty { min-height: clamp(380px, 25vw, 500px); }
+.admin-section--models .admin-empty .app-icon { width: 54px; height: 54px; }
+.admin-section--models .admin-empty strong { font-size: clamp(24px, 1.35vw, 28px); }
+.admin-section--models .admin-empty p { font-size: clamp(18px, 1vw, 21px); }
+.admin-section--models .admin-empty .admin-button { font-size: clamp(17px, .96vw, 20px); }
+.admin-section--models .model-boundary { padding: clamp(20px, 1.25vw, 27px) clamp(22px, 1.4vw, 30px); }
+.admin-section--models .model-boundary strong { font-size: clamp(22px, 1.22vw, 25px); }
+.admin-section--models .model-boundary p { font-size: clamp(18px, 1vw, 21px); line-height: 1.7; }
+
+.diagnostic-grid > article {
+  min-height: clamp(150px, 8.6vw, 178px);
+  padding: clamp(22px, 1.4vw, 29px) clamp(22px, 1.4vw, 29px) clamp(22px, 1.4vw, 29px) clamp(42px, 2.5vw, 52px);
+}
+.diagnostic-grid > article::before {
+  left: clamp(20px, 1.2vw, 25px);
+  top: clamp(29px, 1.75vw, 35px);
+  width: 9px;
+  height: 9px;
+}
+.diagnostic-grid span { font-size: clamp(13px, .74vw, 15px); }
+.diagnostic-grid strong { font-size: clamp(18px, 1.02vw, 22px); }
+.diagnostic-grid p { font-size: clamp(14px, .8vw, 17px); line-height: 1.65; }
+
+.admin-empty { min-height: clamp(270px, 18vw, 360px); }
+.admin-empty .app-icon { width: 46px; height: 46px; }
+.admin-empty strong { font-size: clamp(18px, 1vw, 21px); }
+.admin-empty p { font-size: clamp(15px, .84vw, 17px); line-height: 1.65; }
+
+@media (max-width: 1100px) {
+  .recruitment-admin { padding: 28px 26px 44px; }
+  .account-card { grid-template-columns: 1fr auto; }
+  .sync-console { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 900px) {
+  .recruitment-admin { padding: 24px 20px 40px; }
+  .admin-tabs { gap: 28px; }
+  .workflow-list__head,
+  .workflow-list > article { min-width: 1040px; }
+  .model-profile-list__head { min-width: 900px; }
 }
 </style>

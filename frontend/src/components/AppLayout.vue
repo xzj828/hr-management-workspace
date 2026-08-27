@@ -26,7 +26,10 @@ const collapsed = ref(false)
 const modelSettingsOpen = ref(false)
 
 const currentModule = computed(() => moduleForRoute(route))
+const isRecruitmentShell = computed(() => currentModule.value === 'recruitment')
 const isResultsWorkspace = computed(() => ['recruitment-results', 'recruitment-tasks', 'recruitment-task-detail'].includes(String(route.name)))
+const isRecruitmentDashboard = computed(() => route.name === 'recruitment-dashboard')
+const isRecruitmentAdmin = computed(() => route.name === 'recruitment-admin')
 const activeTopNavigationName = computed(() => (
   ['recruitment-tasks', 'recruitment-task-detail'].includes(String(route.name)) ? 'recruitment-results' : route.name
 ))
@@ -83,7 +86,7 @@ function closeAccountModelSettings() {
 </script>
 
 <template>
-  <div class="shell" :class="{ 'shell--collapsed': collapsed, 'shell--results': isResultsWorkspace }">
+  <div class="shell" :class="{ 'shell--collapsed': collapsed, 'shell--recruitment': isRecruitmentShell, 'shell--results': isResultsWorkspace, 'shell--recruitment-dashboard': isRecruitmentDashboard, 'shell--recruitment-admin': isRecruitmentAdmin }">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand__mark">XM</div>
@@ -125,7 +128,7 @@ function closeAccountModelSettings() {
           <RecruitmentJobContext
             v-if="currentModule === 'recruitment' && route.meta.recruitmentScope === 'job' && !route.meta.inlineJobContext"
           />
-          <ModelSwitcher v-if="currentModule === 'recruitment'" :compact="isResultsWorkspace" />
+          <ModelSwitcher v-if="currentModule === 'recruitment'" :compact="false" />
           <UserAccountMenu :user="auth.user" @model-settings="modelSettingsOpen = true" @logout="signOut" />
         </div>
       </header>
@@ -134,6 +137,8 @@ function closeAccountModelSettings() {
         :class="{
           'page-container--workbench': route.name === 'recruitment-workbench',
           'page-container--results': isResultsWorkspace,
+          'page-container--recruitment-dashboard': isRecruitmentDashboard,
+          'page-container--recruitment-admin': isRecruitmentAdmin,
         }"
       >
         <router-view />

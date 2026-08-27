@@ -1,5 +1,7 @@
 # Local SVG Sources
 
+The shared `AppIcon` runtime now uses the locally installed [`@lucide/vue`](https://lucide.dev/) 1.34.0 package (ISC license) for consistent 24 × 24 rounded-line SVG icons. The sanitized Ant Design files below remain as historical local source assets and are no longer the default renderer.
+
 All icons were downloaded from the [Ant Design official collection on Iconfont](https://www.iconfont.cn/collections/detail?cid=9402) and are stored locally as sanitized path-only SVG files. The upstream [Ant Design icons project](https://github.com/ant-design/ant-design-icons) is licensed under the MIT License.
 
 | Semantic name | Iconfont source | Search term | Retrieved |

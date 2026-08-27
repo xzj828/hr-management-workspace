@@ -21,7 +21,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useModelCredentialStore } from '@/stores/modelCredential'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
-const ModelSwitcherStub = { template: '<button class="model-switcher">切换模型</button>' }
+const ModelSwitcherStub = { props: ['compact'], template: '<button class="model-switcher">切换模型</button>' }
 
 describe('AppLayout navigation hierarchy', () => {
   beforeEach(() => {
@@ -57,7 +57,38 @@ describe('AppLayout navigation hierarchy', () => {
     expect(wrapper.text()).not.toContain('Copilot')
     expect(wrapper.find('.topbar h1').exists()).toBe(false)
     expect(wrapper.findComponent({ name: 'RecruitmentJobContext' }).exists()).toBe(false)
+    expect(wrapper.get('.shell').classes()).toContain('shell--recruitment')
     expect(wrapper.get('.page-container').classes()).toContain('page-container--workbench')
+  })
+
+  it('applies the reference-sized shell only on the recruitment dashboard', () => {
+    routerState.route = {
+      name: 'recruitment-dashboard',
+      meta: { module: 'recruitment', recruitmentScope: 'global', title: '招聘看板' },
+      query: {},
+    }
+    const wrapper = mount(AppLayout, {
+      global: { stubs: { RouterLink: { props: ['to'], template: '<a><slot /></a>' }, RouterView: true, ModelSwitcher: ModelSwitcherStub } },
+    })
+
+    expect(wrapper.get('.shell').classes()).toContain('shell--recruitment-dashboard')
+    expect(wrapper.get('.shell').classes()).toContain('shell--recruitment')
+    expect(wrapper.get('.page-container').classes()).toContain('page-container--recruitment-dashboard')
+  })
+
+  it('applies the fluid desktop shell and full-width canvas on recruitment administration', () => {
+    routerState.route = {
+      name: 'recruitment-admin',
+      meta: { module: 'recruitment', recruitmentScope: 'global', title: '管理后台' },
+      query: {},
+    }
+    const wrapper = mount(AppLayout, {
+      global: { stubs: { RouterLink: { props: ['to'], template: '<a><slot /></a>' }, RouterView: true, ModelSwitcher: ModelSwitcherStub } },
+    })
+
+    expect(wrapper.get('.shell').classes()).toContain('shell--recruitment-admin')
+    expect(wrapper.get('.shell').classes()).toContain('shell--recruitment')
+    expect(wrapper.get('.page-container').classes()).toContain('page-container--recruitment-admin')
   })
 
   it('keeps the selected job only on job-scoped navigation links', () => {
@@ -102,6 +133,8 @@ describe('AppLayout navigation hierarchy', () => {
     })
 
     expect(wrapper.get('.shell').classes()).toContain('shell--results')
+    expect(wrapper.get('.shell').classes()).toContain('shell--recruitment')
+    expect(wrapper.getComponent(ModelSwitcherStub).props('compact')).toBe(false)
     expect(wrapper.get('.page-container').classes()).toContain('page-container--results')
     const resultLink = wrapper.findAll('.top-navigation__link').find((link) => link.text().includes('结果中心'))
     expect(resultLink.classes()).toContain('top-navigation__link--active')

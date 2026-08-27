@@ -63,3 +63,101 @@
 - No actionable P0, P1, or P2 visual, interaction, overflow, or runtime findings remain for this pass.
 
 final result: passed
+
+---
+
+# 招聘看板像素还原与响应式 Design QA
+
+## Evidence
+
+- Source visual truth: `C:\Users\ADMINI~1\AppData\Local\Temp\codex-clipboard-6e7b22cb-83fa-4fa0-8386-a725f73c7acf.png`
+- Browser-rendered implementation: `C:\Users\Administrator\.codex\visualizations\2026\08\27\01a041ef-b7f9-7930-8220-ff0fe3c0578d\recruitment-dashboard-final.png`
+- Full-view normalized comparison: `C:\Users\Administrator\.codex\visualizations\2026\08\27\01a041ef-b7f9-7930-8220-ff0fe3c0578d\recruitment-dashboard-comparison.png`（左为源图，右为实现）
+- Focused main-region comparison: `C:\Users\Administrator\.codex\visualizations\2026\08\27\01a041ef-b7f9-7930-8220-ff0fe3c0578d\recruitment-dashboard-focus-main.png`（左为源图，右为实现）
+- Responsive evidence: `recruitment-dashboard-1280.png`、`recruitment-dashboard-900.png`、`recruitment-dashboard-390.png`、`recruitment-dashboard-390-full.png`，均位于上述可视化目录。
+- Source pixels: 1487 × 1058. Implementation pixels: 1487 × 1058. CSS viewport: 1487 × 1058. Density: 1 CSS px : 1 captured px; no density normalization or resampling was needed before the full-view comparison.
+- State: authenticated normal recruitment-dashboard state using an isolated temporary SQLite preview database; production data and authentication code were not changed.
+
+## Fidelity Surfaces
+
+- Fonts and typography: Microsoft YaHei / YaHei UI fallback matches the existing Chinese product shell; title, panel heading, row label, secondary copy, KPI, date, and top-navigation hierarchy match the selected visual's scale and optical weight without wrapping at the target viewport.
+- Spacing and layout rhythm: the target 284px sidebar, 75px topbar, 37px content inset, 1.475:1 main grid, 615px primary card, 451px position card, 152px risk card, 17px column gap, and five-part metric strip are reproduced. Full-view and focused comparisons show aligned card edges, dividers, row centers, progress tracks, and bottom strip.
+- Colors and tokens: deep navy shell, pale blue-gray canvas, white cards, cool gray borders/copy, teal action/status color, amber warning pills, and red risk icon map directly to the source. No alternative palette or decorative gradient was introduced into the content surface.
+- Image and asset fidelity: the target contains no photographic or illustrative raster assets. Visible product icons use the existing local SVG library plus `@lucide/vue` outline icons for the briefcase, person, document, calendar, and shield-alert forms. No emoji, text glyph, handcrafted SVG, inline SVG, placeholder art, or CSS-drawn icon is used.
+- Copy and content: all static headings and helper copy match the source. Candidate/job counts, recruited headcount, current stage, and hired counts remain bound to the real dashboard response; therefore `0 / 2` and `面试推进` in the isolated data intentionally differ from the mock's static `1 / 2` and `简历筛选` while preserving the same typography and geometry.
+- Responsiveness: the 1487px target preserves exact two-column proportions; 1280px keeps the same proportional grid; 900px switches the content cards to one column with the compact shell; 390px removes the sidebar rail, keeps an icon topbar, and stacks cards/metrics without horizontal clipping.
+
+## Full-view and Focused Comparison
+
+- The full-view comparison was inspected in one combined image at equal crop, pixel size, theme, route, and state. No major-region proportion, above-the-fold density, color, radius, or alignment mismatch remains.
+- The focused comparison covers the highest-density surfaces at readable size: all four priority rows, both position-progress rows, progress tracks, warning pills, risk state, SVG alignment, small copy, and card dividers. Dynamic business values are the only intentional content deviations.
+
+## Comparison History
+
+1. Initial P1: the previous implementation used a dark decision card and additional analytics sections, materially changing the selected source hierarchy and above-the-fold density.
+   - Fix: replaced the normal state with the selected single-screen structure: left priority card, right position/risk column, and bottom metric strip; constrained the shell dimensions only to the recruitment-dashboard route.
+   - Post-fix evidence: `recruitment-dashboard-comparison.png`.
+2. Initial P2: first pixel pass placed the main cards roughly 10px too low, the metric strip roughly 12px too high, and used generic project/warning icons in job and risk slots.
+   - Fix: corrected hero-to-grid rhythm, metric margin, job-row spacing, column fractions, topbar account/model widths, and replaced the affected glyphs with matching outline icons from the icon library.
+   - Post-fix evidence: `recruitment-dashboard-focus-main.png`; card and row boundaries now align with the source.
+3. Follow-up P2: the first narrow-screen pass retained the 76px sidebar and desktop content inset at 390px, creating horizontal clipping.
+   - Fix: introduced a route-scoped ≤680px shell, icon-only top navigation, 16px page inset, stacked hero controls, single-column metrics, and a 900px container breakpoint while keeping the two-column ratio at 1280px.
+   - Post-fix evidence: `recruitment-dashboard-1280.png` and `recruitment-dashboard-390-full.png`. Measured document/body widths equal the available content width at 1487, 1280, 900, and 390; no horizontal overflow remains.
+
+## Interaction and Runtime Checks
+
+- Primary CTA navigates to `/recruitment/workbench?new=1&step=context&job=1`.
+- “待联系候选人” navigates to `/recruitment/results?stage=to_contact&view=candidates`.
+- Sidebar collapse and restore both work in the desktop shell.
+- Responsive widths checked: 1487 × 1058, 1280 × 900, 900 × 1000, and 390 × 844. At every width `document.scrollWidth` and `body.scrollWidth` are no greater than the inner viewport width.
+- Loading, error/retry, empty, and normal states are covered by the focused view tests.
+- Focused tests: 15/15 passed. Full frontend suite: 43 files, 260/260 tests passed. Production build: passed.
+- Browser console: the final stable build produced no new error entries. Two retained log entries at 07:18:30 reference a superseded asset hash from an earlier concurrent build and predate the final 07:21+ verification captures.
+
+## Findings
+
+- No actionable P0, P1, or P2 visual, interaction, overflow, accessibility, asset, or runtime findings remain.
+- P3/intentional: dynamic preview values differ from the static mock in two job-detail labels; keeping server truth is preferred to fabricating business data.
+
+final result: passed
+
+---
+
+# 管理后台五界面 Design QA
+
+## Scope
+
+- Reference: `polish/ideation-admin-five/selected-editorial-administration.png`
+- Implementation: `frontend/src/views/recruitment/RecruitmentAdminView.vue`
+- Comparison boards: `polish/design-qa-admin/comparison-full.png`, `polish/design-qa-admin/comparison-focus.png`, `polish/design-qa-admin/comparison-responsive-1280.png`, `polish/design-qa-admin/readable-five-screens-1280.png`, `polish/design-qa-admin/comparison-fluid-shell.png`
+- Screens: 账号与浏览器、职位同步、流程方案、模型管理、系统诊断
+
+## Visual review
+
+- P0 blockers: none
+- P1 major mismatches: none
+- P2 noticeable mismatches: none
+- P3 polish notes: the reference is a montage of differently cropped mini-frames; the implementation preserves the selected hierarchy, density, spacing, typography, color, controls, card/table treatment, and five-screen composition at the product's desktop viewport.
+- Readability iteration: the 1280 × 720 baseline now uses a 30px page title, 16px tabs/body copy, 15px buttons, a 19px account title, a 58px tab rail, and a 274px account card. Fluid `clamp()` sizing grows these surfaces through 1080p, 2K, and 4K while capping the content canvas at 2000px on ultrawide displays.
+- Five-screen browser verification: `polish/design-qa-admin/readable-accounts-1280x720.png`, `readable-jobs-1280x720.png`, `readable-workflows-1280x720.png`, `readable-models-1280x720.png`, and `readable-diagnostics-1280x720.png`.
+- At 1280 × 720 the document and admin canvas have no horizontal overflow. The workflow action column uses a dedicated 1280–1400px grid contract so its full action set remains visible without shrinking the type.
+- Model-management readability pass: its empty-state title/body now start at 24/18px, table headings at 16px, and configured-model names/details/actions at 15–20px. This deliberately gives the model page one larger type tier without changing the other four screens.
+- Shell-proportion pass: the admin sidebar now scales from 272px at laptop width toward 17.5vw and caps at 380px; the top navigation scales from 82px to 104px. Brand, navigation typography, icons, status controls, spacing, and avatar scale with those two rails instead of remaining visually narrow on larger displays.
+- Stable-shell browser contract: the root page permanently reserves its vertical scrollbar gutter, so switching among short and long admin tabs cannot change the shell's available width. At 1280 × 720 all five tabs must measure the same sidebar, topbar, admin-root, and document client width, with no horizontal overflow.
+- Stable-shell runtime result: every tab measured exactly `1265px document / 272px sidebar / 993px topbar / 993px admin root`; document `clientWidth` and `scrollWidth` were both 1265px on all five screens. Capture: `polish/design-qa-admin/stable-shell-1280x720.png`.
+- Cross-route shell contract: every expanded application shell uses the same sidebar token, overriding the previous 244px attendance/workbench, 230px results, 284px dashboard, and 272px admin variants. This covers both left-side module switching and top recruitment navigation; the collapsed 82px state remains the only intentional width change.
+- Cross-route runtime result: 管理后台、招聘看板、招聘作业台、结果中心、考勤管理，以及从考勤返回招聘，全部实测为 `272px sidebar / 993px topbar / 1265px document client width`; no route transition changed the shell width.
+- Cross-route element contract: expanded shells also share identical sidebar padding, 50px brand mark, 19px brand name, 64px navigation rows, 25px navigation icons, 17px navigation labels, 52px service state, 82px topbar, 17px top links, 24px top-link icons, 42px avatar, and stable model/account trigger widths at the 1280px viewport.
+- Result-center model switcher no longer uses the compact prop; every recruitment top route now renders the same 178px × 40px switcher used by management administration.
+- Final management-admin baseline comparison returned zero geometry diffs for 招聘看板、招聘作业台、结果中心、管理后台、考勤管理 and the return to 招聘管理. The measured baseline was 272px sidebar, 50px brand mark, 64px side rows, 25px side icons, 82px topbar, 17px top links, 24px top icons, 178×40px model switcher, 185×42px account trigger, and 42px avatar.
+- Icon iteration: all shared UI glyphs now render as real 24 × 24 rounded-line SVGs with `fill="none"`, `stroke="currentColor"`, `stroke-linecap="round"`, and 1.8px strokes, matching the reference's outline icon language.
+
+## Runtime review
+
+- Five sub-navigation tabs switch to the correct active screen.
+- Current/archive filters and the add-account dialog respond correctly.
+- Browser console warnings/errors: none.
+- Frontend test suite: 43 files, 260 tests passed.
+- Production build: passed.
+
+final result: passed

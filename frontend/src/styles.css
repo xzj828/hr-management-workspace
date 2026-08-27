@@ -19,6 +19,10 @@
 
 * { box-sizing: border-box; }
 html, body, #app { min-width: 320px; min-height: 100%; margin: 0; }
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
 body {
   min-height: 100vh;
   font-size: 14px;
@@ -104,6 +108,166 @@ a { color: inherit; text-decoration: none; }
 .page-container { max-width: 1660px; margin: 0 auto; padding: 28px 34px 42px; }
 .page-container.page-container--workbench { max-width: none; margin: 0; padding: 0; }
 .page-container.page-container--results { max-width: none; margin: 0; padding: clamp(1.5rem, 2.2vw, 3.25rem) clamp(1.25rem, 2%, 3.75rem) clamp(2.5rem, 4vw, 4.5rem); }
+.shell--recruitment-dashboard { --sidebar-width: 284px; background: #f4f7f9; }
+.shell--recruitment-dashboard .sidebar { padding: 25px 17px 22px; background: linear-gradient(145deg,#07192c 0%,#0b1d32 58%,#09172a 100%); }
+.shell--recruitment-dashboard .brand { gap: 14px; padding: 0 9px 34px; }
+.shell--recruitment-dashboard .brand__mark { width: 51px; min-width: 51px; height: 51px; border-radius: 14px; font-size: 17px; }
+.shell--recruitment-dashboard .brand__text strong { font-size: 19px; }
+.shell--recruitment-dashboard .brand__text span { font-size: 11px; letter-spacing: .14em; }
+.shell--recruitment-dashboard .module-nav { gap: 8px; }
+.shell--recruitment-dashboard .nav-item { height: 57px; padding: 0 17px; gap: 16px; border-radius: 11px; font-size: 16px; }
+.shell--recruitment-dashboard .nav-item.router-link-exact-active,
+.shell--recruitment-dashboard .nav-item--active { background: rgba(13,143,137,.18); }
+.shell--recruitment-dashboard .nav-item.router-link-exact-active::before,
+.shell--recruitment-dashboard .nav-item--active::before { left: -17px; width: 4px; height: 34px; background: #18c7b2; }
+.shell--recruitment-dashboard .system-state { min-height: 46px; padding: 11px 13px; font-size: 12px; }
+.shell--recruitment-dashboard .collapse-button { min-height: 38px; padding: 0 13px; font-size: 13px; }
+.shell--recruitment-dashboard .topbar { height: 75px; padding: 0 27px 0 33px; }
+.shell--recruitment-dashboard .top-navigation { gap: 30px; }
+.shell--recruitment-dashboard .top-navigation__link { gap: 8px; font-size: 16px; }
+.shell--recruitment-dashboard .topbar__actions { gap: 17px; }
+.shell--recruitment-dashboard .model-switcher__trigger { min-width: 178px; justify-content: space-between; }
+.shell--recruitment-dashboard .account-menu__trigger { min-width: 170px; justify-content: space-between; }
+.shell--recruitment-dashboard .avatar { width: 40px; height: 40px; border-radius: 12px; font-size: 15px; }
+.page-container.page-container--recruitment-dashboard { max-width: none; margin: 0; padding: 33px 24px 19px 37px; }
+.shell--recruitment-admin {
+  --sidebar-width: clamp(272px, 17.5vw, 380px);
+  background: #fbfcfd;
+}
+.shell--recruitment-admin .sidebar {
+  padding: clamp(26px, 1.65vw, 34px) clamp(18px, 1.2vw, 26px);
+  background: #0e1828;
+}
+.shell--recruitment-admin .brand {
+  gap: clamp(15px, .95vw, 20px);
+  padding: 0 clamp(10px, .7vw, 15px) clamp(34px, 2.25vw, 46px);
+}
+.shell--recruitment-admin .brand__mark {
+  width: clamp(50px, 3vw, 62px);
+  min-width: clamp(50px, 3vw, 62px);
+  height: clamp(50px, 3vw, 62px);
+  border-radius: clamp(14px, .85vw, 17px);
+  font-size: clamp(16px, .95vw, 19px);
+}
+.shell--recruitment-admin .brand__text strong { font-size: clamp(19px, 1.15vw, 23px); }
+.shell--recruitment-admin .brand__text span { font-size: clamp(13px, .75vw, 16px); }
+.shell--recruitment-admin .module-nav { gap: clamp(9px, .65vw, 13px); }
+.shell--recruitment-admin .nav-item {
+  height: clamp(64px, 3.8vw, 76px);
+  gap: clamp(16px, 1vw, 21px);
+  padding: 0 clamp(18px, 1.2vw, 25px);
+  border-radius: clamp(12px, .8vw, 16px);
+  font-size: clamp(17px, 1.05vw, 21px);
+}
+.shell--recruitment-admin .nav-item__icon {
+  width: clamp(25px, 1.5vw, 30px);
+  min-width: clamp(25px, 1.5vw, 30px);
+  height: clamp(25px, 1.5vw, 30px);
+}
+.shell--recruitment-admin .system-state {
+  min-height: clamp(52px, 3.1vw, 62px);
+  padding: 12px clamp(15px, 1vw, 20px);
+  font-size: clamp(15px, .86vw, 18px);
+}
+.shell--recruitment-admin .collapse-button {
+  min-height: clamp(46px, 2.7vw, 54px);
+  font-size: clamp(15px, .86vw, 18px);
+}
+.shell--recruitment-admin .topbar {
+  height: clamp(82px, 5vw, 104px);
+  gap: clamp(26px, 1.8vw, 38px);
+  padding: 0 clamp(30px, 2.15vw, 46px);
+}
+.shell--recruitment-admin .top-navigation { gap: clamp(31px, 2.15vw, 45px); }
+.shell--recruitment-admin .top-navigation__link {
+  gap: clamp(9px, .65vw, 12px);
+  font-size: clamp(17px, 1.02vw, 21px);
+}
+.shell--recruitment-admin .top-navigation__link .app-icon {
+  width: clamp(24px, 1.4vw, 28px);
+  height: clamp(24px, 1.4vw, 28px);
+}
+.shell--recruitment-admin .topbar__actions { gap: clamp(17px, 1.15vw, 24px); }
+.shell--recruitment-admin .avatar {
+  width: clamp(42px, 2.55vw, 50px);
+  height: clamp(42px, 2.55vw, 50px);
+  font-size: clamp(15px, .9vw, 18px);
+}
+.shell:not(.shell--collapsed) {
+  --sidebar-width: clamp(272px, 17.5vw, 380px);
+}
+.shell:not(.shell--collapsed) .sidebar {
+  padding: clamp(26px, 1.65vw, 34px) clamp(18px, 1.2vw, 26px);
+}
+.shell:not(.shell--collapsed) .brand {
+  gap: clamp(15px, .95vw, 20px);
+  padding: 0 clamp(10px, .7vw, 15px) clamp(34px, 2.25vw, 46px);
+}
+.shell:not(.shell--collapsed) .brand__mark {
+  width: clamp(50px, 3vw, 62px);
+  min-width: clamp(50px, 3vw, 62px);
+  height: clamp(50px, 3vw, 62px);
+  border-radius: clamp(14px, .85vw, 17px);
+  font-size: clamp(16px, .95vw, 19px);
+}
+.shell:not(.shell--collapsed) .brand__text strong { font-size: clamp(19px, 1.15vw, 23px); }
+.shell:not(.shell--collapsed) .brand__text span { font-size: clamp(13px, .75vw, 16px); }
+.shell:not(.shell--collapsed) .module-nav { gap: clamp(9px, .65vw, 13px); }
+.shell:not(.shell--collapsed) .nav-item {
+  height: clamp(64px, 3.8vw, 76px);
+  gap: clamp(16px, 1vw, 21px);
+  padding: 0 clamp(18px, 1.2vw, 25px);
+  border-radius: clamp(12px, .8vw, 16px);
+  font-size: clamp(17px, 1.05vw, 21px);
+}
+.shell:not(.shell--collapsed) .nav-item__icon {
+  width: clamp(25px, 1.5vw, 30px);
+  min-width: clamp(25px, 1.5vw, 30px);
+  height: clamp(25px, 1.5vw, 30px);
+}
+.shell:not(.shell--collapsed) :is(.nav-item.router-link-exact-active, .nav-item--active)::before {
+  left: calc(-1 * clamp(18px, 1.2vw, 25px));
+  width: 4px;
+  height: 34px;
+}
+.shell:not(.shell--collapsed) .system-state {
+  min-height: clamp(52px, 3.1vw, 62px);
+  padding: 12px clamp(15px, 1vw, 20px);
+  font-size: clamp(15px, .86vw, 18px);
+}
+.shell:not(.shell--collapsed) .collapse-button {
+  min-height: clamp(46px, 2.7vw, 54px);
+  padding-inline: clamp(13px, .9vw, 18px);
+  font-size: clamp(15px, .86vw, 18px);
+}
+.shell:not(.shell--collapsed) .topbar {
+  height: clamp(82px, 5vw, 104px);
+  gap: clamp(26px, 1.8vw, 38px);
+  padding: 0 clamp(30px, 2.15vw, 46px);
+}
+.shell:not(.shell--collapsed) .top-navigation { gap: clamp(31px, 2.15vw, 45px); }
+.shell:not(.shell--collapsed) .top-navigation__link {
+  gap: clamp(9px, .65vw, 12px);
+  font-size: clamp(17px, 1.02vw, 21px);
+}
+.shell:not(.shell--collapsed) .top-navigation__link .app-icon {
+  width: clamp(24px, 1.4vw, 28px);
+  height: clamp(24px, 1.4vw, 28px);
+}
+.shell:not(.shell--collapsed) .topbar__actions { gap: clamp(17px, 1.15vw, 24px); }
+.shell:not(.shell--collapsed) .model-switcher__trigger { min-width: 178px; justify-content: space-between; }
+.shell:not(.shell--collapsed) .account-menu__trigger { min-width: 170px; justify-content: space-between; }
+.shell:not(.shell--collapsed) .avatar {
+  width: clamp(42px, 2.55vw, 50px);
+  height: clamp(42px, 2.55vw, 50px);
+  font-size: clamp(15px, .9vw, 18px);
+}
+.page-container.page-container--recruitment-admin {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  background: #fbfcfd;
+}
 .page-stack { display: grid; gap: 22px; }
 
 .page-hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; }
@@ -871,6 +1035,18 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .automation-campaign-meter > span i { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg,#128f80,#45c5ad); transition: width .3s ease; }
 .automation-campaign-strip article > button { border: 0; color: #b04e4e; background: transparent; font-size: 9px; cursor: pointer; }
 @media (max-width: 1000px) { .automation-campaign-strip { grid-template-columns: 1fr; } }
+@media (max-width: 680px) {
+  .shell.shell--recruitment-dashboard { grid-template-columns: minmax(0, 1fr); }
+  .shell--recruitment-dashboard .sidebar { display: none; }
+  .shell--recruitment-dashboard .topbar { height: 60px; gap: 10px; padding: 0 12px; }
+  .shell--recruitment-dashboard .top-navigation { flex: 1 1 auto; justify-content: space-around; gap: 12px; }
+  .shell--recruitment-dashboard .top-navigation__link { min-width: 32px; justify-content: center; }
+  .shell--recruitment-dashboard .top-navigation__link span { display: none; }
+  .shell--recruitment-dashboard .topbar__actions { gap: 8px; }
+  .shell--recruitment-dashboard .model-switcher { display: none; }
+  .shell--recruitment-dashboard .account-menu__trigger { min-width: 40px; }
+  .page-container.page-container--recruitment-dashboard { padding: 22px 16px 28px; }
+}
 .resume-select-cell{width:38px;text-align:center}.resume-select-cell input{width:15px;height:15px;accent-color:var(--teal)}
 .intelligence-status,.recommendation-label{display:inline-flex;align-items:center;min-height:24px;padding:0 8px;color:#6b7b82;background:#f2f5f6;border-radius:7px;font-size:9px;font-weight:600;white-space:nowrap}.intelligence-status--ready{color:#0b7b70;background:#e6f6f2}.intelligence-status--error{color:#ad414a;background:#fff0f1}.recommendation-label--ready{color:#755413;background:#fff4d9}.resume-score{color:#173333;font-family:var(--app-font-family);font-size:19px}
 .resume-batch-bar{position:sticky;z-index:12;bottom:18px;width:min(720px,calc(100% - 24px));min-height:64px;display:flex;align-items:center;gap:14px;margin:-2px auto 0;padding:11px 12px 11px 20px;color:#d7ece9;background:rgba(15,42,41,.96);border:1px solid rgba(255,255,255,.08);border-radius:14px;box-shadow:0 18px 48px rgba(15,23,42,.25);backdrop-filter:blur(12px)}.resume-batch-bar>span{font-size:11px}.resume-batch-bar>span strong{color:#5dd8c6;font-family:var(--app-font-family);font-size:17px}.resume-batch-bar>small{margin-right:auto;color:#8eaaa6;font-size:9px}.resume-batch-bar .ghost-button{color:#bfd4d1;border-color:rgba(255,255,255,.14)}.resume-batch-bar .primary-button{color:#0c2927;background:#6de0cf;box-shadow:none}.batch-bar-enter-active,.batch-bar-leave-active{transition:opacity .18s ease,transform .22s ease}.batch-bar-enter-from,.batch-bar-leave-to{opacity:0;transform:translateY(14px)}
