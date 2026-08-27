@@ -65,6 +65,8 @@ describe('RecruitmentTasksView', () => {
     expect(wrapper.text()).toContain('Python 后端工程师')
     expect(wrapper.text()).toContain('招聘产品经理')
     expect(wrapper.text()).toContain('等待人工')
+    expect(wrapper.get('.tasks-card-grid').findAll('.tasks-card')).toHaveLength(2)
+    expect(wrapper.find('.tasks-table__head').exists()).toBe(false)
     expect(wrapper.get('[data-test="open-task-301"]').attributes('href')).toContain('/recruitment/tasks/301')
   })
 
@@ -93,17 +95,15 @@ describe('RecruitmentTasksView', () => {
     expect(wrapper.find('[data-test="task-row-302"]').exists()).toBe(false)
   })
 
-  it('switches to recoverable deleted tasks and keeps their detail context', async () => {
-    const archived = planFixture({ id: 399, effective_state: 'stopped', archived_at: '2026-08-27T03:00:00+08:00' })
-    apiMock.mockImplementation((path) => Promise.resolve(String(path || '').includes('archived=1') ? { results: [archived] } : { results: [] }))
+  it('omits the redundant summary and current/deleted task rows', async () => {
+    apiMock.mockResolvedValue({ results: [planFixture()] })
     ;({ wrapper } = await mountView())
 
-    await wrapper.get('[data-test="show-archived-tasks"]').trigger('click')
-    await flushPromises()
-
-    expect(apiMock).toHaveBeenCalledWith('recruitment/automation-plans/?archived=1')
-    expect(wrapper.get('[data-test="task-row-399"]').text()).toContain('已删除')
-    expect(wrapper.get('[data-test="open-task-399"]').attributes('href')).toContain('status=archived')
+    expect(wrapper.find('.tasks-summary').exists()).toBe(false)
+    expect(wrapper.find('.tasks-panel__header').exists()).toBe(false)
+    expect(wrapper.find('[data-test="show-archived-tasks"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('自动更新于')
+    expect(apiMock).not.toHaveBeenCalledWith('recruitment/automation-plans/?archived=1')
   })
 
   it('shows a retryable error without hiding the create-task entry', async () => {
@@ -118,17 +118,4 @@ describe('RecruitmentTasksView', () => {
     expect(wrapper.text()).toContain('重新加载')
   })
 
-  it('does not show current tasks as deleted when the archived request fails', async () => {
-    apiMock.mockImplementation((path) => String(path || '').includes('archived=1')
-      ? Promise.reject(new Error('已删除任务读取失败'))
-      : Promise.resolve({ results: [planFixture()] }))
-    ;({ wrapper } = await mountView())
-    expect(wrapper.find('[data-test="task-row-301"]').exists()).toBe(true)
-
-    await wrapper.get('[data-test="show-archived-tasks"]').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.find('[data-test="task-row-301"]').exists()).toBe(false)
-    expect(wrapper.get('[data-test="tasks-error"]').text()).toContain('已删除任务读取失败')
-  })
 })

@@ -142,6 +142,26 @@ const contextStepComplete = computed(() => Boolean(
   && selectedAccount.value
   && String(selectedJob.value.boss_account) === String(selectedAccount.value.id),
 ))
+const contextReadiness = computed(() => [
+  {
+    key: 'login',
+    label: browserReady.value ? '已登录' : '等待登录',
+    detail: selectedAccount.value?.name || '尚未选择账号',
+    ready: browserReady.value,
+  },
+  {
+    key: 'browser',
+    label: browserReady.value ? '可正常访问' : '浏览器未就绪',
+    detail: browserReady.value ? 'BOSS 直聘' : accountReadinessMessage(selectedAccount.value),
+    ready: browserReady.value,
+  },
+  {
+    key: 'binding',
+    label: contextStepComplete.value ? '职位已绑定' : '等待绑定',
+    detail: contextStepComplete.value ? '本次作业可用' : '请选择匹配的职位与账号',
+    ready: contextStepComplete.value,
+  },
+])
 const wizardSteps = computed(() => [
   { key: 'context', number: '01', label: '职位与账号', reachable: true },
   { key: 'standard', number: '02', label: '招聘标准', reachable: completedSteps.context },
@@ -1393,7 +1413,6 @@ onUnmounted(() => {
       <aside class="workbench-sidebar">
         <header class="workbench-sidebar__intro">
           <strong>招聘准备</strong>
-          <p>依次确认职位、标准、方案与执行条件。</p>
         </header>
         <nav class="workbench-wizard" aria-label="招聘作业步骤">
           <button
@@ -1406,7 +1425,10 @@ onUnmounted(() => {
             :aria-current="currentStep === step.key ? 'step' : undefined"
             @click="navigateWizardStep(step.key)"
           >
-            <span>{{ step.number }}</span>
+            <span>
+              <AppIcon v-if="completedSteps[step.key] && currentStep !== step.key" name="check-circle" :size="20" />
+              <template v-else>{{ step.number }}</template>
+            </span>
             <strong>{{ step.label }}</strong>
             <small v-if="currentStep === step.key">进行中</small>
             <small v-else-if="completedSteps[step.key]">已完成</small>
@@ -1419,7 +1441,7 @@ onUnmounted(() => {
           <div class="workbench-task-header__title">
             <h2 id="workbench-current-title" ref="stepHeading" tabindex="-1">{{ currentStepCopy.title }}</h2>
           </div>
-          <p>{{ currentStepCopy.description }}</p>
+          <p class="sr-only">{{ currentStepCopy.description }}</p>
         </header>
 
         <div class="workbench-notices">
@@ -1460,6 +1482,15 @@ onUnmounted(() => {
                 <small v-if="!accounts.length">暂无可用账号，请先在管理后台添加并登录。</small>
               </label>
             </div>
+            <div v-if="selectedAccount || selectedJob" class="workbench-context-readiness" aria-label="账号就绪状态">
+              <strong>账号就绪状态</strong>
+              <ul>
+                <li v-for="item in contextReadiness" :key="item.key" :class="{ 'is-ready': item.ready }">
+                  <AppIcon :name="item.ready ? 'check-circle' : 'alert-circle'" :size="22" />
+                  <span><b>{{ item.label }}</b><small>{{ item.detail }}</small></span>
+                </li>
+              </ul>
+            </div>
             <div v-if="!context.jobs.length || !accounts.length" class="workbench-empty-actions">
               <router-link :to="{ path: '/recruitment/admin', query: { section: !accounts.length ? 'accounts' : 'jobs' } }">
                 前往管理后台处理 <AppIcon name="arrow-right" :size="14" />
@@ -1487,7 +1518,7 @@ onUnmounted(() => {
             <div class="workbench-upload-kind">
               <div>
                 <strong>岗位参考资料</strong>
-                <small>资料会归档到“{{ selectedJob?.title }}”，用于生成岗位标准和简历评分依据。</small>
+                <small class="sr-only">资料会归档到“{{ selectedJob?.title }}”，用于生成岗位标准和简历评分依据。</small>
               </div>
             </div>
 
@@ -1547,19 +1578,19 @@ onUnmounted(() => {
                   <span><strong>{{ document.title }}</strong><small>{{ document.category_label }} · V{{ document.current_version.version }}</small></span>
                 </a>
               </template>
-              <p v-else>尚未上传岗位参考资料；不影响本次自动化，生成评分标准前可继续补充。</p>
+              <p v-else class="sr-only">尚未上传岗位参考资料；不影响本次自动化，生成评分标准前可继续补充。</p>
             </div>
 
             <div class="workbench-requirements">
               <label>
-                <span>核心要求 <em>主动寻访必填，每行一项</em></span>
+                <span><b>核心要求 <em>主动寻访必填</em></b><small>{{ coreItems.length }} 项</small></span>
                 <textarea v-model="coreText" data-test="core-requirements" rows="5" maxlength="2000" :placeholder="'例如：\n3 年以上 Python 开发经验\n熟悉 Django 与关系型数据库'"></textarea>
-                <small>已识别 {{ coreItems.length }}/10 项；每项最多 200 字。</small>
+                <small class="sr-only">已识别 {{ coreItems.length }}/10 项；每项最多 200 字。</small>
               </label>
               <label>
-                <span>加分项 <em>选填，每行一项</em></span>
+                <span><b>加分项 <em>选填</em></b><small>{{ bonusItems.length }} 项</small></span>
                 <textarea v-model="bonusText" data-test="bonus-requirements" rows="5" maxlength="2000" :placeholder="'例如：\n有 AI 应用落地经验\n做过复杂后台系统'"></textarea>
-                <small>已识别 {{ bonusItems.length }}/10 项。</small>
+                <small class="sr-only">已识别 {{ bonusItems.length }}/10 项。</small>
               </label>
             </div>
 
@@ -1581,7 +1612,7 @@ onUnmounted(() => {
 
           <section
             v-else-if="currentStep === 'plan'"
-            class="workbench-section"
+            class="workbench-section workbench-section--plan"
             data-test="workbench-step-plan"
             aria-labelledby="workbench-current-title"
           >
@@ -1589,13 +1620,11 @@ onUnmounted(() => {
               <legend class="sr-only">选择执行方案</legend>
               <label :class="{ 'is-selected': schemeKind === 'passive_resume' }">
                 <input v-model="schemeKind" data-test="scheme-passive" type="radio" value="passive_resume" />
-                <i><AppIcon name="workflow" :size="20" /></i>
-                <span><small>被动咨询</small><strong>同步消息并获取简历</strong><em>询问了解岗位时只提醒 HR，不直接索要简历。</em></span>
+                <span><strong>被动咨询</strong><em>接收候选人主动咨询</em></span>
               </label>
               <label :class="{ 'is-selected': schemeKind === 'active_resume_search' }">
                 <input v-model="schemeKind" data-test="scheme-active" type="radio" value="active_resume_search" />
-                <i><AppIcon name="search" :size="20" /></i>
-                <span><small>主动寻访</small><strong>搜索并拉取在线简历</strong><em>按目标数和扫描上限执行，完成后提醒 HR 介入。</em></span>
+                <span><strong>主动寻访</strong><em>主动搜索并联系候选人</em></span>
               </label>
             </fieldset>
 
@@ -1608,7 +1637,7 @@ onUnmounted(() => {
                     {{ option.label }}
                   </option>
                 </select>
-                <small>{{ enabledWorkflowOptions.length ? '也可直接运行管理后台已启用、且属于当前账号的高级流程。' : '当前账号暂无已启用的高级流程，使用标准流程即可。' }}</small>
+                <small class="sr-only">{{ enabledWorkflowOptions.length ? '也可直接运行管理后台已启用、且属于当前账号的高级流程。' : '当前账号暂无已启用的高级流程，使用标准流程即可。' }}</small>
               </label>
               <router-link :to="{ path: '/recruitment/admin', query: { section: 'workflows', account: selectedAccountId } }">管理高级流程</router-link>
             </div>
@@ -1677,10 +1706,19 @@ onUnmounted(() => {
             data-test="workbench-step-review"
             aria-labelledby="workbench-current-title"
           >
-              <div class="workbench-summary">
-                <span>本次作业</span>
-                <strong>{{ selectedJob?.title || '尚未选择职位' }}</strong>
-                <small>{{ selectedAccount?.name || '尚未选择账号' }} · {{ schemeKind === 'passive_resume' ? '被动咨询' : `主动寻访 ${targetResumeCount} 份` }}</small>
+              <div class="workbench-summary" aria-label="本次作业摘要">
+                <div>
+                  <AppIcon name="briefcase" :size="26" />
+                  <span><strong>{{ selectedJob?.title || '尚未选择职位' }}</strong><small>在招职位</small></span>
+                </div>
+                <div>
+                  <AppIcon name="user" :size="26" />
+                  <span><strong>{{ selectedAccount?.name || '尚未选择账号' }}</strong><small>执行账号</small></span>
+                </div>
+                <div>
+                  <AppIcon name="search" :size="26" />
+                  <span><strong>{{ schemeKind === 'passive_resume' ? '被动咨询' : `主动寻访 ${targetResumeCount} 份` }}</strong><small>{{ schemeKind === 'passive_resume' ? '消息同步' : '目标简历数' }}</small></span>
+                </div>
               </div>
 
               <ol class="workbench-checks">
@@ -1702,18 +1740,6 @@ onUnmounted(() => {
                 {{ autoStartRequested ? '正在执行前检查，全部通过后将自动开始执行…' : '正在同步任务状态…' }}
               </p>
               <p v-else-if="planError && !currentPlan" class="workbench-inline-error" role="alert">{{ planError }}</p>
-              <button
-                v-if="!planLoading"
-                class="primary-button workbench-start"
-                data-test="start-execution"
-                type="button"
-                :disabled="!canSubmit"
-                :aria-describedby="firstBlockingCheck ? `precheck-${firstBlockingCheck.key}` : undefined"
-                @click="startExecution"
-              >
-                <AppIcon name="arrow-right" :size="17" />
-                {{ submitting ? submitStage : '开始执行' }}
-              </button>
               <small v-if="!planLoading" class="workbench-submit-hint">
                 {{ firstBlockingCheck ? `请先处理：${firstBlockingCheck.label}` : (startDisabledReason || '点击后将以一个原子命令创建方案版本并开启任务。') }}
               </small>
@@ -1723,7 +1749,17 @@ onUnmounted(() => {
                 <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="submitting" @click="previousStep">
                   上一步
                 </button>
-                <span>返回执行方案只修改前端草稿，不会停止或启动任务。</span>
+                <button
+                  v-if="!planLoading"
+                  class="primary-button workbench-start"
+                  data-test="start-execution"
+                  type="button"
+                  :disabled="!canSubmit"
+                  :aria-describedby="firstBlockingCheck ? `precheck-${firstBlockingCheck.key}` : undefined"
+                  @click="startExecution"
+                >
+                  {{ submitting ? submitStage : '开始执行' }}
+                </button>
               </footer>
           </section>
         </main>
@@ -4165,6 +4201,1076 @@ onUnmounted(() => {
 
   .workbench-review .workbench-checks li:last-child {
     border-bottom: 0;
+  }
+}
+</style>
+
+<style scoped>
+/* Selected Product Design direction: Unified Task Canvas */
+.recruitment-workbench {
+  --wb-color-stage: #01a7af;
+  --wb-color-surface: #fefefe;
+  --wb-color-sidebar: #ecf7f7;
+  --wb-color-sidebar-active: #ffffff;
+  --wb-color-section-soft: #f5fbfb;
+  --wb-color-ink: #10213a;
+  --wb-color-secondary: #26364c;
+  --wb-color-muted: #68788e;
+  --wb-color-line: #dce4ec;
+  --wb-color-line-strong: #b8cfda;
+  --wb-color-primary: #01a7af;
+  --wb-color-primary-dark: #078f98;
+  --wb-color-primary-soft: #e3f7f7;
+  --wb-color-primary-soft-hover: #f3fbfb;
+  --wb-color-success: #20a653;
+  --wb-color-success-border: #87d4aa;
+  --wb-color-warning: #c17917;
+  --wb-content-max-width: 1020px;
+  --wb-card-max-width: 1020px;
+  --wb-card-min-height: 680px;
+  --wb-card-height: 680px;
+  --wb-sidebar-width: 250px;
+  --wb-workspace-padding-block: 30px;
+  --wb-workspace-padding-inline: 34px;
+  --wb-form-max-width: none;
+  --wb-radius-card: 22px;
+  --wb-radius-panel: 10px;
+  --wb-radius-control: 8px;
+  --wb-control-min-height: 46px;
+  --wb-step-number-size: 40px;
+  --wb-step-min-height: 72px;
+  --wb-drop-zone-min-height: 132px;
+  --wb-textarea-min-height: 112px;
+  --wb-shadow-panel: 0 12px 30px rgba(6, 70, 78, .12);
+  min-height: calc(100vh - 64px);
+  padding: 28px 32px 40px;
+  background: var(--wb-color-stage);
+}
+
+.recruitment-workbench > * {
+  width: min(100%, var(--wb-card-max-width));
+  max-width: var(--wb-card-max-width);
+}
+
+.workbench-card {
+  grid-template-columns: var(--wb-sidebar-width) minmax(0, 1fr);
+  height: var(--wb-card-height);
+  min-height: var(--wb-card-min-height);
+  border-radius: var(--wb-radius-card);
+  background: var(--wb-color-surface);
+  box-shadow: var(--wb-shadow-panel);
+}
+
+.workbench-sidebar {
+  padding: 30px 20px;
+  background: var(--wb-color-sidebar);
+}
+
+.workbench-sidebar__intro {
+  display: block;
+  padding: 0 8px;
+}
+
+.workbench-sidebar__intro > strong {
+  color: var(--wb-color-ink);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.025em;
+}
+
+.workbench-sidebar__intro > p {
+  display: none;
+}
+
+.workbench-wizard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.workbench-wizard__step {
+  grid-template-columns: 40px minmax(0, 1fr);
+  min-height: 72px;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 10px;
+}
+
+.workbench-wizard__step > span {
+  display: grid;
+  grid-row: 1 / span 2;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid #b9cddd;
+  border-radius: 999px;
+  color: #63758b;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workbench-wizard__step strong {
+  align-self: end;
+  color: #405168;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.workbench-wizard__step small {
+  align-self: start;
+  margin-top: 2px;
+  color: #75859a;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.workbench-wizard__step.is-current {
+  color: var(--wb-color-primary-dark);
+  background: #fff;
+}
+
+.workbench-wizard__step.is-current > span {
+  border-color: var(--wb-color-primary);
+  color: #fff;
+  background: var(--wb-color-primary);
+}
+
+.workbench-wizard__step.is-current strong,
+.workbench-wizard__step.is-complete strong {
+  color: var(--wb-color-ink);
+}
+
+.workbench-wizard__step.is-complete:not(.is-current) > span {
+  border-color: var(--wb-color-success-border);
+  color: var(--wb-color-success);
+  background: #f7fffa;
+}
+
+.workbench-wizard__step:disabled {
+  opacity: .76;
+}
+
+.workbench-workspace {
+  min-height: 0;
+  padding: 36px 56px 0 34px;
+  overflow: hidden;
+  background: var(--wb-color-surface);
+}
+
+.workbench-task-header {
+  flex: 0 0 auto;
+  min-height: 34px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.workbench-task-header__title {
+  display: block;
+}
+
+.workbench-task-header h2 {
+  margin: 0;
+  color: var(--wb-color-ink);
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -.035em;
+}
+
+.workbench-task-header > p {
+  display: none;
+}
+
+.workbench-notices {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.workbench-main {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  flex: 1;
+  margin-top: 18px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #91a2b1 transparent;
+}
+
+.workbench-section {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100%;
+  padding: 0;
+}
+
+.workbench-context-grid,
+.workbench-requirements,
+.workbench-settings {
+  width: 100%;
+  max-width: none;
+}
+
+.workbench-context-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  padding-top: 20px;
+}
+
+.workbench-context-grid label,
+.workbench-requirements label,
+.workbench-settings label,
+.workbench-workflow-choice label {
+  gap: 8px;
+  color: var(--wb-color-secondary);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.workbench-context-grid select,
+.workbench-requirements textarea,
+.workbench-settings select,
+.workbench-settings input,
+.workbench-workflow-choice select {
+  min-height: var(--wb-control-min-height);
+  padding: 10px 13px;
+  border: 1px solid #ced9e5;
+  border-radius: 7px;
+  color: var(--wb-color-ink);
+  background: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 1px 1px rgba(15, 33, 58, .02);
+}
+
+.workbench-context-grid select:focus,
+.workbench-requirements textarea:focus,
+.workbench-settings select:focus,
+.workbench-settings input:focus,
+.workbench-workflow-choice select:focus {
+  border-color: var(--wb-color-primary);
+  outline: 2px solid rgba(1, 167, 175, .16);
+}
+
+.workbench-context-readiness {
+  margin-top: 48px;
+  padding-top: 22px;
+  border-top: 1px solid var(--wb-color-line);
+}
+
+.workbench-context-readiness > strong {
+  display: block;
+  margin-bottom: 20px;
+  color: var(--wb-color-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.workbench-context-readiness ul {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workbench-context-readiness li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+  min-width: 0;
+  padding-right: 20px;
+  color: var(--wb-color-muted);
+}
+
+.workbench-context-readiness li + li {
+  padding-left: 24px;
+  border-left: 1px solid var(--wb-color-line);
+}
+
+.workbench-context-readiness li > .app-icon {
+  margin-top: 1px;
+  color: var(--wb-color-warning);
+}
+
+.workbench-context-readiness li.is-ready > .app-icon {
+  color: var(--wb-color-success);
+}
+
+.workbench-context-readiness li span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.workbench-context-readiness li b {
+  color: var(--wb-color-secondary);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.workbench-context-readiness li small {
+  overflow: hidden;
+  color: var(--wb-color-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-upload-kind {
+  width: 100%;
+  margin: 0 0 12px;
+}
+
+.workbench-upload-kind > div strong {
+  color: var(--wb-color-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.workbench-drop-zone {
+  width: 100%;
+  min-height: var(--wb-drop-zone-min-height);
+  padding: 18px;
+  border: 1px dashed #9ec6d3;
+  border-radius: 8px;
+  background: #f7fcfc;
+}
+
+.workbench-drop-zone__icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: var(--wb-color-primary);
+  background: #e2f7f7;
+}
+
+.workbench-drop-zone__icon .app-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.workbench-drop-zone > strong {
+  color: var(--wb-color-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.workbench-drop-zone > small {
+  color: var(--wb-color-muted);
+  font-size: 12px;
+}
+
+.workbench-upload-queue,
+.workbench-documents {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.workbench-upload-queue li,
+.workbench-documents a {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 7px 11px;
+  border: 1px solid var(--wb-color-line);
+  border-radius: 7px;
+  color: var(--wb-color-secondary);
+  background: #fff;
+}
+
+.workbench-documents a > .app-icon {
+  color: #177fc2;
+}
+
+.workbench-documents a > span,
+.workbench-upload-queue li > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workbench-documents a strong,
+.workbench-upload-queue li strong {
+  color: var(--wb-color-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workbench-documents a small,
+.workbench-upload-queue li small {
+  color: var(--wb-color-muted);
+  font-size: 11px;
+}
+
+.workbench-requirements {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  margin-top: 14px;
+}
+
+.workbench-requirements label > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workbench-requirements label > span b {
+  color: var(--wb-color-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.workbench-requirements label > span em {
+  margin-left: 5px;
+  color: var(--wb-color-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.workbench-requirements label > span small {
+  color: var(--wb-color-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.workbench-requirements textarea {
+  min-height: 112px;
+  padding: 12px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.workbench-schemes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  width: 100%;
+  margin: 0;
+}
+
+.workbench-schemes > label {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  min-height: 74px;
+  padding: 13px 16px;
+  border: 1px solid #d2dde7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.workbench-schemes > label.is-selected {
+  border-color: var(--wb-color-primary);
+  background: #f2fbfb;
+  box-shadow: inset 0 0 0 1px var(--wb-color-primary);
+}
+
+.workbench-schemes input {
+  position: static;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  opacity: 1;
+  accent-color: var(--wb-color-primary);
+}
+
+.workbench-schemes label > span {
+  display: grid;
+  gap: 2px;
+}
+
+.workbench-schemes strong {
+  color: var(--wb-color-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.workbench-schemes em {
+  color: var(--wb-color-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.workbench-workflow-choice {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+}
+
+.workbench-workflow-choice label {
+  width: 100%;
+}
+
+.workbench-workflow-choice a {
+  display: none;
+}
+
+.workbench-settings {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 24px;
+  width: 100%;
+  margin-top: 14px;
+}
+
+.workbench-settings--passive {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: none;
+}
+
+.workbench-settings small {
+  line-height: 1.3;
+}
+
+.workbench-review {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.workbench-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 1px solid var(--wb-color-line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.workbench-summary > div {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 13px 15px;
+}
+
+.workbench-summary > div + div {
+  border-left: 1px solid var(--wb-color-line);
+}
+
+.workbench-summary .app-icon {
+  color: var(--wb-color-primary);
+}
+
+.workbench-summary > div > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.workbench-summary strong {
+  overflow: hidden;
+  color: var(--wb-color-ink);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-summary small {
+  color: var(--wb-color-muted);
+  font-size: 11px;
+}
+
+.workbench-checks {
+  display: grid;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--wb-color-line);
+  border-radius: 8px;
+  background: #fff;
+  list-style: none;
+}
+
+.workbench-checks li,
+.workbench-checks li:nth-last-child(-n + 2) {
+  display: grid;
+  grid-template-columns: 22px 150px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--wb-color-line);
+  background: #fff;
+}
+
+.workbench-checks li:last-child {
+  border-bottom: 0;
+}
+
+.workbench-checks li > i {
+  color: var(--wb-color-warning);
+}
+
+.workbench-checks li.is-ready > i {
+  color: var(--wb-color-success);
+}
+
+.workbench-checks li > span {
+  display: contents;
+}
+
+.workbench-checks strong {
+  color: var(--wb-color-secondary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.workbench-checks small,
+.workbench-checks li.is-ready small {
+  color: var(--wb-color-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.workbench-checks a {
+  color: var(--wb-color-primary-dark);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workbench-submit-hint {
+  margin: 8px 0 0;
+  color: var(--wb-color-muted);
+  font-size: 11px;
+  text-align: left;
+}
+
+.workbench-safety {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 11px 13px;
+  border: 1px solid #cfe4ea;
+  border-radius: 8px;
+  color: var(--wb-color-secondary);
+  background: #fbfefe;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.workbench-safety .app-icon {
+  flex: 0 0 auto;
+  color: var(--wb-color-primary);
+}
+
+.workbench-step-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 76px;
+  margin: auto -34px 0;
+  padding: 16px 34px;
+  border-top: 1px solid var(--wb-color-line);
+}
+
+.workbench-step-actions--forward {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.workbench-step-actions--split,
+.workbench-review-actions {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.workbench-step-actions--split .workbench-next,
+.workbench-review-actions .workbench-start {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.workbench-step-actions .secondary-button,
+.recruitment-workbench .workbench-step-actions .workbench-next,
+.workbench-review-actions .workbench-start {
+  min-width: 132px;
+  min-height: 46px;
+  padding: 10px 22px;
+  border-radius: 7px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.workbench-step-actions .secondary-button {
+  border: 1px solid #cbd7e3;
+  color: var(--wb-color-secondary);
+  background: #fff;
+}
+
+.recruitment-workbench .workbench-step-actions .workbench-next,
+.workbench-review-actions .workbench-start {
+  border: 1px solid var(--wb-color-primary);
+  color: #fff;
+  background: var(--wb-color-primary);
+  box-shadow: none;
+}
+
+.workbench-review-actions {
+  width: auto;
+  margin-top: auto;
+}
+
+.workbench-review-actions .workbench-start {
+  position: static;
+  width: auto;
+  margin: 0;
+  transform: none;
+}
+
+.workbench-review-actions .workbench-start:hover:not(:disabled) {
+  transform: none;
+}
+
+@media (max-width: 900px) {
+  .recruitment-workbench {
+    padding: 20px;
+  }
+
+  .workbench-card {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: 720px;
+  }
+
+  .workbench-sidebar {
+    padding: 20px 24px 14px;
+  }
+
+  .workbench-sidebar__intro {
+    padding: 0;
+  }
+
+  .workbench-wizard {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 14px;
+  }
+
+  .workbench-wizard__step {
+    grid-template-columns: 34px minmax(0, 1fr);
+    min-height: 60px;
+    padding: 7px;
+  }
+
+  .workbench-wizard__step > span {
+    width: 34px;
+    height: 34px;
+  }
+
+  .workbench-workspace {
+    min-height: 560px;
+    padding: 24px 26px 0;
+  }
+
+  .workbench-step-actions {
+    margin-right: -26px;
+    margin-left: -26px;
+    padding-right: 26px;
+    padding-left: 26px;
+  }
+}
+
+@media (max-width: 720px) {
+  .recruitment-workbench {
+    padding: 12px;
+  }
+
+  .workbench-card {
+    border-radius: 16px;
+  }
+
+  .workbench-sidebar {
+    padding: 18px;
+  }
+
+  .workbench-sidebar__intro > strong {
+    font-size: 16px;
+  }
+
+  .workbench-wizard {
+    overflow-x: auto;
+  }
+
+  .workbench-wizard__step {
+    min-width: 132px;
+  }
+
+  .workbench-workspace {
+    min-height: 600px;
+    padding: 22px 18px 0;
+  }
+
+  .workbench-task-header h2 {
+    font-size: 22px;
+  }
+
+  .workbench-context-grid,
+  .workbench-requirements,
+  .workbench-settings,
+  .workbench-schemes,
+  .workbench-context-readiness ul,
+  .workbench-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-context-readiness li + li,
+  .workbench-summary > div + div {
+    margin-top: 10px;
+    padding-top: 10px;
+    padding-left: 0;
+    border-top: 1px solid var(--wb-color-line);
+    border-left: 0;
+  }
+
+  .workbench-checks li,
+  .workbench-checks li:nth-last-child(-n + 2) {
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+  }
+
+  .workbench-checks li > span {
+    display: grid;
+    grid-column: 2;
+    gap: 2px;
+  }
+
+  .workbench-step-actions {
+    margin-right: -18px;
+    margin-left: -18px;
+    padding: 14px 18px;
+  }
+
+  .workbench-step-actions .secondary-button,
+  .recruitment-workbench .workbench-step-actions .workbench-next,
+  .workbench-review-actions .workbench-start {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .workbench-wizard__step strong,
+  .workbench-wizard__step small {
+    font-size: 11px;
+  }
+
+  .workbench-step-actions--split,
+  .workbench-review-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .workbench-step-actions--split .workbench-next,
+  .workbench-review-actions .workbench-start {
+    grid-column: 2;
+    width: 100%;
+  }
+
+  .workbench-step-actions .secondary-button {
+    width: 100%;
+  }
+}
+
+@media (min-width: 901px) {
+  .workbench-main {
+    overflow-x: hidden;
+  }
+
+  .workbench-step-actions {
+    min-height: 66px;
+    margin-right: 0;
+    margin-left: 0;
+    padding: 12px 0 0;
+  }
+
+  .workbench-section--context .workbench-next {
+    grid-column: 2;
+    justify-self: end;
+    width: auto;
+  }
+
+  .workbench-schemes > label {
+    min-height: 62px;
+    padding-block: 9px;
+  }
+
+  .workbench-workflow-choice {
+    margin-top: 10px;
+  }
+
+  .workbench-workflow-choice select,
+  .workbench-settings select,
+  .workbench-settings input {
+    min-height: 42px;
+    padding-block: 8px;
+  }
+
+  .workbench-settings {
+    gap: 8px 24px;
+    margin-top: 10px;
+  }
+
+  .workbench-settings small {
+    font-size: 10px;
+  }
+}
+
+.workbench-main {
+  margin-top: 10px;
+}
+
+.workbench-workspace {
+  padding-top: 28px;
+}
+
+.workbench-step-actions {
+  min-height: 104px;
+}
+
+.workbench-context-readiness li.is-ready > svg.app-icon {
+  color: var(--wb-color-success) !important;
+}
+
+.workbench-review .workbench-summary {
+  order: 1;
+  padding: 0;
+  border: 1px solid var(--wb-color-line);
+  background: #fff;
+}
+
+.workbench-review .workbench-summary .app-icon {
+  color: var(--wb-color-primary) !important;
+}
+
+.workbench-review .workbench-checks {
+  order: 2;
+  grid-template-columns: minmax(0, 1fr) !important;
+  margin-top: 0;
+  padding: 0;
+}
+
+.workbench-review .workbench-checks li,
+.workbench-review .workbench-checks li:nth-last-child(-n + 2) {
+  grid-template-columns: 22px 150px minmax(0, 1fr) auto;
+}
+
+.workbench-review .workbench-checks li.is-ready small {
+  display: block;
+}
+
+.workbench-review-actions {
+  order: 8;
+  margin-top: auto;
+}
+
+@media (min-width: 901px) {
+  .workbench-section--plan .workbench-schemes > label {
+    min-height: 62px;
+    padding-block: 9px;
+  }
+
+  .workbench-section--plan .workbench-workflow-choice,
+  .workbench-section--plan .workbench-settings {
+    margin-top: 10px;
+  }
+
+  .workbench-section--plan .workbench-settings {
+    gap: 10px 24px;
+  }
+
+  .workbench-section--plan .workbench-step-actions {
+    min-height: 94px;
+  }
+
+  .workbench-task-header h2 {
+    font-size: 26px;
+  }
+
+  .workbench-context-grid {
+    gap: 28px;
+    padding-top: 28px;
+  }
+
+  .workbench-context-grid label,
+  .workbench-requirements label,
+  .workbench-settings label,
+  .workbench-workflow-choice label {
+    font-size: 15px;
+  }
+
+  .workbench-context-grid select {
+    min-height: 54px;
+    padding-inline: 16px;
+    font-size: 15px;
+  }
+
+  .workbench-context-readiness {
+    margin-top: 52px;
+    padding-top: 28px;
+  }
+
+  .workbench-context-readiness > strong,
+  .workbench-context-readiness li b {
+    font-size: 15px;
+  }
+
+  .workbench-drop-zone {
+    min-height: 144px;
+  }
+
+  .workbench-requirements textarea {
+    min-height: 120px;
+    font-size: 15px;
+  }
+
+  .workbench-schemes > label {
+    min-height: 70px;
+    padding-block: 12px;
+  }
+
+  .workbench-workflow-choice select,
+  .workbench-settings select,
+  .workbench-settings input {
+    min-height: 46px;
+  }
+
+  .workbench-summary > div {
+    min-height: 72px;
+    padding-block: 14px;
+  }
+
+  .workbench-checks li,
+  .workbench-checks li:nth-last-child(-n + 2) {
+    min-height: 50px;
+  }
+
+  .workbench-safety {
+    min-height: 46px;
   }
 }
 </style>

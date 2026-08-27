@@ -1,0 +1,69 @@
+
+> ximing-attendance-web@1.0.0 build
+> vite build
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 695 modules transformed.
+rendering chunks...
+computing gzip size...
+../backend/frontend_dist/index.html                                            0.48 kB │ gzip:   0.33 kB
+../backend/frontend_dist/assets/ResumeIntelligencePanel-DGdsmqaP.css           0.22 kB │ gzip:   0.14 kB
+../backend/frontend_dist/assets/RecruitmentResultsNavigation-B-8eAbZn.css      1.16 kB │ gzip:   0.51 kB
+../backend/frontend_dist/assets/RecruitmentResumesView-BuMxJ8pa.css            1.93 kB │ gzip:   0.63 kB
+../backend/frontend_dist/assets/WorkflowRunPanel-Djszr0aZ.css                  6.44 kB │ gzip:   1.42 kB
+../backend/frontend_dist/assets/RecruitmentTaskDetailView-DT61r_52.css        10.91 kB │ gzip:   2.33 kB
+../backend/frontend_dist/assets/RecruitmentTasksView-BwCEJDBN.css             13.32 kB │ gzip:   2.89 kB
+../backend/frontend_dist/assets/RecruitmentDashboardView-q7SKvhzN.css         16.20 kB │ gzip:   2.40 kB
+../backend/frontend_dist/assets/RecruitmentAdminView-CYyAqiot.css             27.95 kB │ gzip:   4.18 kB
+../backend/frontend_dist/assets/RecruitmentResultsView-7u5S1Sav.css           57.05 kB │ gzip:   7.84 kB
+../backend/frontend_dist/assets/RecruitmentWorkbenchView-OR26fztv.css         60.03 kB │ gzip:   7.35 kB
+../backend/frontend_dist/assets/index-2glCCej-.css                           107.50 kB │ gzip:  20.73 kB
+../backend/frontend_dist/assets/ToastMessage-BMr6eNeK.js                       0.38 kB │ gzip:   0.28 kB
+../backend/frontend_dist/assets/TaskProgressBar-Db_nxfOI.js                    0.82 kB │ gzip:   0.48 kB
+../backend/frontend_dist/assets/recruitmentJobs-Dvk9Rm4l.js                    1.08 kB │ gzip:   0.66 kB
+../backend/frontend_dist/assets/RecruitmentResultsNavigation-B1jqSpu3.js       1.17 kB │ gzip:   0.63 kB
+../backend/frontend_dist/assets/ArchiveConfirmModal-D4zav8n1.js                1.23 kB │ gzip:   0.71 kB
+../backend/frontend_dist/assets/recruitment-DuQX1Yox.js                        1.30 kB │ gzip:   0.76 kB
+../backend/frontend_dist/assets/ModalPanel-DdI7MMrZ.js                         1.73 kB │ gzip:   0.94 kB
+../backend/frontend_dist/assets/SuspicionsView-BHbJE0ES.js                     3.99 kB │ gzip:   1.99 kB
+../backend/frontend_dist/assets/ImportsView-CuKcwdL_.js                        5.52 kB │ gzip:   2.69 kB
+../backend/frontend_dist/assets/CommunicationConfirmDrawer-BMcaMwQj.js         5.76 kB │ gzip:   2.69 kB
+../backend/frontend_dist/assets/RecruitmentPipelineView-Cwnz-_zE.js            6.06 kB │ gzip:   2.69 kB
+../backend/frontend_dist/assets/WorkflowRunPanel-DKC-aJaa.js                   6.36 kB │ gzip:   2.79 kB
+../backend/frontend_dist/assets/SettingsView-D6AQnSFH.js                       7.20 kB │ gzip:   2.79 kB
+../backend/frontend_dist/assets/RecruitmentTasksView-BQDZ1_Dn.js               8.93 kB │ gzip:   3.66 kB
+../backend/frontend_dist/assets/EmployeesView-CCq_0ASE.js                      9.27 kB │ gzip:   3.62 kB
+../backend/frontend_dist/assets/DashboardView-w7Y3pzlW.js                      9.78 kB │ gzip:   4.00 kB
+../backend/frontend_dist/assets/RecruitmentDashboardView-agas6x1i.js          10.27 kB │ gzip:   3.71 kB
+../backend/frontend_dist/assets/ResultsView-BcEKD78E.js                       10.73 kB │ gzip:   4.32 kB
+../backend/frontend_dist/assets/ResumeIntelligencePanel-D43oXZMf.js           10.80 kB │ gzip:   4.17 kB
+../backend/frontend_dist/assets/RecruitmentTaskDetailView-DqDayfse.js         13.94 kB │ gzip:   5.36 kB
+../backend/frontend_dist/assets/recruitmentAutomation-BsEHKypU.js             18.01 kB │ gzip:   6.77 kB
+../backend/frontend_dist/assets/RecruitmentCandidatesView-CYh985SJ.js         21.63 kB │ gzip:   7.35 kB
+../backend/frontend_dist/assets/RecruitmentResumesView-CCKZVEP5.js            27.51 kB │ gzip:   9.47 kB
+../backend/frontend_dist/assets/RecruitmentAutomationView-CdmAKZIO.js         30.77 kB │ gzip:  10.34 kB
+../backend/frontend_dist/assets/RecruitmentAdminView-BgtJPYK2.js              45.72 kB │ gzip:  14.11 kB
+../backend/frontend_dist/assets/RecruitmentWorkbenchView-Bg1GRyyT.js          50.84 kB │ gzip:  17.76 kB
+../backend/frontend_dist/assets/RecruitmentResultsView-DAQ5LeT0.js            61.58 kB │ gzip:  19.07 kB
+../backend/frontend_dist/assets/index-CXsvIAd4.js                            166.04 kB │ gzip:  61.93 kB
+../backend/frontend_dist/assets/EChart-DMhtXbnM.js                         1,127.15 kB │ gzip: 378.59 kB
+✓ built in 3.58s
+Operations to perform:
+  Apply all migrations: accounts, admin, attendance, auth, contenttypes, recruitment, sessions
+Running migrations:
+  No migrations to apply.
+
+41 static files copied to 'C:\Users\Administrator\Desktop\hr-management-workspace-master\backend\staticfiles', 163 unmodified, 549 post-processed.
+============================================================
+  XM HR is starting
+============================================================
+Web service: healthy
+RPA Worker: running
+AI Worker: running
+Local access: http://127.0.0.1:8000
+LAN access: http://172.25.16.1:8000
+LAN access: http://198.18.0.1:8000
+LAN access: http://192.168.4.79:8000
+
+Keep this terminal open. Close it or press Ctrl+C to stop both services.

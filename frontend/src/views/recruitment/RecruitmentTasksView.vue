@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
@@ -11,8 +11,6 @@ const loadError = ref('')
 const search = ref('')
 const stateFilter = ref('all')
 const kindFilter = ref('all')
-const visibility = ref('current')
-const lastSyncedAt = ref(null)
 let loadSequence = 0
 let pollTimer = null
 let componentAlive = true
@@ -92,25 +90,16 @@ const filteredPlans = computed(() => {
   })
 })
 
-const summary = computed(() => ({
-  total: plans.value.length,
-  active: plans.value.filter((plan) => stateGroup(plan) === 'active').length,
-  waiting: plans.value.filter((plan) => stateGroup(plan) === 'waiting').length,
-  ended: plans.value.filter((plan) => stateGroup(plan) === 'ended').length,
-}))
-
 async function loadPlans({ silent = false } = {}) {
   if (silent && pollInFlight) return
   const sequence = ++loadSequence
   if (!silent) loading.value = true
   if (silent) pollInFlight = true
-  const path = visibility.value === 'archived' ? 'recruitment/automation-plans/?archived=1' : 'recruitment/automation-plans/'
   try {
-    const payload = await api(path)
+    const payload = await api('recruitment/automation-plans/')
     if (!componentAlive || sequence !== loadSequence) return
     plans.value = listItems(payload)
     loadError.value = ''
-    lastSyncedAt.value = new Date()
   } catch (error) {
     if (sequence === loadSequence) loadError.value = error.message || '招聘任务读取失败'
   } finally {
@@ -118,14 +107,6 @@ async function loadPlans({ silent = false } = {}) {
     if (!silent && sequence === loadSequence) loading.value = false
   }
 }
-
-watch(visibility, () => {
-  stateFilter.value = 'all'
-  plans.value = []
-  loadError.value = ''
-  lastSyncedAt.value = null
-  loadPlans()
-})
 
 onMounted(() => {
   loadPlans()
@@ -148,22 +129,7 @@ onUnmounted(() => {
       <RouterLink class="tasks-primary-button" :to="{ name: 'recruitment-workbench', query: { new: '1' } }"><AppIcon name="plus" :size="16" />创建新任务</RouterLink>
     </header>
 
-    <section class="tasks-summary" aria-label="招聘任务概览">
-      <article><span>{{ visibility === 'archived' ? '已删除任务' : '全部任务' }}</span><strong>{{ summary.total }}</strong></article>
-      <article><span>进行中</span><strong>{{ summary.active }}</strong></article>
-      <article><span>等待人工</span><strong>{{ summary.waiting }}</strong></article>
-      <article><span>已结束</span><strong>{{ summary.ended }}</strong></article>
-    </section>
-
     <section class="tasks-panel">
-      <header class="tasks-panel__header">
-        <div class="tasks-visibility" aria-label="任务可见范围">
-          <button type="button" :class="{ 'is-active': visibility === 'current' }" @click="visibility = 'current'">当前任务</button>
-          <button type="button" :class="{ 'is-active': visibility === 'archived' }" data-test="show-archived-tasks" @click="visibility = 'archived'">已删除任务</button>
-        </div>
-        <small v-if="lastSyncedAt && !loadError">自动更新于 {{ formatDateTime(lastSyncedAt) }}</small>
-      </header>
-
       <div class="tasks-filters">
         <label class="tasks-search"><span>搜索任务</span><span class="tasks-input"><AppIcon name="search" :size="17" /><input v-model="search" type="search" placeholder="岗位、方案或运行编号" data-test="task-search" /></span></label>
         <label><span>运行状态</span><span class="tasks-select"><select v-model="stateFilter" data-test="task-state-filter"><option value="all">全部状态</option><option value="active">进行中</option><option value="waiting">等待人工</option><option value="paused">已暂停</option><option value="ended">已结束</option></select><AppIcon name="chevron-down" :size="16" /></span></label>
@@ -175,20 +141,31 @@ onUnmounted(() => {
 
       <template v-else>
         <p v-if="loadError" class="tasks-sync-warning" role="status">同步失败，当前展示上次成功结果。<button type="button" @click="loadPlans()">重试</button></p>
-        <div v-if="filteredPlans.length" class="tasks-table" role="list" aria-label="招聘任务列表">
-          <div class="tasks-table__head" aria-hidden="true"><span>招聘任务</span><span>类型与版本</span><span>当前状态</span><span>最近更新</span><span>操作</span></div>
-          <article v-for="plan in filteredPlans" :key="plan.id" class="tasks-row" role="listitem" :data-test="`task-row-${plan.id}`">
-            <div><strong>{{ plan.job_title || `职位 #${plan.job}` }}</strong><small>{{ runLabel(plan) }}</small></div>
-            <div><span>{{ kindLabel(plan) }}</span><small>{{ revisionLabel(plan) }}</small></div>
-            <span :class="['tasks-status', `is-${planState(plan)}`]"><i></i>{{ stateLabel(plan) }}</span>
-            <time>{{ formatDateTime(plan.updated_at) }}</time>
-            <RouterLink class="tasks-row__link" :to="taskTo(plan)" :data-test="`open-task-${plan.id}`">查看与维护<AppIcon name="chevron-right" :size="12" /></RouterLink>
+        <div v-if="filteredPlans.length" class="tasks-card-grid" role="list" aria-label="招聘任务列表">
+          <article v-for="plan in filteredPlans" :key="plan.id" :class="['tasks-card', `is-${plan.kind}`]" role="listitem" :data-test="`task-row-${plan.id}`">
+            <div class="tasks-card__cover">
+              <span class="tasks-card__cover-icon"><AppIcon :name="plan.kind === 'passive_resume' ? 'headset' : 'search'" :size="30" /></span>
+              <div><small>招聘方案</small><strong>{{ plan.kind === 'passive_resume' ? '被动咨询' : '主动寻访' }}</strong></div>
+              <span :class="['tasks-status', `is-${planState(plan)}`]"><i></i>{{ stateLabel(plan) }}</span>
+            </div>
+            <div class="tasks-card__body">
+              <div class="tasks-card__title"><span>招聘岗位</span><h3>{{ plan.job_title || `职位 #${plan.job}` }}</h3></div>
+              <p>{{ kindLabel(plan) }}</p>
+              <dl>
+                <div><dt>方案版本</dt><dd>{{ revisionLabel(plan) }}</dd></div>
+                <div><dt>运行编号</dt><dd>{{ runLabel(plan) }}</dd></div>
+              </dl>
+            </div>
+            <footer class="tasks-card__footer">
+              <time><AppIcon name="clock" :size="14" />更新于 {{ formatDateTime(plan.updated_at) }}</time>
+              <RouterLink class="tasks-card__link" :to="taskTo(plan)" :data-test="`open-task-${plan.id}`">查看与维护<AppIcon name="chevron-right" :size="13" /></RouterLink>
+            </footer>
           </article>
         </div>
         <div v-else class="tasks-state" data-test="tasks-empty">
           <AppIcon name="briefcase" :size="25" />
-          <div><strong>{{ plans.length ? '没有符合筛选条件的任务' : visibility === 'archived' ? '没有已删除任务' : '还没有招聘任务' }}</strong><p v-if="plans.length">换个搜索词或筛选条件试试</p></div>
-          <RouterLink v-if="!plans.length && visibility === 'current'" :to="{ name: 'recruitment-workbench', query: { new: '1' } }">创建任务</RouterLink>
+          <div><strong>{{ plans.length ? '没有符合筛选条件的任务' : '还没有招聘任务' }}</strong><p v-if="plans.length">换个搜索词或筛选条件试试</p></div>
+          <RouterLink v-if="!plans.length" :to="{ name: 'recruitment-workbench', query: { new: '1' } }">创建任务</RouterLink>
         </div>
       </template>
     </section>
@@ -204,17 +181,7 @@ onUnmounted(() => {
 .tasks-hero p { margin: 0; color: var(--muted); font-size: var(--task-body); }
 .tasks-primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: var(--task-control-height); padding: 0 clamp(18px, 1rem + .45cqi, 24px); border: 1px solid var(--brand); border-radius: var(--task-radius-control); color: #fff; background: var(--brand); box-shadow: 0 8px 18px rgba(15, 159, 143, .16); font-size: var(--task-detail); font-weight: 800; text-decoration: none; transition: 160ms ease; }
 .tasks-primary-button:hover { background: var(--brand-dark); border-color: var(--brand-dark); transform: translateY(-1px); }
-.tasks-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: var(--task-radius-panel); background: #fff; box-shadow: 0 2px 10px rgba(15, 23, 42, .025); }
-.tasks-summary article { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: clamp(82px, 4rem + 1.7cqi, 106px); padding: clamp(18px, 1rem + .55cqi, 28px); border-left: 1px solid var(--line); }
-.tasks-summary article:first-child { border-left: 0; }
-.tasks-summary span { color: var(--muted); font-size: var(--task-detail); font-weight: 700; }
-.tasks-summary strong { color: var(--ink); font-size: clamp(28px, 1.35rem + .75cqi, 38px); line-height: 1; letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
 .tasks-panel { overflow: hidden; border: 1px solid var(--line); border-radius: var(--task-radius-panel); background: #fff; box-shadow: 0 4px 18px rgba(15, 23, 42, .035); }
-.tasks-panel__header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: clamp(14px, .75rem + .4cqi, 20px) clamp(18px, 1rem + .55cqi, 28px); border-bottom: 1px solid var(--line); }
-.tasks-panel__header > small { color: var(--muted); font-size: var(--task-meta); }
-.tasks-visibility { display: inline-flex; gap: 5px; padding: 4px; border-radius: 12px; background: #edf3f2; }
-.tasks-visibility button { min-height: 38px; padding: 0 15px; border: 1px solid transparent; border-radius: 9px; color: var(--muted); background: transparent; font-size: var(--task-meta); font-weight: 800; cursor: pointer; }
-.tasks-visibility button.is-active { color: var(--brand-dark); background: #fff; box-shadow: 0 1px 3px rgba(15, 23, 42, .08); }
 .tasks-filters { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(190px, .34fr) minmax(200px, .36fr); gap: clamp(12px, .7rem + .3cqi, 18px); padding: clamp(18px, 1rem + .45cqi, 24px) clamp(18px, 1rem + .55cqi, 28px); border-bottom: 1px solid var(--line); background: #f8fbfa; }
 .tasks-filters label { display: grid; gap: 8px; min-width: 0; }
 .tasks-filters label > span:first-child { color: var(--muted); font-size: var(--task-meta); font-weight: 800; }
@@ -226,15 +193,20 @@ onUnmounted(() => {
 .tasks-filters select { appearance: none; padding: 0 42px 0 15px; cursor: pointer; }
 .tasks-filters input:hover, .tasks-filters select:hover { border-color: #9fbfba; }
 .tasks-filters input:focus, .tasks-filters select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(15, 159, 143, .12); }
-.tasks-table { overflow-x: auto; }
-.tasks-table__head, .tasks-row { display: grid; grid-template-columns: minmax(280px, 1.35fr) minmax(230px, 1fr) minmax(140px, .55fr) minmax(160px, .65fr) minmax(150px, auto); align-items: center; gap: clamp(18px, 1.15cqi, 28px); min-width: 1020px; }
-.tasks-table__head { min-height: 48px; padding: 0 clamp(18px, 1rem + .55cqi, 28px); color: var(--muted); background: #f7faf9; font-size: var(--task-meta); font-weight: 800; letter-spacing: .035em; }
-.tasks-row { min-height: clamp(82px, 4.25rem + 1.2cqi, 102px); padding: 15px clamp(18px, 1rem + .55cqi, 28px); border-top: 1px solid #e7efed; transition: background 150ms ease; }
-.tasks-row:hover { background: #fbfefd; }
-.tasks-row > div { display: grid; gap: 5px; min-width: 0; color: var(--slate); font-size: var(--task-detail); }
-.tasks-row strong { overflow: hidden; color: var(--ink); font-size: var(--task-body); text-overflow: ellipsis; white-space: nowrap; }
-.tasks-row small, .tasks-row time { color: var(--muted); font-size: var(--task-meta); }
-.tasks-status { display: inline-flex; align-items: center; gap: 7px; width: fit-content; min-height: 32px; padding: 0 11px; border-radius: 999px; color: var(--slate); background: #f1f5f4; font-size: var(--task-meta); font-weight: 800; }
+.tasks-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(18px, 1.2rem + .45cqi, 28px); padding: clamp(20px, 1.2rem + .55cqi, 30px); background: #f4f8f7; }
+.tasks-card { position: relative; display: grid; grid-template-rows: auto 1fr auto; min-width: 0; overflow: hidden; border: 1px solid #dce8e6; border-radius: clamp(16px, .8rem + .35cqi, 21px); background: #fff; box-shadow: 0 10px 28px rgba(15, 23, 42, .075); transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.tasks-card:hover { border-color: #b6d7d2; box-shadow: 0 18px 38px rgba(15, 23, 42, .11); transform: translateY(-3px); }
+.tasks-card__cover { position: relative; display: flex; align-items: center; gap: 13px; min-height: clamp(112px, 7rem + 1.7cqi, 148px); overflow: hidden; padding: clamp(18px, 1rem + .5cqi, 26px); color: #fff; background: linear-gradient(135deg, #0b766e 0%, #12a594 56%, #4bc4ad 100%); }
+.tasks-card__cover::before, .tasks-card__cover::after { position: absolute; content: ''; border-radius: 50%; background: rgba(255, 255, 255, .12); }
+.tasks-card__cover::before { width: 170px; height: 170px; right: -58px; bottom: -105px; }
+.tasks-card__cover::after { width: 96px; height: 96px; right: 66px; top: -60px; }
+.tasks-card.is-passive_resume .tasks-card__cover { background: linear-gradient(135deg, #3056a2 0%, #5967c7 56%, #6d9dde 100%); }
+.tasks-card__cover-icon { position: relative; z-index: 1; display: grid; flex: none; width: 54px; height: 54px; place-content: center; border: 1px solid rgba(255, 255, 255, .28); border-radius: 16px; background: rgba(255, 255, 255, .15); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2); }
+.tasks-card__cover > div { position: relative; z-index: 1; display: grid; gap: 3px; min-width: 0; }
+.tasks-card__cover small { color: rgba(255, 255, 255, .76); font-size: var(--task-meta); font-weight: 700; letter-spacing: .08em; }
+.tasks-card__cover strong { font-size: clamp(18px, .8rem + .65cqi, 24px); line-height: 1.2; }
+.tasks-status { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 7px; width: fit-content; min-height: 32px; padding: 0 11px; border-radius: 999px; color: var(--slate); background: rgba(255, 255, 255, .93); box-shadow: 0 3px 10px rgba(15, 23, 42, .12); font-size: var(--task-meta); font-weight: 800; }
+.tasks-card__cover > .tasks-status { margin-left: auto; align-self: flex-start; }
 .tasks-status i { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }
 .tasks-status.is-running, .tasks-status.is-starting, .tasks-status.is-completed { color: var(--brand-dark); background: var(--brand-soft); }
 .tasks-status.is-running i, .tasks-status.is-starting i, .tasks-status.is-completed i { background: var(--brand); }
@@ -242,8 +214,19 @@ onUnmounted(() => {
 .tasks-status.is-waiting_human i, .tasks-status.is-paused i, .tasks-status.is-pausing i, .tasks-status.is-stopping i { background: var(--warning); }
 .tasks-status.is-failed, .tasks-status.is-archived { color: #b42332; background: #fff0f2; }
 .tasks-status.is-failed i, .tasks-status.is-archived i { background: var(--danger); }
-.tasks-row__link { display: inline-flex; align-items: center; justify-content: center; justify-self: end; gap: 6px; min-height: 40px; padding: 0 13px; border: 1px solid #b8d8d4; border-radius: 10px; color: var(--brand-dark); background: #fff; font-size: var(--task-meta); font-weight: 800; text-decoration: none; }
-.tasks-row__link:hover { border-color: var(--brand); background: var(--brand-soft); }
+.tasks-card__body { display: grid; align-content: start; gap: 13px; padding: clamp(20px, 1.1rem + .45cqi, 27px); }
+.tasks-card__title { display: grid; gap: 4px; }
+.tasks-card__title > span { color: var(--muted); font-size: var(--task-meta); font-weight: 750; }
+.tasks-card__title h3 { overflow: hidden; margin: 0; color: var(--ink); font-size: clamp(18px, .85rem + .55cqi, 23px); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-card__body > p { margin: 0; color: var(--slate); font-size: var(--task-detail); line-height: 1.6; }
+.tasks-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.tasks-card dl > div { display: grid; gap: 4px; min-width: 0; padding: 11px 12px; border-radius: 11px; background: #f5f9f8; }
+.tasks-card dt { color: var(--muted); font-size: var(--task-meta); }
+.tasks-card dd { overflow: hidden; margin: 0; color: var(--slate); font-size: var(--task-detail); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-card__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px clamp(20px, 1.1rem + .45cqi, 27px); border-top: 1px solid #e6eeec; }
+.tasks-card__footer time { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: var(--task-meta); }
+.tasks-card__link { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 13px; border: 1px solid #b8d8d4; border-radius: 10px; color: var(--brand-dark); background: #fff; font-size: var(--task-meta); font-weight: 800; text-decoration: none; }
+.tasks-card__link:hover { border-color: var(--brand); background: var(--brand-soft); }
 .tasks-state { display: flex; align-items: center; justify-content: center; gap: 14px; min-height: clamp(230px, 16cqi, 320px); padding: 34px; color: var(--muted); text-align: left; }
 .tasks-state > div { display: grid; gap: 4px; }
 .tasks-state strong { color: var(--slate); font-size: var(--task-body); }
@@ -256,33 +239,22 @@ onUnmounted(() => {
 .tasks-sync-warning { margin: 0; padding: 11px 18px; color: #9a5b08; background: #fff9ea; font-size: var(--task-meta); }
 .recruitment-tasks a:focus-visible, .recruitment-tasks button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 @container (max-width: 1080px) {
-  .tasks-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .tasks-summary article { border-top: 1px solid var(--line); }
-  .tasks-summary article:nth-child(-n + 2) { border-top: 0; }
-  .tasks-summary article:nth-child(odd) { border-left: 0; }
   .tasks-filters { grid-template-columns: minmax(280px, 1fr) minmax(170px, .45fr) minmax(180px, .5fr); }
-  .tasks-table__head { display: none; }
-  .tasks-table { overflow: visible; }
-  .tasks-row { grid-template-columns: minmax(0, 1fr) auto; gap: 11px 22px; min-width: 0; }
-  .tasks-row > :nth-child(2), .tasks-row > time { grid-column: 1; }
-  .tasks-status, .tasks-row__link { grid-column: 2; justify-self: end; }
+  .tasks-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @container (max-width: 760px) {
   .tasks-hero { align-items: stretch; flex-direction: column; }
   .tasks-primary-button { align-self: stretch; }
   .tasks-filters { grid-template-columns: 1fr; }
-  .tasks-panel__header { align-items: flex-start; flex-direction: column; }
-  .tasks-panel__header > small { display: none; }
-  .tasks-visibility { width: 100%; }
-  .tasks-visibility button { flex: 1; min-height: 42px; }
-  .tasks-row { grid-template-columns: 1fr; }
-  .tasks-row > :nth-child(n) { grid-column: 1; justify-self: start; }
-  .tasks-row__link { width: 100%; min-height: 44px; }
+  .tasks-card-grid { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+  .tasks-card__link { min-height: 44px; }
   .tasks-state { align-items: center; flex-direction: column; text-align: center; }
 }
 @container (max-width: 480px) {
-  .tasks-summary article { min-height: 76px; padding: 13px; }
-  .tasks-summary span { font-size: 12px; }
-  .tasks-summary strong { font-size: 26px; }
+  .tasks-card__cover { align-items: flex-start; min-height: 124px; }
+  .tasks-card__cover > .tasks-status { position: absolute; right: 16px; bottom: 14px; }
+  .tasks-card dl { grid-template-columns: minmax(0, 1fr); }
+  .tasks-card__footer { align-items: stretch; flex-direction: column; }
+  .tasks-card__link { width: 100%; }
 }
 </style>

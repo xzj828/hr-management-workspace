@@ -52,6 +52,8 @@ def _worker(request):
 
 
 def _raw_passive_scopes(task):
+    if task.action != RpaTask.Action.SYNC_CONVERSATIONS:
+        return None
     payload = task.request_payload if isinstance(task.request_payload, dict) else {}
     scopes = payload.get("passive_plan_scopes")
     if isinstance(scopes, dict):

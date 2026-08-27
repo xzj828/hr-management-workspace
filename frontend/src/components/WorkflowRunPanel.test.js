@@ -11,8 +11,10 @@ describe('WorkflowRunPanel', () => {
       node_runs: [{ id: 2, node_key: 'approval', status: 'waiting_human', attempt: 0 }],
       events: [{ id: 1, message: '等待 HR 确认', created_at: '2026-08-24T08:00:00Z' }],
     } } })
-    expect(wrapper.text()).toContain('试运行 · 不会操作 BOSS')
-    expect(wrapper.text()).toContain('等待 HR 确认')
+    expect(wrapper.text()).toContain('本次为试运行，不会操作招聘平台')
+    expect(wrapper.text()).toContain('需要你处理')
+    expect(wrapper.text()).not.toContain('等待 HR 确认')
+    expect(wrapper.text()).not.toContain('approval')
     await wrapper.get('.workflow-run-node-actions .is-primary').trigger('click')
     await wrapper.get('.workflow-run-actions button').trigger('click')
     expect(wrapper.emitted('decision')[0][0]).toEqual({ nodeId: 2, approved: true })
@@ -29,16 +31,17 @@ describe('WorkflowRunPanel', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('确认并继续')
-    expect(wrapper.text()).toContain('拒绝')
+    expect(wrapper.text()).toContain('搜索候选人并获取简历')
+    expect(wrapper.text()).toContain('同意并继续')
+    expect(wrapper.text()).toContain('暂不执行')
   })
 
-  it('routes plan-managed lifecycle controls back to the workbench while keeping human decisions', async () => {
+  it('routes plan-managed lifecycle controls to the task detail while keeping human decisions', async () => {
     const wrapper = mount(WorkflowRunPanel, {
       props: {
         run: {
           id: 'run-plan', job: 51, status: 'waiting_human', mode: 'formal', account_name: 'BOSS 账号',
-          automation_plan_revision: 402,
+          automation_plan_revision: 402, automation_plan: 301,
           events: [],
           node_runs: [
             { id: 23, node_key: 'human-check', status: 'waiting_human', attempt: 0 },
@@ -50,11 +53,12 @@ describe('WorkflowRunPanel', () => {
     })
 
     expect(wrapper.find('.workflow-run-actions').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('重试')
-    expect(wrapper.get('[data-test="plan-managed-guidance"]').text()).toContain('请回招聘作业台停止/修改/重新开启')
+    expect(wrapper.text()).not.toContain('重新处理')
+    expect(wrapper.get('[data-test="plan-managed-guidance"]').text()).toContain('任务设置与启停在任务详情中管理')
     expect(wrapper.getComponent(RouterLinkStub).props('to')).toEqual({
-      name: 'recruitment-workbench',
-      query: { job: '51', step: 'plan' },
+      name: 'recruitment-task-detail',
+      params: { planId: '301' },
+      query: { job: '51', run: 'run-plan', view: 'tasks' },
     })
 
     await wrapper.get('.workflow-run-node-actions .is-primary').trigger('click')

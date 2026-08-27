@@ -199,7 +199,7 @@ describe('RecruitmentAutomationView', () => {
     await wrapper.get('[data-test="dry-run-21"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('试运行 · 不会操作 BOSS')
+    expect(wrapper.text()).toContain('本次为试运行，不会操作招聘平台')
     expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-versions/21/run/', expect.objectContaining({ method: 'POST' }))
 
     await wrapper.get('[data-test="formal-run-21"]').trigger('click')

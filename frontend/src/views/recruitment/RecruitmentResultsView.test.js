@@ -160,9 +160,9 @@ describe('RecruitmentResultsView', () => {
     await wrapper.get('[data-test="results-tab-tasks"]').trigger('click')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('主动寻访标准方案')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('3/8')
-    await wrapper.get('[data-test="tasks-view"] button[aria-expanded="false"]').trigger('click')
-    expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('hr-review')
-    expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('已进入人工确认节点')
+    expect(wrapper.get('[data-test="manage-run-run-1000"]').text()).toBe('处理待办')
+    expect(wrapper.get('[data-test="tasks-view"]').text()).not.toContain('hr-review')
+    expect(wrapper.get('[data-test="tasks-view"]').text()).not.toContain('已进入人工确认节点')
 
     await wrapper.get('[data-test="results-tab-candidates"]').trigger('click')
     expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('林溪')
@@ -327,9 +327,10 @@ describe('RecruitmentResultsView', () => {
     await wrapper.get('[data-test="manage-run-run-1000"]').trigger('click')
     await flushPromises()
     const panel = wrapper.get('[aria-label="流程运行状态"]')
-    expect(panel.text()).toContain('hr-review')
+    expect(panel.text()).toContain('处理招聘任务')
+    expect(panel.text()).not.toContain('hr-review')
 
-    const approve = panel.findAll('button').find((button) => button.text() === '通过')
+    const approve = panel.findAll('button').find((button) => button.text() === '继续处理')
     await approve.trigger('click')
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-runs/run-1000/decision/', {
@@ -337,7 +338,7 @@ describe('RecruitmentResultsView', () => {
       body: JSON.stringify({ node_id: 2, approved: true, note: 'HR 在结果中心确认通过' }),
     })
 
-    const pause = wrapper.get('[aria-label="流程运行状态"]').findAll('button').find((button) => button.text() === '暂停')
+    const pause = wrapper.get('[aria-label="流程运行状态"]').findAll('button').find((button) => button.text() === '暂停任务')
     await pause.trigger('click')
     await flushPromises()
 
@@ -347,8 +348,8 @@ describe('RecruitmentResultsView', () => {
     expect(wrapper.get('[aria-label="流程运行状态"]').text()).toContain('已暂停')
   })
 
-  it('keeps plan-managed runs read-only for lifecycle controls and links back to their job workbench', async () => {
-    const managedRun = run({ automation_plan_revision: 402 })
+  it('keeps plan-managed runs read-only for lifecycle controls and links to their task detail', async () => {
+    const managedRun = run({ automation_plan_revision: 402, automation_plan: 301 })
     apiMock.mockImplementation((path) => {
       if (path === 'recruitment/workflow-runs/') return Promise.resolve({ results: [managedRun] })
       if (path === 'recruitment/workflow-runs/run-1000/decision/') {
@@ -365,15 +366,16 @@ describe('RecruitmentResultsView', () => {
     await wrapper.get('[data-test="manage-run-run-1000"]').trigger('click')
     await flushPromises()
     const panel = wrapper.getComponent(WorkflowRunPanel)
-    expect(panel.get('[data-test="plan-managed-guidance"]').text()).toContain('请回招聘作业台停止/修改/重新开启')
-    expect(panel.text()).not.toContain('暂停')
-    expect(panel.text()).not.toContain('取消运行')
+    expect(panel.get('[data-test="plan-managed-guidance"]').text()).toContain('任务设置与启停在任务详情中管理')
+    expect(panel.text()).not.toContain('暂停任务')
+    expect(panel.text()).not.toContain('结束本次任务')
     expect(panel.getComponent(RouterLinkStub).props('to')).toEqual({
-      name: 'recruitment-workbench',
-      query: { job: '1', step: 'plan' },
+      name: 'recruitment-task-detail',
+      params: { planId: '301' },
+      query: { job: '1', run: 'run-1000', view: 'tasks' },
     })
 
-    const approve = panel.findAll('button').find((button) => button.text() === '通过')
+    const approve = panel.findAll('button').find((button) => button.text() === '继续处理')
     await approve.trigger('click')
     await flushPromises()
     expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-runs/run-1000/decision/', {
@@ -398,7 +400,7 @@ describe('RecruitmentResultsView', () => {
     const { wrapper } = await mountView({ job: '1', run: 'run-1000' })
     await flushPromises()
 
-    const retry = wrapper.get('[aria-label="流程运行状态"]').findAll('button').find((button) => button.text() === '重试')
+    const retry = wrapper.get('[aria-label="流程运行状态"]').findAll('button').find((button) => button.text() === '重新处理')
     await retry.trigger('click')
     await flushPromises()
 

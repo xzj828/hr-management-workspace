@@ -795,6 +795,49 @@ class AutomationPlanApiTests(APITestCase):
         RPA_WORKER_TOKEN="plan-completion-fence-secret",
         RPA_WORKER_KEYS={"automation-plan-worker": "plan-completion-fence-secret"},
     )
+    def test_active_search_plan_worker_started_event_is_not_treated_as_passive_scope(self):
+        self._start()
+        plan = RecruitmentAutomationPlan.objects.get(job=self.job)
+        node = plan.current_run.node_runs.get(node_key="search_pull")
+        approved = self.client.post(
+            f"/api/recruitment/workflow-runs/{plan.current_run_id}/decision/",
+            {"node_id": node.pk, "approved": True},
+            format="json",
+        )
+        self.assertEqual(approved.status_code, 200, approved.data)
+
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "automation-plan-worker"},
+            format="json",
+            HTTP_X_RPA_WORKER_TOKEN="plan-completion-fence-secret",
+        )
+        self.assertEqual(lease.status_code, 200, lease.data)
+        task = lease.data["task"]
+        self.assertEqual(task["action"], RpaTask.Action.SEARCH_AND_PULL_RESUMES)
+
+        started = self.client.post(
+            f"/api/recruitment/worker/tasks/{task['id']}/event/",
+            {
+                "worker_key": "automation-plan-worker",
+                "lease_token": task["lease_token"],
+                "lease_generation": task["lease_generation"],
+                "event": "started",
+                "message": "本机 Worker 开始执行",
+            },
+            format="json",
+            HTTP_X_RPA_WORKER_TOKEN="plan-completion-fence-secret",
+        )
+
+        self.assertEqual(started.status_code, 201, started.data)
+        leased_task = RpaTask.objects.get(pk=task["id"])
+        self.assertEqual(leased_task.status, RpaTask.Status.RUNNING)
+        self.assertIsNotNone(leased_task.started_at)
+
+    @override_settings(
+        RPA_WORKER_TOKEN="plan-completion-fence-secret",
+        RPA_WORKER_KEYS={"automation-plan-worker": "plan-completion-fence-secret"},
+    )
     def test_search_completion_after_stop_uses_server_fence_even_without_worker_stop_flag(self):
         self._start()
         plan = RecruitmentAutomationPlan.objects.get(job=self.job)

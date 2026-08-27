@@ -40,7 +40,6 @@ function viewFromQuery(query) {
 const activeView = ref(viewFromQuery(route.query))
 const selectedRunId = ref(String(route.query.run || ''))
 const statusFilter = ref(String(route.query.status || 'all'))
-const expandedRunId = ref('')
 const runPanelId = ref(String(route.query.run || ''))
 const runActionBusy = ref(false)
 const runActionError = ref('')
@@ -843,11 +842,6 @@ async function submitScreeningDecision({ notify, reason, message }) {
   }
 }
 
-function toggleRunDetail(runId) {
-  const normalized = String(runId)
-  expandedRunId.value = expandedRunId.value === normalized ? '' : normalized
-}
-
 function openRunPanel(run) {
   runActionError.value = ''
   runPanelId.value = String(run.id)
@@ -1108,7 +1102,7 @@ onUnmounted(() => {
           <p v-if="attentionActionError" class="results-inline-error" data-test="attention-action-error">{{ attentionActionError }}</p>
           <div class="attention-list">
             <div class="attention-list__head" aria-hidden="true">
-              <span>待处理事项</span><span>类别</span><span>关联账号 / 候选人</span><span>上下文摘要</span><span>创建时间</span><span>状态</span><span>操作</span>
+              <span>待处理事项</span><span>类别</span><span>关联账号 / 候选人</span><span>上下文摘要</span><span>创建时间</span><span>状态</span><span>处理</span>
             </div>
             <article v-for="item in filteredAttentions" :key="item.id" :class="`is-${statusTone(item.status)}`">
               <strong>{{ item.title }}</strong>
@@ -1118,8 +1112,8 @@ onUnmounted(() => {
               <time>{{ formatDateTime(item.created_at) }}</time>
               <span :class="['candidate-status', `is-${statusTone(item.status)}`]">{{ item.status_label || statusLabel(item.status) }}</span>
               <div class="attention-actions">
-                <RouterLink :to="{ name: 'recruitment-candidates', query: { job: currentJobId, application: item.application || undefined } }">查看上下文 <AppIcon name="chevron-right" :size="11" /></RouterLink>
-                <button v-if="item.status === 'open'" type="button" :disabled="Boolean(attentionActionId)" :data-test="`resolve-attention-${item.id}`" @click="resolveAttention(item)">{{ attentionActionId === String(item.id) ? '处理中…' : '标记已处理' }}</button>
+                <RouterLink :to="{ name: 'recruitment-candidates', query: { job: currentJobId, application: item.application || undefined } }">查看相关信息 <AppIcon name="chevron-right" :size="11" /></RouterLink>
+                <button v-if="item.status === 'open'" class="attention-actions__primary" type="button" :disabled="Boolean(attentionActionId)" :data-test="`resolve-attention-${item.id}`" @click="resolveAttention(item)">{{ attentionActionId === String(item.id) ? '正在处理…' : '标记已处理' }}</button>
               </div>
             </article>
             <div v-if="!filteredAttentions.length && resources.attentions.loading" class="results-table-empty">正在加载人工事项…</div>
@@ -1143,31 +1137,8 @@ onUnmounted(() => {
                 <span>{{ run.target_candidate_count ?? run.target_count ?? '—' }}</span>
                 <div class="results-table-progress"><div class="results-progress"><i :style="{ width: `${runProgress(run)}%` }"></i></div><small>{{ runProgress(run) }}%</small></div>
                 <time>{{ formatDateTime(run.started_at || run.created_at || run.updated_at) }}</time>
-                <span class="run-list__actions"><RouterLink v-if="run.automation_plan" :to="{ name: 'recruitment-task-detail', params: { planId: run.automation_plan }, query: { job: currentJobId, run: run.id, view: 'tasks', status: run.automation_plan_archived_at ? 'archived' : undefined } }">查看任务</RouterLink><button type="button" :aria-expanded="expandedRunId === String(run.id)" @click="toggleRunDetail(run.id)">查看运行详情</button><button type="button" :data-test="`manage-run-${run.id}`" @click="openRunPanel(run)">处理运行</button></span>
+                <span class="run-list__actions"><RouterLink v-if="run.automation_plan" :to="{ name: 'recruitment-task-detail', params: { planId: run.automation_plan }, query: { job: currentJobId, run: run.id, view: 'tasks', status: run.automation_plan_archived_at ? 'archived' : undefined } }">查看任务</RouterLink><button type="button" :data-test="`manage-run-${run.id}`" @click="openRunPanel(run)">{{ run.status === 'waiting_human' ? '处理待办' : '查看进展' }}</button></span>
                 <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
-                <section v-if="expandedRunId === String(run.id)" class="run-detail" :aria-label="`${run.template_name || '自动化任务'}运行详情`">
-                  <div>
-                    <span>节点进度</span>
-                    <ol v-if="run.node_runs?.length">
-                      <li v-for="node in run.node_runs" :key="node.id">
-                        <i :class="`is-${statusTone(node.status)}`"></i>
-                        <strong>{{ node.node_key || node.node_type || '流程节点' }}</strong>
-                        <small>{{ node.status_label || statusLabel(node.status) }}<template v-if="node.error_message"> · {{ node.error_message }}</template></small>
-                      </li>
-                    </ol>
-                    <p v-else>该运行暂未生成节点记录。</p>
-                  </div>
-                  <div>
-                    <span>事件时间线</span>
-                    <ol v-if="run.events?.length">
-                      <li v-for="event in run.events.slice().reverse()" :key="event.id">
-                        <time>{{ formatDateTime(event.created_at) }}</time>
-                        <small>{{ event.message }}</small>
-                      </li>
-                    </ol>
-                    <p v-else>该运行暂未记录更多事件。</p>
-                  </div>
-                </section>
               </article>
               </template>
               <div v-else-if="resources.runs.loading" class="results-table-empty">正在恢复任务运行…</div>
@@ -1438,9 +1409,8 @@ onUnmounted(() => {
   --results-stage-card-min: 8.125rem;
   --results-progress-height: clamp(.5625rem, .35rem + .35cqi, .875rem);
   --results-stage-progress-height: clamp(.6875rem, .4rem + .4cqi, 1rem);
-  --results-attention-columns: minmax(230px, 1.25fr) 72px minmax(110px, .7fr) minmax(250px, 1.4fr) 96px 72px 160px;
+  --results-attention-columns: minmax(220px, 1.1fr) 88px minmax(130px, .72fr) minmax(250px, 1.3fr) 118px 96px 224px;
   --results-status-marker-width: 4px;
-  --results-node-marker-size: 6px;
   --results-skeleton-height: 76px;
   --results-skeleton-background: var(--results-color-surface-muted);
   --results-skeleton-opacity: .6;
@@ -1970,7 +1940,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--results-space-2);
+  gap: 8px;
   min-width: 0;
 }
 
@@ -1986,26 +1956,34 @@ onUnmounted(() => {
 .attention-list a {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--results-space-1);
-  min-height: 36px;
-  padding: 0 8px;
-  border-radius: 8px;
+  min-height: 40px;
+  padding: 0 11px;
+  border: var(--results-border-width) solid #b8d8d4;
+  border-radius: 9px;
+  background: var(--results-color-surface);
   white-space: nowrap;
 }
 
 .attention-actions button {
-  min-height: 36px;
-  padding: 0 8px;
-  color: var(--results-color-brand-dark);
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  color: #fff;
+  background: var(--results-color-brand);
+  border: var(--results-border-width) solid var(--results-color-brand);
+  border-radius: 9px;
   white-space: nowrap;
 }
 
 .attention-list a:hover,
-.attention-actions button:hover:not(:disabled) {
+.attention-list a:hover {
   background: var(--results-color-brand-soft);
+}
+
+.attention-actions button:hover:not(:disabled) {
+  background: var(--results-color-brand-dark);
+  border-color: var(--results-color-brand-dark);
 }
 
 .attention-actions button:disabled,
@@ -2382,88 +2360,6 @@ onUnmounted(() => {
   font-weight: var(--results-weight-heavy);
   text-align: center;
   text-decoration: none;
-}
-
-.run-detail {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--results-space-3);
-  padding: var(--results-space-3) 0 0;
-  border-top: var(--results-border-width) solid var(--results-color-line-soft);
-}
-
-.run-detail > div {
-  display: grid;
-  align-content: start;
-  gap: var(--results-space-2);
-  min-width: 0;
-}
-
-.run-detail > div > span {
-  color: var(--results-color-muted);
-  font-size: var(--results-font-meta);
-  font-weight: var(--results-weight-heavy);
-  letter-spacing: var(--results-tracking-kicker);
-  text-transform: uppercase;
-}
-
-.run-detail ol {
-  display: grid;
-  gap: var(--results-space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.run-detail li {
-  display: grid;
-  grid-template-columns: var(--results-node-marker-size) minmax(0, .6fr) minmax(0, 1fr);
-  align-items: center;
-  gap: var(--results-space-2);
-  min-width: 0;
-}
-
-.run-detail li > i {
-  width: var(--results-node-marker-size);
-  height: var(--results-node-marker-size);
-  background: var(--results-color-faint);
-  border-radius: var(--results-radius-status);
-}
-
-.run-detail li > i.is-success {
-  background: var(--results-color-brand);
-}
-
-.run-detail li > i.is-danger {
-  background: var(--results-color-danger);
-}
-
-.run-detail li > i.is-warning {
-  background: var(--results-color-warning);
-}
-
-.run-detail strong,
-.run-detail small,
-.run-detail p,
-.run-detail time {
-  min-width: 0;
-  margin: 0;
-  font-size: var(--results-font-meta);
-  line-height: var(--results-leading-body);
-}
-
-.run-detail strong {
-  overflow: hidden;
-  color: var(--results-color-slate);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-detail small,
-.run-detail p,
-.run-detail time {
-  color: var(--results-color-muted);
-  overflow-wrap: anywhere;
 }
 
 @keyframes results-pulse {
@@ -3004,8 +2900,7 @@ onUnmounted(() => {
   text-decoration: none;
 }
 
-.results-data-table__row > .run-error,
-.results-data-table__row > .run-detail {
+.results-data-table__row > .run-error {
   grid-column: 1 / -1;
 }
 
@@ -3037,6 +2932,39 @@ onUnmounted(() => {
 
 /* Container conditions intentionally use literals because custom properties are invalid in query expressions. */
 @container results-center (max-width: 1180px) {
+  .attention-list {
+    gap: 14px;
+    padding: 16px;
+    background: var(--results-color-surface-soft);
+  }
+
+  .attention-list__head {
+    display: none;
+  }
+
+  .attention-list > article {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 18px;
+    min-height: 0;
+    padding: 18px;
+    border: var(--results-border-width) solid var(--results-color-line-soft);
+    border-radius: var(--results-radius-panel);
+    background: var(--results-color-surface);
+    box-shadow: 0 8px 22px rgba(15, 23, 42, .055);
+  }
+
+  .attention-list > article:last-child {
+    border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
+  }
+
+  .attention-list article > strong { grid-row: 1; grid-column: 1; }
+  .attention-list article > .candidate-status { grid-row: 1; grid-column: 2; }
+  .attention-type { grid-row: 2; grid-column: 1; }
+  .attention-object { grid-row: 3; grid-column: 1; }
+  .attention-list article > p { grid-row: 4; grid-column: 1 / -1; }
+  .attention-list article > time { grid-row: 5; grid-column: 1; align-self: center; }
+  .attention-actions { grid-row: 5; grid-column: 2; }
+
   .candidate-filter-bar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -3280,6 +3208,9 @@ onUnmounted(() => {
     justify-content: start;
   }
 
+  .attention-list article > time { grid-row: 5; }
+  .attention-actions { grid-row: 6; flex-wrap: wrap; }
+
   .run-list > article,
   .campaign-list > article,
   .candidate-result-list > article {
@@ -3423,10 +3354,6 @@ onUnmounted(() => {
 
   .candidate-batch-bar > div:last-child button {
     width: 100%;
-  }
-
-  .run-detail {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .stage-progress-list {

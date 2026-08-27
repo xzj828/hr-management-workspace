@@ -1,58 +1,65 @@
-# 结果中心字号与栏目宽度 Design QA
+# 招聘作业台四步界面 Design QA
 
 ## Evidence
 
-- Source visual truth: `design-qa-before.png`
-- Source role: user-marked problem reference rather than a target to reproduce; the explicit acceptance contract is more comfortable Microsoft YaHei typography, wider fields/columns, less arbitrary bolding, and responsive proportions.
-- Source pixels: 1700 × 280 at the captured candidates-table state.
-- Wide implementation: `C:\Users\Administrator\Desktop\hr-management-workspace-master\design-qa-final-wide.png`
-- Wide implementation pixels: 1685 × 892 from a 1700 × 900 CSS viewport, DPR 1; the 15px scrollbar accounts for the image-width difference.
-- Default implementation: `C:\Users\Administrator\Desktop\hr-management-workspace-master\design-qa-final-full.png`
-- Default implementation pixels: 1265 × 1507 from the browser's 1280 × 720 default viewport, DPR 1.
-- Small implementation: `C:\Users\Administrator\Desktop\hr-management-workspace-master\design-qa-final-small.png`
-- Small implementation pixels: 375 × 812 from a 390 × 844 CSS viewport, DPR 1.
-- Combined comparison: `C:\Users\Administrator\Desktop\hr-management-workspace-master\design-qa-comparison.png`
-- State: 结果中心 → 候选人与简历，2 位候选人，默认筛选。
+- Source visual truth: `C:\Users\ADMINI~1\AppData\Local\Temp\codex-clipboard-4a7288ee-1417-4c0a-b06f-958bec27a43e.png`
+- Source pixels: 1448 × 1086, four target states in a 2 × 2 board.
+- Final browser viewport: 1542 × 1026 CSS pixels. Browser capture is 1713 × 1140 pixels (1.111 capture scale); card crops were density-normalized before comparison.
+- Implementation states:
+  - `design-qa-workbench-context-mid.png`
+  - `design-qa-workbench-standard-mid.png`
+  - `design-qa-workbench-plan-mid.png`
+  - `design-qa-workbench-review-mid.png`
+- Combined source/implementation comparison: `design-qa-workbench-comparison-mid.png`. Each row places the target on the left and the browser-rendered implementation on the right.
+- State data: Python 后端工程师 · 技术部、招聘账号 A、3 条核心要求、2 条加分项、主动寻访 20 份、最大扫描 100 人。
 
 ## Fidelity Surfaces
 
-- Fonts and typography: Microsoft YaHei / Microsoft YaHei UI is active throughout. Candidate-table body and controls are 15px, headers and supporting copy are 14px, normal content is weight 400, and only headings/primary labels use weight 600. Body line-height is 1.6; results copy uses 1.45–1.65 according to density.
-- Spacing and layout rhythm: wide filters resolve to five 238px fields plus the clear action; candidate table resolves to 1638px with materially wider name, stage, recommendation, resume, HR, and notification columns. At container widths of 1180px or less, candidates become two-column record cards; at 820px or less they become single-column cards. No document-level horizontal overflow was present at 1920, 1700, 1366, 1024, or 390 checks.
-- Colors and visual tokens: existing slate, teal, paper, line, warning, and state tokens are unchanged. Typography and spacing adjustments do not introduce a new palette or heavier decoration.
-- Image quality and asset fidelity: this screen has no content imagery. Existing icon assets remain in use; no placeholder, emoji, CSS-art, or generated raster replacement was introduced.
-- Copy and content: business copy and state labels remain unchanged. The useless empty operation dash is hidden in record-card mode; error, warning, and human-review copy is preserved.
+- Layout: all four steps use the target's unified white task canvas, 250px pale-teal step rail, 1020 × 680 desktop card, 22px outer radius, fixed bottom action area, and two-column main forms where shown in the source. This is the user-selected middle size between the original 1080 × 720 and the smaller 972 × 648 pass.
+- Typography: explanatory header copy is visually removed; only task titles, field labels, state labels, values, and safety-critical text remain. Titles are 26px/800 on desktop and body controls use 14–15px text.
+- Colors: stage `#01a7af`, white surface, sidebar `#ecf7f7`, ink `#10213a`, teal primary, green completion state, amber blocked state, and cool gray borders match the reference family.
+- Assets: existing local `AppIcon` SVG assets are used for upload, completed steps, job, account, search, and safety. No emoji, handcrafted SVG, CSS-art icon, or raster placeholder was introduced.
+- Controls: native selects, radios, inputs, textareas, upload control, and action buttons retain their existing functionality. The candidate filter deliberately remains the existing dropdown form per the user's explicit instruction; its trigger was opened and closed successfully during browser QA.
+- Copy: redundant explanatory paragraphs were removed from the visible UI. Business values, validation copy, diagnostics links, and service-side safety messaging remain intact.
 
 ## Full-view and Focused Comparison
 
-- Full-view evidence: wide and default screenshots confirm the page shell, overview, filters, tabs, table/cards, and footer remain aligned without document overflow.
-- Focused evidence: `design-qa-comparison.png` puts the original problem screenshot and the wide final candidates region in one image. It confirms the visible increase from 13/14px to 14/15px, taller rows, wider filter controls, reduced letter spacing, and wider semantic columns.
+- Full-view evidence covers all four workflow states at the same desktop viewport and data state.
+- The combined comparison confirms the target hierarchy, sidebar proportions, control grouping, teal/white palette, footer placement, check-row structure, and use of line icons.
+- The only intentional visual deviation is step 3's candidate filtering: the selected target shows all filters inline, while the implementation preserves the existing collapsible dropdown form as explicitly required.
+- Runtime constraints remain truthful: the implementation displays the project's actual maximum scan value of 100 and the actual local-worker readiness, rather than fabricating the target mock's 2000/ready values.
 
 ## Comparison History
 
-1. Initial P1: Microsoft YaHei was rendered with a 13px table header, 14px body, browser-default line-height, 190px filters, and a 1480px ten-column table. The result looked compressed and visually uneven.
-   - Fix: set a 14px system base with 1.6 line-height; results meta/header to 14px, body/control to 15px, and table width to a 1600px minimum / 1638px resolved width. Filters now use the available width instead of stopping at 190px.
-   - Post-fix evidence: `design-qa-final-wide.png`; header 14px, body 15px, five filters at 238px, no console warning/error.
-2. Initial P2: at 1280/1366 widths, preserving ten wide columns required horizontal scrolling and delayed access to the rightmost fields.
-   - Fix: add a two-column candidate record-card layout at container widths ≤1180px, retaining all labels and values; retain the table on wide monitors.
-   - Post-fix evidence: `design-qa-final-full.png`; 1280 viewport resolves a 36px selector rail plus two 422px information columns with no document overflow.
-3. Initial P2: candidates without a resume produced an unlabeled, empty operation row in card mode.
-   - Fix: hide the empty operation cell while preserving the real action cell when a detail action exists.
-   - Post-fix evidence: final default screenshot; card height reduced from 370px to 302px and the useless dash row is absent.
+1. Initial P1: the original workbench mixed dense helper text, nested cards, inconsistent footer placement, and vertically scrolling content.
+   - Fix: rebuilt the four states around one task canvas, simplified visible copy, introduced a consistent step rail and footer, and grouped only actionable content.
+2. Initial P1: the first review implementation placed actions before summary data, collapsed checks into two columns, and hid ready-state details.
+   - Fix: summary now precedes six single-row checks, all details remain visible, safety guidance follows the checks, and actions stay in the bottom footer.
+3. Initial P2: first-pass controls and review rows were proportionally smaller than the selected visual.
+   - Fix: increased desktop title, control, upload-zone, textarea, scheme-card, summary, check-row, and safety-panel dimensions while preserving the 720px card boundary.
+4. Initial P2: isolated browser login state produced authentication alerts during visual QA.
+   - Fix: repeated QA against a temporary SQLite database and fixed test-only authenticated session. No production authentication code or user data was changed.
+5. Follow-up P2: the accepted 1080 × 720 workbench card felt too large in the live application shell.
+   - Fix: reduced the card to exactly 972 × 648 (90%), scaled the sidebar and dense controls proportionally, and compacted only the plan-step rhythm enough to keep all persistent actions visible.
+   - Post-fix evidence: `design-qa-workbench-comparison-90.png`; every step now has matching client/scroll dimensions and no internal overflow.
+6. Follow-up P3: after seeing the 90% version in the application shell, the user requested a slightly larger card.
+   - Fix: increased the card to 1020 × 680, restored proportional control and footer spacing, and retained the plan-specific compact rhythm.
+   - Post-fix evidence: `design-qa-workbench-comparison-mid.png`; all four main regions still have matching client/scroll dimensions.
 
 ## Interaction and Runtime Checks
 
-- AI recommendation filter was changed to `advance` and cleared back to `all`; both controls updated correctly.
-- Production build completed successfully.
-- RecruitmentResultsView targeted suite: 22/22 tests passed.
-- Browser console: zero warnings or errors in final wide, default, and small checks.
-- Local production server on port 8000 was restarted after the final build and returned a healthy CSRF response.
+- Navigated among all four steps using the completed-step rail and footer actions.
+- Verified job/account selection, requirements textareas, scheme radio selection, keyword and numeric inputs.
+- Verified the unchanged candidate filter dropdown opens and closes and exposes its existing filter form.
+- Review state correctly shows one blocked local-service check and disables execution without changing the server-side safety gate.
+- Final desktop geometry: card 1020 × 680 with `scrollWidth === clientWidth`; every step main area is 669 × 608 with matching scroll dimensions.
+- Targeted workbench tests: 31/31 passed.
+- Full frontend suite baseline: 258/258 passed across 43 files; the final size-only pass reran the 31 workbench tests successfully.
+- Production build: passed.
+- Browser console: zero errors or warnings in the final middle-size QA pass.
 
 ## Findings
 
-- No actionable P0, P1, or P2 visual or responsive findings remain for this pass.
-
-## Follow-up Polish
-
-- P3: the 390px shell retains the product's existing icon-only sidebar. The results content itself has no horizontal overflow and remains readable; a future shell-wide mobile-navigation redesign could reclaim additional width, but it is outside this results-center typography pass.
+- No actionable P0, P1, or P2 visual, interaction, overflow, or runtime findings remain for this pass.
 
 final result: passed
