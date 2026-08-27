@@ -83,6 +83,10 @@ let activeExecutionSnapshot = null
 let activeUploadLock = null
 let freshWorkbenchLocked = false
 
+function controllablePlan() {
+  return currentPlan.value || archivedPlan.value
+}
+
 const selectedJob = computed(() => context.currentJob)
 const selectedAccount = computed(() => accounts.value.find((account) => String(account.id) === String(selectedAccountId.value)) || null)
 const jobsForAccount = computed(() => {
@@ -117,9 +121,10 @@ const enabledWorkflowOptions = computed(() => {
     id: version.id,
     label: `${workflowTemplates.value.find((item) => item.id === version.template)?.name || `流程 ${version.template}`} · V${version.version}`,
     }))
-  const revisionWorkflow = currentPlan.value?.current_revision?.workflow_version
+  const plan = controllablePlan()
+  const revisionWorkflow = plan?.current_revision?.workflow_version
   const revisionWorkflowId = typeof revisionWorkflow === 'object' ? revisionWorkflow?.id : revisionWorkflow
-  if (revisionUsesCustomWorkflow(currentPlan.value?.current_revision)
+  if (revisionUsesCustomWorkflow(plan?.current_revision)
     && revisionWorkflowId
     && !workflowVersionIsPlanManaged(revisionWorkflow)
     && !options.some((item) => String(item.id) === String(revisionWorkflowId))) {
@@ -218,7 +223,7 @@ const checks = computed(() => [
   },
 ])
 const firstBlockingCheck = computed(() => checks.value.find((item) => !item.ok) || null)
-const currentPlanState = computed(() => normalizePlanState(currentPlan.value))
+const currentPlanState = computed(() => normalizePlanState(controllablePlan()))
 const startDisabledReason = computed(() => {
   if (loading.value) return '招聘作业台仍在加载，请稍候。'
   if (planLoading.value) return '正在同步服务端任务状态，请稍候。'
@@ -226,10 +231,10 @@ const startDisabledReason = computed(() => {
   if (uploading.value) return '文件仍在上传，请等待完成。'
   if (submitting.value) return '任务指令正在处理，请勿重复提交。'
   if (currentStep.value !== 'review') return '请先完成执行方案，再进入执行前检查。'
-  if (currentPlan.value && !['stopped', 'failed', 'completed'].includes(currentPlanState.value)) {
+  if (controllablePlan() && !['stopped', 'failed', 'completed'].includes(currentPlanState.value)) {
     return '当前任务尚未停止，不能开启新版本。'
   }
-  if (legacyEditBaseUnknown.value && currentPlan.value) return '旧草稿缺少编辑基线，请先确认以服务端最新版本继续编辑。'
+  if (legacyEditBaseUnknown.value && controllablePlan()) return '旧草稿缺少编辑基线，请先确认以服务端最新版本继续编辑。'
   if (firstBlockingCheck.value) return firstBlockingCheck.value.detail
   return ''
 })
@@ -322,7 +327,7 @@ function resetEditBase() {
   planVersionNotice.value = ''
 }
 
-function captureEditBase(plan = currentPlan.value) {
+function captureEditBase(plan = controllablePlan()) {
   const jobId = selectedJob.value?.id
   if (!jobId) return
   const revision = planRevisionSnapshot(plan)
@@ -400,7 +405,7 @@ function updatePlanVersionNotice(plan) {
 }
 
 function rebaseEditDraft() {
-  captureEditBase(currentPlan.value)
+  captureEditBase(controllablePlan())
   submitError.value = ''
   persistWizardDraft()
 }
@@ -910,19 +915,20 @@ function operationDraftFromRevision(plan) {
 
 function applyServerPlan(plan, jobId, { hydrateDraft = false } = {}) {
   if (!componentAlive || String(selectedJob.value?.id || '') !== String(jobId || '')) return false
-  if (plan && planJobId(plan) != null && String(planJobId(plan)) !== String(jobId)) return false
+  const serverPlan = plan || archivedPlan.value
+  if (serverPlan && planJobId(serverPlan) != null && String(planJobId(serverPlan)) !== String(jobId)) return false
   currentPlan.value = plan
   planError.value = ''
-  if (legacyEditBaseUnknown.value && !plan) captureEditBase(null)
-  if (plan && hydrateDraft) {
-    const revisionDraft = operationDraftFromRevision(plan)
+  if (legacyEditBaseUnknown.value && !serverPlan) captureEditBase(null)
+  if (serverPlan && hydrateDraft) {
+    const revisionDraft = operationDraftFromRevision(serverPlan)
     if (revisionDraft) applyOperationDraft(revisionDraft)
     completedSteps.context = true
     completedSteps.standard = true
     completedSteps.plan = true
     restoredWizardStep.value = 'review'
   }
-  updatePlanVersionNotice(plan)
+  updatePlanVersionNotice(serverPlan)
   return true
 }
 
@@ -944,7 +950,7 @@ async function refreshCurrentPlan({ jobId = selectedJob.value?.id, silent = fals
       archivedPlan.value = removedPlan
       applyServerPlan(plan, jobId, { hydrateDraft })
     }
-    return plan
+    return plan || removedPlan
   } catch (error) {
     if (sequence === planLoadSequence && String(selectedJob.value?.id || '') === String(jobId)) {
       planError.value = error.message || '任务状态读取失败'
@@ -957,7 +963,7 @@ async function refreshCurrentPlan({ jobId = selectedJob.value?.id, silent = fals
 }
 
 function enterPlanEdit() {
-  captureEditBase(currentPlan.value)
+  captureEditBase(controllablePlan())
   completedSteps.context = true
   completedSteps.standard = false
   completedSteps.plan = false
@@ -1189,7 +1195,7 @@ async function startExecution() {
       config: snapshot.config,
       expected_control_version: editBase.active && editBase.jobId === String(snapshot.job.id)
         ? editBase.controlVersion
-        : Number(currentPlan.value?.control_version ?? archivedPlan.value?.control_version ?? 0),
+        : Number(controllablePlan()?.control_version ?? 0),
     }
     if (snapshot.workflow.customId) command.workflow_version = Number(snapshot.workflow.customId)
     const signature = JSON.stringify(command)
@@ -1230,7 +1236,7 @@ async function startExecution() {
   } catch (error) {
     if (error.status === 409 && snapshot) {
       await refreshCurrentPlan({ jobId: snapshot.job.id, silent: true })
-      submitError.value = '任务状态刚刚发生变化，已为你刷新；请确认最新状态后重试。'
+      submitError.value = `服务端拒绝启动：${error.message || '任务状态刚刚发生变化'}。已为你刷新任务状态；请确认最新版本后重试。`
     } else {
       submitError.value = `${submitStage.value ? `${submitStage.value.replace(/正在|…/g, '')}失败：` : ''}${error.message || '无法创建招聘作业'}`
     }

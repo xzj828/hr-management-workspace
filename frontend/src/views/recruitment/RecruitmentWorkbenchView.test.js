@@ -666,6 +666,110 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="workbench-job"]').element.value).toBe('')
   })
 
+  it('uses the archived plan control version when starting a replacement task', async () => {
+    const archived = {
+      ...planFixture({
+        state: 'stopped',
+        controlVersion: 20,
+        controlGeneration: 20,
+        revision: 10,
+        revisionId: 410,
+        runId: 'run-archived',
+      }),
+      archived_at: '2026-08-27T10:05:42+08:00',
+    }
+    let startBody
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/automation-plans/?job=51&archived=1') {
+        return Promise.resolve({ results: [archived] })
+      }
+      if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') {
+        startBody = JSON.parse(options.body)
+        return Promise.resolve(planFixture({
+          state: 'running',
+          controlVersion: 21,
+          controlGeneration: 21,
+          revision: 11,
+          revisionId: 411,
+        }))
+      }
+      return baseApi(path)
+    })
+
+    ;({ wrapper } = await mountView({ job: '51' }))
+    await goToPlan(wrapper, { core: '3 年 Python 经验' })
+    await wrapper.get('[data-test="scheme-active"]').setValue(true)
+    await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
+    await completePlanAndReview(wrapper)
+
+    expect(startBody).toMatchObject({
+      job: 51,
+      kind: 'active_resume_search',
+      expected_control_version: 20,
+    })
+  })
+
+  it('rebases an old archived-plan draft to the latest control version', async () => {
+    sessionStorage.setItem('ximing-hr:recruitment-workbench-draft:v1:9:51', JSON.stringify({
+      version: 1,
+      jobId: '51',
+      selectedAccountId: '7',
+      step: 'review',
+      completed: { context: true, standard: true, plan: true },
+      documentCategory: 'persona',
+      draft: {
+        schemeKind: 'active_resume_search',
+        workflowChoice: 'standard',
+        coreText: '3 年 Python 经验',
+        bonusText: '',
+        interval: 2,
+        source: 'search',
+        keyword: 'Python 后端',
+        targetResumeCount: 5,
+        maxScanCount: 30,
+      },
+      editBase: {
+        jobId: '51',
+        controlVersion: 0,
+        revisionId: null,
+        revision: null,
+      },
+    }))
+    const archived = {
+      ...planFixture({
+        state: 'stopped',
+        controlVersion: 20,
+        controlGeneration: 20,
+        revision: 10,
+        revisionId: 410,
+        runId: 'run-archived',
+      }),
+      archived_at: '2026-08-27T10:05:42+08:00',
+    }
+    let startBody
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/automation-plans/?job=51&archived=1') {
+        return Promise.resolve({ results: [archived] })
+      }
+      if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') {
+        startBody = JSON.parse(options.body)
+        return Promise.resolve(planFixture({ controlVersion: 21, revision: 11, revisionId: 411 }))
+      }
+      return baseApi(path)
+    })
+
+    ;({ wrapper } = await mountView({ job: '51', step: 'review' }))
+    expect(wrapper.get('[data-test="plan-version-notice"]').text()).toContain('当前草稿仍基于原版本')
+    await wrapper.get('[data-test="rebase-edit-draft"]').trigger('click')
+    expect(wrapper.find('[data-test="plan-version-notice"]').exists()).toBe(false)
+    await wrapper.get('[data-test="start-execution"]').trigger('click')
+    await flushPromises()
+
+    expect(startBody.expected_control_version).toBe(20)
+  })
+
   it('opens a blank first step for a fresh task instead of restoring the last job', async () => {
     apiMock.mockImplementation((path) => baseApi(path))
     const context = useRecruitmentContextStore()
@@ -993,6 +1097,7 @@ describe('RecruitmentWorkbenchView', () => {
     expect(wrapper.get('[data-test="plan-version-notice"]').text()).toContain('V2 更新为 V3')
 
     expect(startBodies[0].expected_control_version).toBe(4)
+    expect(wrapper.text()).toContain('version conflict')
     expect(wrapper.text()).toContain('已为你刷新')
     expect(wrapper.get('[data-test="plan-version-notice"]').text()).toContain('当前草稿仍基于原版本')
 
