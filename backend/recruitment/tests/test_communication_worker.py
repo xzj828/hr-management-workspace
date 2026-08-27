@@ -60,6 +60,54 @@ class CommunicationWorkerTests(SimpleTestCase):
         self.assertEqual(outcome["status"], "waiting_human")
         self.assertNotIn("greet", [call[0] for call in runner.calls])
 
+    def test_greet_uses_stable_adapter_and_requires_verified_native_receipt(self):
+        runner = FakeRunner()
+        runner.recommend = lambda account, job: [
+            {"display_name": "林然", "external_id": "boss-1", "fingerprint": "fp-safe"},
+        ]
+
+        def stable_action(account, external_id, *, message="", job_title="", source="", expected_name=""):
+            runner.calls.append(("greet_stable", external_id, message, job_title, source, expected_name))
+            return {
+                "verified": True,
+                "greeting_verified": True,
+                "expected_external_id": external_id,
+                "observed_external_id": external_id,
+            }
+
+        runner.greet_by_external_id = stable_action
+        outcome = execute_greet({"request_payload": {
+            "message": "你好，想和你聊聊测试工程师岗位。",
+            "target": {
+                "name": "林然",
+                "external_id": "boss-1",
+                "job_title": "测试工程师",
+                "verification": {"source": "recommend", "criteria": {}},
+            },
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "succeeded")
+        self.assertTrue(outcome["result"]["greeting_verified"])
+        self.assertIn(
+            ("greet_stable", "boss-1", "你好，想和你聊聊测试工程师岗位。", "测试工程师", "recommend", "林然"),
+            runner.calls,
+        )
+
+    def test_greet_adapter_exception_is_never_retryable(self):
+        runner = FakeRunner()
+        runner.recommend = lambda account, job: [{"display_name": "林然", "external_id": "boss-1"}]
+        runner.greet_by_external_id = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("connection lost after click")
+        )
+
+        outcome = execute_greet({"request_payload": {
+            "message": "统一话术",
+            "target": {"name": "林然", "external_id": "boss-1", "job_title": "测试工程师"},
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertEqual(outcome["error_code"], "external_result_uncertain")
+
     def test_matching_list_id_still_does_not_authorize_name_based_send_actions(self):
         runner = FakeRunner()
         resume = execute_request_resume({"request_payload": {

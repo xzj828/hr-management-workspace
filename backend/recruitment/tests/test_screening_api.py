@@ -13,6 +13,8 @@ from recruitment.models import (
     ApplicationScreeningDecision,
     BossAccount,
     Candidate,
+    CandidateDiscovery,
+    CandidateExternalIdentity,
     FileTextExtraction,
     JobApplication,
     JobStandardVersion,
@@ -58,6 +60,13 @@ class ScreeningApiTests(APITestCase):
             name=f"候选人{index}",
             current_title="产品经理",
             current_city="上海",
+        )
+        CandidateExternalIdentity.objects.create(
+            boss_account=self.account,
+            candidate=candidate,
+            external_id=f"boss-{index}",
+            fingerprint=f"{index:064x}",
+            identity_quality=CandidateDiscovery.IdentityQuality.PLATFORM,
         )
         return JobApplication.objects.create(
             candidate=candidate,
@@ -147,6 +156,12 @@ class ScreeningApiTests(APITestCase):
         self.assertEqual(first_row["application"]["stage"], JobApplication.Stage.REJECTED)
         self.assertIsNone(first_row["hr_decision"])
         self.assertEqual(first_row["notification"]["status"], "not_requested")
+        self.assertFalse(first_row["greeting"]["eligible"])
+        self.assertEqual(first_row["greeting"]["reason_code"], "stage_ineligible")
+        second_row = next(row for row in rows if row["application"]["id"] == second.pk)
+        self.assertTrue(second_row["greeting"]["eligible"])
+        self.assertEqual(second_row["greeting"]["status"], "not_requested")
+        self.assertNotIn("external_id", second_row["greeting"])
         self.assertNotIn("external_id", first_row["resume"])
         self.assertNotIn("sha256", first_row["resume"])
         self.assertNotIn("data", first_row["structure"])

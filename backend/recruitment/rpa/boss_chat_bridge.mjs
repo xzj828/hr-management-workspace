@@ -640,8 +640,168 @@ async function downloadAttachments(page, browser, request) {
   return downloaded;
 }
 
+const CANDIDATE_SOURCES = {
+  recommend: {
+    pagePath: "/web/chat/recommend",
+    frameName: "recommendFrame",
+    framePath: "/web/frame/recommend",
+    cardSelector: ".candidate-card-wrap, .card-list .card-item, .geek-list .geek-card",
+    nameSelector: ".name-wrap .name, .name",
+    actionSelector: ".button-chat-wrap .btn.btn-greet",
+  },
+  search: {
+    pagePath: "/web/chat/search",
+    frameName: "searchFrame",
+    framePath: "/web/frame/search",
+    cardSelector: ".geek-info-card",
+    nameSelector: ".name-label",
+    actionSelector: ".btn-getcontact",
+  },
+  deep_search: {
+    pagePath: "/web/chat/aiform",
+    frameName: "",
+    framePath: "",
+    cardSelector: ".geeks-box .geek-card-item, .geek-card-list .geek-card-item",
+    nameSelector: ".geek-name",
+    actionSelector: ".geek-chat .btn-ai-v2, .geek-chat span[class*='btn-ai']",
+  },
+};
+
+function candidateSource(request) {
+  const source = normalize(request.source || "recommend");
+  const config = CANDIDATE_SOURCES[source];
+  if (!config) throw new Error("候选人复核来源无效");
+  return { source, config };
+}
+
+async function candidateContext(page, request) {
+  const { source, config } = candidateSource(request);
+  const currentPath = new URL(page.url()).pathname.replace(/\/+$/, "");
+  if (currentPath !== config.pagePath) {
+    throw new Error(`当前 BOSS 页面与候选人复核来源不一致：${source}`);
+  }
+  if (!config.frameName) return { source, config, context: page };
+  const iframe = await page.waitForSelector(`iframe[name="${config.frameName}"]`, { timeout: 15_000 });
+  const context = await iframe?.contentFrame();
+  if (!context || !new URL(context.url()).pathname.startsWith(config.framePath)) {
+    throw new Error("候选人列表 iframe 尚未就绪");
+  }
+  return { source, config, context };
+}
+
+async function candidateRowsFromContext(context, config) {
+  return context.$$eval(config.cardSelector, (cards, selectors) => {
+    const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
+    const stableId = (card) => {
+      const preferred = card.querySelector(".card-inner[data-geekid], .card-inner[data-geek], [data-geekid], [data-geek]");
+      const holder = preferred || card;
+      return norm(holder.getAttribute("data-geekid")
+        || holder.getAttribute("data-geek"));
+    };
+    return cards.map((card, index) => {
+      const action = card.querySelector(selectors.action);
+      return {
+        index: index + 1,
+        display_name: norm(card.querySelector(selectors.name)?.textContent),
+        external_id: stableId(card),
+        action_label: norm(action?.textContent),
+        action_disabled: !action
+          || /disabled|forbid|ban/i.test(String(action.className ?? ""))
+          || action.getAttribute("disabled") !== null,
+      };
+    }).filter((row) => row.display_name);
+  }, { name: config.nameSelector, action: config.actionSelector });
+}
+
+async function listCandidateRows(page, request) {
+  const { config, context } = await candidateContext(page, request);
+  return candidateRowsFromContext(context, config);
+}
+
+async function greetCandidate(page, request) {
+  const externalId = requireText(request.external_id, "候选人平台稳定 ID", 160);
+  const expectedName = requireText(request.expected_name, "候选人名称", 100);
+  requireText(request.message, "统一打招呼话术", 1000);
+  const { source, config, context } = await candidateContext(page, request);
+  const before = await candidateRowsFromContext(context, config);
+  const matches = before.filter((row) => row.external_id === externalId && row.display_name === expectedName);
+  if (matches.length !== 1) throw new Error("刷新后无法按稳定 ID 唯一确认候选人");
+
+  const responseTasks = [];
+  const onResponse = (response) => {
+    if (response.request().method() !== "POST") return;
+    try {
+      const url = new URL(response.url());
+      if (!url.hostname.endsWith("zhipin.com") || !url.pathname.startsWith("/wapi/")) return;
+      responseTasks.push((async () => {
+        const body = await response.json().catch(() => null);
+        return { path: url.pathname, status: response.status(), code: body?.code ?? null };
+      })());
+    } catch {
+      // Ignore malformed browser resource URLs.
+    }
+  };
+  page.on("response", onResponse);
+  const clicked = await context.evaluate((expected, selectors) => {
+    const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
+    const stableId = (card) => {
+      const preferred = card.querySelector(".card-inner[data-geekid], .card-inner[data-geek], [data-geekid], [data-geek]");
+      const holder = preferred || card;
+      return norm(holder.getAttribute("data-geekid")
+        || holder.getAttribute("data-geek"));
+    };
+    const cards = Array.from(document.querySelectorAll(selectors.card));
+    const matches = cards.filter((card) => stableId(card) === expected.externalId
+      && norm(card.querySelector(selectors.name)?.textContent) === expected.name);
+    if (matches.length !== 1) return false;
+    const button = matches[0].querySelector(selectors.action);
+    if (!(button instanceof HTMLElement)) return false;
+    const label = norm(button.textContent);
+    const disabled = /disabled|forbid|ban/i.test(String(button.className ?? ""))
+      || button.getAttribute("disabled") !== null;
+    if (disabled || (!label.includes("打招呼") && !label.includes("沟通"))) return false;
+    button.scrollIntoView({ block: "center", inline: "nearest" });
+    button.click();
+    return true;
+  }, { externalId, name: expectedName }, {
+    card: config.cardSelector,
+    name: config.nameSelector,
+    action: config.actionSelector,
+  });
+  if (!clicked) {
+    page.off("response", onResponse);
+    throw new Error("稳定 ID 对应候选人的打招呼按钮不可用");
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  page.off("response", onResponse);
+  const responses = await Promise.all(responseTasks);
+  const acknowledged = responses.some((item) => item.status >= 200 && item.status < 300
+    && (item.code === null || item.code === 0 || item.code === "0"));
+  const after = await candidateRowsFromContext(context, config);
+  const observed = after.find((row) => row.external_id === externalId && row.display_name === expectedName);
+  const uiConfirmed = !observed
+    || /继续沟通|已打招呼|已沟通/.test(observed.action_label)
+    || observed.action_disabled;
+  if (!acknowledged || !uiConfirmed) {
+    throw new Error("BOSS 打招呼未返回可验证回执");
+  }
+  return {
+    verified: true,
+    greeting_verified: true,
+    source,
+    target_name: expectedName,
+    expected_external_id: externalId,
+    observed_external_id: externalId,
+    response_path: responses.find((item) => item.status >= 200 && item.status < 300)?.path || "",
+  };
+}
+
 async function execute(page, browser, request) {
   switch (request.operation) {
+    case "candidate_list":
+      return { rows: await listCandidateRows(page, request) };
+    case "greet_candidate":
+      return { receipt: await greetCandidate(page, request) };
     case "list": {
       if (request.job_title) await selectScope(page, request.job_title, Boolean(request.unread));
       const rows = await conversationRows(page);
@@ -695,7 +855,9 @@ try {
     process.stdout.write(JSON.stringify({ ok: true, connected: true }));
     process.exitCode = 0;
   } else {
-    const page = await chatPage(browser);
+    const page = ["candidate_list", "greet_candidate"].includes(request.operation)
+      ? await existingBossPage(browser)
+      : await chatPage(browser);
     const result = await execute(page, browser, request);
     process.stdout.write(JSON.stringify({ ok: true, ...result }));
   }

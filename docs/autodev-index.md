@@ -29,6 +29,7 @@
 | 考勤页面 | `frontend/src/views/*.vue` |
 | 招聘页面 | `frontend/src/views/recruitment/*.vue` |
 | 独立招聘任务详情 | `frontend/src/views/recruitment/RecruitmentTaskDetailView.vue`, `RecruitmentAutomationPlan` |
+| 主动寻访批量打招呼 | `RecruitmentResultsView.vue`, `CommunicationConfirmDrawer.vue`, `services/communications.py`, `rpa/boss_chat_bridge.mjs` |
 | Django 配置 | `backend/config/settings.py`, `backend/config/urls.py` |
 | 考勤域 | `backend/attendance/` |
 | 招聘域 | `backend/recruitment/` |
@@ -48,3 +49,4 @@ Vue 3 + Vite 7 + Pinia + ECharts | Django 5.2 + DRF 3.16 | SQLite/PostgreSQL | V
 5. 本地文件、数据库和用户已有文档不得在普通迭代中被破坏性覆盖。
 6. 完整规则见 `autodev-rules.md`。
 7. 作业台启动成功后进入独立任务详情；任务删除只归档可见性，运行历史和审计证据不得物理删除。
+8. 主动寻访批量打招呼只接受同岗位、同账号和一份统一话术；每位候选人仍须按平台稳定 ID 逐项核验与留痕。

@@ -38,11 +38,121 @@ ACTION_TO_APPROVAL = {
     ConversationAction.Action.SEND_INTERVIEW: AutomationApproval.Action.SEND_INTERVIEW,
 }
 
+GREET_ACTIVE_STATUSES = {
+    ConversationAction.Status.DRAFT,
+    ConversationAction.Status.APPROVED,
+    ConversationAction.Status.PENDING,
+    ConversationAction.Status.RUNNING,
+    ConversationAction.Status.WAITING_HUMAN,
+}
+GREET_CONTACTED_STAGES = {
+    JobApplication.Stage.GREETED,
+    JobApplication.Stage.COMMUNICATING,
+    JobApplication.Stage.WAITING_RESUME,
+    JobApplication.Stage.RESUME_RECEIVED,
+    JobApplication.Stage.TO_SCREEN,
+    JobApplication.Stage.TO_INTERVIEW,
+    JobApplication.Stage.INTERVIEWING,
+    JobApplication.Stage.TO_OFFER,
+    JobApplication.Stage.HIRED,
+}
+GREET_REASON_LABELS = {
+    "": "可打招呼",
+    "already_contacted": "候选人已联系",
+    "greeting_in_progress": "已有打招呼任务处理中",
+    "stable_identity_missing": "缺少平台稳定身份",
+    "stage_ineligible": "候选人当前阶段不可联系",
+}
 
-def _identity_snapshot(application, account):
-    identity = CandidateExternalIdentity.objects.filter(
+
+def _draft_greet_is_expired(action, now):
+    approval = action.approval
+    return (
+        action.status == ConversationAction.Status.DRAFT
+        and approval is not None
+        and (
+            approval.status in {
+                AutomationApproval.Status.REJECTED,
+                AutomationApproval.Status.EXPIRED,
+            }
+            or (
+                approval.status == AutomationApproval.Status.DRAFT
+                and approval.expires_at is not None
+                and approval.expires_at <= now
+            )
+        )
+    )
+
+
+def greeting_eligibility_map(*, applications, account):
+    """Return a safe, account-scoped greeting projection without exposing stable IDs."""
+    items = list(applications)
+    if not items:
+        return {}
+    candidate_ids = [item.candidate_id for item in items]
+    identity_candidate_ids = set(
+        CandidateExternalIdentity.objects.filter(
+            candidate_id__in=candidate_ids,
+            boss_account=account,
+        ).exclude(external_id="").values_list("candidate_id", flat=True)
+    )
+    latest_by_application = {}
+    active_by_application = {}
+    succeeded_candidate_ids = set()
+    now = timezone.now()
+    for action in (
+        ConversationAction.objects.filter(
+            application__candidate_id__in=candidate_ids,
+            action=ConversationAction.Action.GREET,
+        )
+        .select_related("approval", "application")
+        .order_by("application_id", "-created_at", "-id")
+    ):
+        if action.status == ConversationAction.Status.SUCCEEDED:
+            succeeded_candidate_ids.add(action.application.candidate_id)
+        expired_draft = _draft_greet_is_expired(action, now)
+        if action.application_id not in latest_by_application and not expired_draft:
+            latest_by_application[action.application_id] = action
+        if (
+            action.application_id not in active_by_application
+            and action.status in GREET_ACTIVE_STATUSES
+            and not expired_draft
+        ):
+            active_by_application[action.application_id] = action
+
+    result = {}
+    for application in items:
+        latest = latest_by_application.get(application.pk)
+        active = active_by_application.get(application.pk)
+        if application.candidate_id in succeeded_candidate_ids or application.stage in GREET_CONTACTED_STAGES:
+            reason_code = "already_contacted"
+        elif application.stage == JobApplication.Stage.REJECTED:
+            reason_code = "stage_ineligible"
+        elif active is not None:
+            reason_code = "greeting_in_progress"
+        elif application.candidate_id not in identity_candidate_ids:
+            reason_code = "stable_identity_missing"
+        else:
+            reason_code = ""
+        projection_action = active if reason_code == "greeting_in_progress" else latest
+        result[application.pk] = {
+            "eligible": not reason_code,
+            "status": projection_action.status if projection_action is not None else "not_requested",
+            "reason_code": reason_code,
+            "reason_label": GREET_REASON_LABELS[reason_code],
+            "action_id": str(projection_action.pk) if projection_action is not None else None,
+            "updated_at": projection_action.updated_at if projection_action is not None else None,
+        }
+    return result
+
+
+def _identity_snapshot(application, account, *, require_stable_id=False):
+    identities = CandidateExternalIdentity.objects.filter(
         candidate=application.candidate, boss_account=account
-    ).order_by("-last_seen_at").first()
+    )
+    if require_stable_id:
+        identities = identities.exclude(external_id="")
+    identity = identities.order_by("-last_seen_at").first()
     discovery = CandidateDiscovery.objects.filter(
         imported_candidate=application.candidate,
         boss_account=account,
@@ -91,7 +201,15 @@ def prepare_communication(
     normalized = str(message or "").strip()
     if not normalized or len(normalized) > 1000:
         raise ValidationError("最终话术必须为 1 到 1000 个字符")
-    items = list(applications)
+    requested_ids = [item.pk for item in applications]
+    items = list(
+        JobApplication.objects.select_for_update()
+        .select_related("candidate", "job")
+        .filter(pk__in=requested_ids, archived_at__isnull=True)
+        .order_by("pk")
+    )
+    if len(items) != len(set(requested_ids)):
+        raise ValidationError("候选人不存在、已归档或被重复选择")
     if not items or len(items) > 100:
         raise ValidationError("每批请选择 1 到 100 位候选人")
     if any(item.job.boss_account_id != account.pk for item in items):
@@ -111,8 +229,41 @@ def prepare_communication(
             generation=automation_generation,
             message="招聘自动化方案当前未运行，不能创建新的沟通确认",
         )
+    idempotency_key = f"communication:{account.pk}:{action}:{request_key}"
+    existing_approval = AutomationApproval.objects.filter(idempotency_key=idempotency_key).first()
+    if existing_approval is not None:
+        if (
+            existing_approval.automation_plan_revision_id != plan_revision_id
+            or existing_approval.automation_generation != automation_generation
+        ):
+            raise ValidationError("沟通确认请求标识已被其他方案代际使用")
+        existing_payload = existing_approval.payload if isinstance(existing_approval.payload, dict) else {}
+        existing_application_ids = sorted(
+            int(item["application_id"])
+            for item in existing_payload.get("items", [])
+            if isinstance(item, dict) and str(item.get("application_id", "")).isdigit()
+        )
+        if (
+            existing_payload.get("action") != action
+            or str(existing_payload.get("message", "")).strip() != normalized
+            or existing_application_ids != sorted(requested_ids)
+        ):
+            raise ValidationError("沟通确认请求标识已被不同候选人或话术使用")
+        return existing_approval
+    if action == ConversationAction.Action.GREET:
+        if len({item.job_id for item in items}) != 1:
+            raise ValidationError("批量打招呼只能选择同一岗位的候选人")
+        eligibility = greeting_eligibility_map(applications=items, account=account)
+        blocked = [item for item in items if not eligibility[item.pk]["eligible"]]
+        if blocked:
+            reasons = "；".join(
+                f"{item.candidate.name}：{eligibility[item.pk]['reason_label']}" for item in blocked[:5]
+            )
+            if len(blocked) > 5:
+                reasons += f"；另有 {len(blocked) - 5} 人不可操作"
+            raise ValidationError({"applications": f"所选候选人无法批量打招呼：{reasons}"})
     approval, created = AutomationApproval.objects.get_or_create(
-        idempotency_key=f"communication:{account.pk}:{action}:{request_key}",
+        idempotency_key=idempotency_key,
         defaults={
             "action": ACTION_TO_APPROVAL[action],
             "boss_account": account,
@@ -147,7 +298,11 @@ def prepare_communication(
     contexts = item_contexts if isinstance(item_contexts, dict) else {}
     payload_items = []
     for application in items:
-        snapshot = _identity_snapshot(application, account)
+        snapshot = _identity_snapshot(
+            application,
+            account,
+            require_stable_id=action == ConversationAction.Action.GREET,
+        )
         digest = hashlib.sha256(f"{approval.pk}:{application.pk}:{action}".encode()).hexdigest()[:24]
         conversation = ConversationAction.objects.create(
             application=application,
@@ -418,7 +573,7 @@ def cancel_workflow_communication(*, workflow_node_run, actor, now=None):
 @transaction.atomic
 def complete_communication_task(*, task, status, result, error_code, error_message):
     action = ConversationAction.objects.select_for_update().select_related(
-        "application", "batch", "step", "created_by"
+        "application__job", "batch", "step", "created_by"
     ).get(pk=task.request_payload.get("conversation_action_id"))
     step = StepExecution.objects.select_for_update().get(pk=action.step_id)
     batch = ExecutionBatch.objects.select_for_update().get(pk=action.batch_id)
@@ -449,6 +604,10 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
         and str(approved_target.get("external_id", "")).strip() == expected_external_id
         and str(result.get("expected_external_id", "")).strip() == expected_external_id
         and str(result.get("observed_external_id", "")).strip() == expected_external_id
+        and (
+            action.action != ConversationAction.Action.GREET
+            or result.get("greeting_verified") is True
+        )
     )
     unverified_success = status == "succeeded" and not identity_verified
     if status == "succeeded" and identity_verified:
@@ -458,7 +617,7 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
         step_status = StepExecution.Status.WAITING_HUMAN
         action_status = ConversationAction.Status.WAITING_HUMAN
         status = "waiting_human"
-        if unverified_success and action.action == ConversationAction.Action.REJECTION_NOTICE:
+        if unverified_success:
             error_code = "external_result_uncertain"
             error_message = "发送结果待人工核查，禁止自动重试"
         elif not error_code:
@@ -519,6 +678,20 @@ def complete_communication_task(*, task, status, result, error_code, error_messa
             ConversationAction.Action.SEND_INTERVIEW: "interview_sent",
         }[action.action]
         advance_for_event(application=action.application, event=event, actor=action.created_by, task=task)
+        if action.action == ConversationAction.Action.GREET:
+            HumanAttention.objects.select_for_update().filter(
+                application=action.application,
+                job=action.application.job,
+                boss_account=batch.boss_account,
+                attention_type=HumanAttention.Type.GREETING_REQUIRED,
+                status=HumanAttention.Status.OPEN,
+            ).update(
+                status=HumanAttention.Status.RESOLVED,
+                resolved_by=action.created_by,
+                resolution_note="平台稳定身份与打招呼回执已核验，系统自动关闭待打招呼事项",
+                resolved_at=now,
+                updated_at=now,
+            )
     safe_item_waiting_codes = {
         "stable_identity_action_unavailable",
         "target_identity_ambiguous",

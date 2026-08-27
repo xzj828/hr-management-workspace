@@ -326,3 +326,71 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - `POST /api/recruitment/automation-plans/start/` 发现既有归档 Plan 时在事务中恢复后开启；幂等请求、乐观版本、Revision 和 generation 规则不变。
 - `RecruitmentAutomationPlanSerializer` 增加 `archived_at`。`WorkflowRunSerializer` 增加只读 `automation_plan` 与 `automation_plan_archived_at`，从 `automation_plan_revision.plan` 投影，供结果中心生成稳定任务详情链接和已删除过滤。
 - 归档与恢复使用现有 `RecruitmentWritePermission` 和授权账号查询；其他用户的 Plan 继续返回 404。
+
+### 主动寻访结果批量打招呼（W17，2026-08-27）
+
+状态：`[x]` 读模型、准备/批准、顺序执行和完成回执契约已通过自动测试；真实 BOSS 外发回执需 HR 人工验收。
+
+本功能不新增数据表和公开端点，复用现有沟通准备与审批 API，并扩展候选结果读模型。
+
+#### GET `/api/recruitment/screening-results/?job=<id>` 扩展
+
+每条 `results[]` 增加：
+
+```json
+{
+  "greeting": {
+    "eligible": true,
+    "status": "not_requested",
+    "reason_code": "",
+    "reason_label": "",
+    "action_id": null,
+    "updated_at": null
+  }
+}
+```
+
+- `status` 为 `not_requested/draft/pending/running/waiting_human/succeeded/failed/skipped/cancelled` 之一；只投影最近有效的 `greet` 动作。
+- `eligible=false` 的稳定原因包括 `stage_ineligible`、`stable_identity_missing`、`already_contacted`、`greeting_in_progress`；API 不返回 `external_id`、指纹或其他平台身份秘密。
+- 资格仅用于 UI 选择解释。客户端不得依据 `eligible=true` 绕过准备接口的事务内复核。
+
+#### POST `/api/recruitment/communication-actions/prepare/` 复用
+
+批量打招呼请求：
+
+```json
+{
+  "request_id": "uuid",
+  "boss_account": 7,
+  "application_ids": [11, 12],
+  "action": "greet",
+  "message": "你好，我们正在招聘相关岗位，想和你进一步沟通。",
+  "invitation": {}
+}
+```
+
+- `application_ids` 必须为当前用户可写、同一岗位、同一 BOSS 账号的 1–100 个未归档应聘；整批只接受一个 `message`，规范化后复制到所有动作快照。
+- 服务端锁定并重新验证每个应聘的资格。任一目标已进入不适合新联系的阶段、缺少该账号平台 stable ID、已成功打招呼或已有活动打招呼动作时，整批返回 400 字段错误，不创建部分审批；客户端刷新读模型后重新选择。
+- 相同 `request_id` 只有在账号、动作、候选范围和统一话术完全一致时才返回原审批，否则返回 400。同一批准记录的 approve 可安全重放，只复用既有批次和步骤，不重复建任务或扣额；审批 `items` 继续冻结候选人、应聘、职位、账号、stable ID、来源和统一话术。
+
+#### POST `/api/recruitment/automation-approvals/<id>/approve/` 复用
+
+- 继续返回完整 `batch`。前端只有在 `batch.id` 存在且至少一个步骤为 `pending` 时提示“已加入执行队列”；不得把批准成功等同于外发成功。
+- 批次逐项串行创建 `RpaTask(action=greet)` 并按 `contact` 指标记账。成功项不重复，身份可确定地不可执行时进入 `waiting_human`，外部结果不确定时停止剩余项且不自动重试。
+
+#### Worker 打招呼回执
+
+成功 `result` 至少包含：
+
+```json
+{
+  "verified": true,
+  "greeting_verified": true,
+  "expected_external_id": "stable-id",
+  "observed_external_id": "stable-id"
+}
+```
+
+- Worker 必须在同一受管 CDP 原子动作中恢复来源和职位范围、刷新候选列表、按 stable ID 唯一定位并复核展示名后执行。姓名、组合指纹和列表序号都不能代替 stable ID。
+- `greeting_verified` 缺失、stable ID 不一致、验证码/风控或点击后结果未知均不得回写成功；其中结果未知使用 `external_result_uncertain` 并创建人工核查事项。
+- 核验成功后服务端推进应聘阶段为 `greeted`，并只解决同一应聘、同一岗位、同一 BOSS 账号当前开放的 `greeting_required` 人工事项；其他人工事项不受影响。

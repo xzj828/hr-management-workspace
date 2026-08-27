@@ -35,6 +35,11 @@ class CommunicationApiTests(APITestCase):
         self.assertEqual(approved.data["batch"]["total_items"], 1)
         self.assertEqual(approved.data["batch"]["steps"][0]["candidate_name"], "顾宁")
 
+        replayed = self.client.post(f"/api/recruitment/automation-approvals/{approval_id}/approve/")
+        self.assertEqual(replayed.status_code, 200)
+        self.assertEqual(replayed.data["batch"]["id"], approved.data["batch"]["id"])
+        self.assertEqual(len(replayed.data["batch"]["steps"]), 1)
+
     def test_manual_pipeline_change_requires_reason(self):
         response = self.client.patch(
             f"/api/recruitment/applications/{self.application.pk}/",
@@ -48,4 +53,3 @@ class CommunicationApiTests(APITestCase):
         self.assertEqual(changed.status_code, 200)
         self.assertEqual(changed.data["stage"], "rejected")
         self.assertEqual(changed.data["stage_history"][0]["reason"], "岗位方向不匹配")
-

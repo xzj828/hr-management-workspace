@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .demo_data import clear_demo_data, demo_status, load_demo_data
+from .services.communications import greeting_eligibility_map
 from .models import (
     AiProcessingTask,
     ApplicationScreeningDecision,
@@ -148,6 +149,10 @@ def screening_results_view(request):
     if job is None:
         raise NotFound("职位不存在或不可访问")
     standard, rows = build_screening_results(job=job)
+    greeting_by_application = greeting_eligibility_map(
+        applications=[row["application"] for row in rows],
+        account=job.boss_account,
+    )
     serialized_rows = []
     for row in rows:
         application = row["application"]
@@ -245,6 +250,7 @@ def screening_results_view(request):
                 "error_message": _notification_error_summary(notification),
                 "updated_at": notification.updated_at if notification else None,
             },
+            "greeting": greeting_by_application[application.pk],
         })
     return Response({
         "job": {"id": job.pk, "title": job.title, "boss_account": job.boss_account_id},
@@ -878,12 +884,17 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
     @transaction.atomic
     def approve(self, request, pk=None):
         approval_target = self.get_object()
-        rejection_replay = (
-            approval_target.action == AutomationApproval.Action.REJECTION_NOTICE
+        communication_replay = (
+            approval_target.action in {
+                AutomationApproval.Action.GREET,
+                AutomationApproval.Action.REQUEST_RESUME,
+                AutomationApproval.Action.SEND_INTERVIEW,
+                AutomationApproval.Action.REJECTION_NOTICE,
+            }
             and approval_target.status == AutomationApproval.Status.APPROVED
             and approval_target.approved_by_id == request.user.pk
         )
-        if rejection_replay:
+        if communication_replay:
             approval = approval_target
         else:
             try:
@@ -934,7 +945,7 @@ class AutomationApprovalViewSet(viewsets.ReadOnlyModelViewSet):
         }:
             batch = materialize_communication_batch(approval=approval, actor=request.user)
             response["batch"] = ExecutionBatchSerializer(batch).data
-            created = not rejection_replay
+            created = not communication_replay
         if task:
             response["task_id"] = str(task.pk)
             response["task_status"] = task.status

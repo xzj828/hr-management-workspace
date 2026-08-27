@@ -542,6 +542,50 @@ describe('RecruitmentResultsView', () => {
     expect(wrapper.find('[role="dialog"][aria-label="简历智能分析"]').exists()).toBe(false)
   })
 
+  it('submits only eligible selected candidates with one shared greeting snapshot', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    const eligibleRow = {
+      ...screeningRow,
+      application: { ...screeningRow.application, stage: 'new', stage_label: '新候选人' },
+      greeting: { eligible: true, status: 'not_requested', reason_code: '', reason_label: '可打招呼' },
+    }
+    const blockedRow = {
+      ...screeningRow,
+      rank: 2,
+      application: { ...screeningRow.application, id: 12, stage: 'greeted', stage_label: '已打招呼' },
+      candidate: { id: 22, name: '陈沐', current_title: '产品运营', current_city: '杭州' },
+      resume: null,
+      greeting: { eligible: false, status: 'succeeded', reason_code: 'already_contacted', reason_label: '候选人已联系' },
+    }
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/screening-results/?job=1') return Promise.resolve(screeningPayload([eligibleRow, blockedRow]))
+      if (path === 'recruitment/communication-actions/prepare/') return Promise.resolve({ approval_id: 'greet-approval-1', item_count: 1 })
+      if (path === 'recruitment/automation-approvals/greet-approval-1/approve/') return Promise.resolve({ batch: { id: 'greet-batch-1', steps: [{ id: 1, status: 'pending' }] } })
+      return baseImplementation(path, options)
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="select-visible-candidates"]').setValue(true)
+    expect(wrapper.get('[data-test="candidate-batch-bar"]').text()).toContain('其中 1 人可打招呼')
+    await wrapper.get('[data-test="bulk-greet"]').trigger('click')
+    expect(wrapper.text()).toContain('另有 1 位')
+    await wrapper.get('[data-test="communication-message"]').setValue('你好，想和你聊聊产品经理岗位。')
+    await wrapper.get('[data-test="confirm-communication"]').trigger('click')
+    await flushPromises()
+
+    const prepareCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/communication-actions/prepare/')
+    expect(JSON.parse(prepareCall[1].body)).toMatchObject({
+      boss_account: 7,
+      application_ids: [11],
+      action: 'greet',
+      message: '你好，想和你聊聊产品经理岗位。',
+    })
+    expect(apiMock).toHaveBeenCalledWith('recruitment/automation-approvals/greet-approval-1/approve/', { method: 'POST' })
+    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('统一打招呼任务加入顺序执行队列')
+  })
+
   it('saves an explicit HR fail decision and queues a separate rejection notice without claiming it was sent', async () => {
     mockCompletePayload()
     const baseImplementation = apiMock.getMockImplementation()

@@ -470,11 +470,41 @@ class BossCliRunner:
         result = self._run(["positions"], env=self._account_env(account), timeout_seconds=180)
         return parse_positions(result.stdout)
 
+    def _enrich_candidate_rows(self, account, source, rows):
+        """Attach DOM stable IDs only when the CLI and browser snapshots align by index and name."""
+        try:
+            response = self._run_chat_bridge(
+                account,
+                "candidate_list",
+                {"source": str(source)},
+                timeout_seconds=45,
+            )
+        except (BossCliError, BossCliTimeout):
+            return rows
+        browser_rows = response.get("rows") if isinstance(response, dict) else None
+        if not isinstance(browser_rows, list) or len(browser_rows) != len(rows):
+            return rows
+        enriched = []
+        seen_ids = set()
+        for parsed, observed in zip(rows, browser_rows):
+            parsed_name = str(parsed.get("display_name", "")).strip()
+            observed_name = str(observed.get("display_name", "")).strip()
+            external_id = str(observed.get("external_id", "")).strip()
+            if parsed_name != observed_name:
+                return rows
+            if external_id:
+                if external_id in seen_ids:
+                    return rows
+                seen_ids.add(external_id)
+            enriched.append({**parsed, "external_id": external_id})
+        return enriched
+
     def recommend(self, account, job_keyword=""):
         keyword = str(job_keyword or "").strip()
         args = ["recommend", keyword] if keyword else ["recommend"]
         result = self._run(args, env=self._account_env(account), timeout_seconds=180)
-        return parse_candidate_output(result.stdout, source="recommend")
+        rows = parse_candidate_output(result.stdout, source="recommend")
+        return self._enrich_candidate_rows(account, "recommend", rows)
 
     def search(self, account, keyword=""):
         keyword = str(keyword or "").strip()
@@ -482,7 +512,8 @@ class BossCliRunner:
             raise BossCliError("常规搜索关键词最多 20 个字符")
         args = ["search", keyword] if keyword else ["search"]
         result = self._run(args, env=self._account_env(account), timeout_seconds=180)
-        return parse_candidate_output(result.stdout, source="search")
+        rows = parse_candidate_output(result.stdout, source="search")
+        return self._enrich_candidate_rows(account, "search", rows)
 
     def deep_search(self, account, *, job="", core=None, bonus=None, match=False):
         values = [str(job or ""), *(core or []), *(bonus or [])]
@@ -490,7 +521,10 @@ class BossCliRunner:
             raise BossCliError("深度搜索单项条件最多 200 个字符")
         args = deep_search_args(job=job, core=core, bonus=bonus, match=match)
         result = self._run(args, env=self._account_env(account), timeout_seconds=240)
-        return parse_candidate_output(result.stdout, source="deep_search") if match else []
+        if not match:
+            return []
+        rows = parse_candidate_output(result.stdout, source="deep_search")
+        return self._enrich_candidate_rows(account, "deep_search", rows)
 
     def conversations(self, account, *, unread=False, job_title=""):
         job_name = str(job_title or "").strip()
@@ -539,6 +573,37 @@ class BossCliRunner:
         if job_name:
             args.extend(["--job", job_name])
         return self._run(args, env=self._account_env(account), timeout_seconds=120)
+
+    def greet_by_external_id(
+        self, account, external_id, *, message="", job_title="", source="recommend", expected_name=""
+    ):
+        normalized_id = str(external_id or "").strip()
+        normalized_message = str(message or "").strip()
+        if not normalized_id or len(normalized_id) > 160:
+            raise BossCliError("候选人平台稳定 ID 无效")
+        if not normalized_message or len(normalized_message) > 1000:
+            raise BossCliError("统一打招呼话术必须为 1 到 1000 个字符")
+        response = self._run_chat_bridge(
+            account,
+            "greet_candidate",
+            {
+                "external_id": normalized_id,
+                "message": normalized_message,
+                "job_title": str(job_title or ""),
+                "source": str(source or "recommend"),
+                "expected_name": str(expected_name or ""),
+            },
+            timeout_seconds=60,
+        )
+        receipt = response.get("receipt") if isinstance(response, dict) else None
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("verified") is not True
+            or receipt.get("greeting_verified") is not True
+            or str(receipt.get("observed_external_id", "")).strip() != normalized_id
+        ):
+            raise BossCliError("未能确认已向稳定 ID 对应的候选人打招呼")
+        return receipt
 
     def request_resume(self, account, name, *, message="", first_contact=False):
         self.open_chat(account, name)

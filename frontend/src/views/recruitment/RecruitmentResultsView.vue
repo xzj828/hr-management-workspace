@@ -5,10 +5,12 @@ import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
 import ResumeIntelligencePanel from '@/components/ResumeIntelligencePanel.vue'
 import ScreeningDecisionDrawer from '@/components/ScreeningDecisionDrawer.vue'
+import CommunicationConfirmDrawer from '@/components/CommunicationConfirmDrawer.vue'
 import WorkflowRunPanel from '@/components/WorkflowRunPanel.vue'
 import RecruitmentResultsNavigation from '@/components/RecruitmentResultsNavigation.vue'
 import { stageColumns } from '@/recruitment'
 import { createRequestId } from '@/recruitmentJobs'
+import { communicationPayload } from '@/recruitmentCommunications'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
 
 const props = defineProps({
@@ -68,6 +70,14 @@ const notificationError = ref('')
 const decisionBatchId = ref('')
 const decisionRequest = reactive({ id: '', signature: '' })
 const notificationRequest = reactive({ id: '', signature: '', approvalId: '' })
+const greetingRequest = reactive({ id: '', signature: '', approvalId: '' })
+const greetingDrawerOpen = ref(false)
+const greetingBusy = ref(false)
+const greetingError = ref('')
+const greetingCandidates = ref([])
+const greetingExcludedCount = ref(0)
+const greetingAccountId = ref('')
+const greetingAccountName = ref('')
 const operationNotice = ref(null)
 let detailReturnFocus = null
 let requestSequence = 0
@@ -96,6 +106,12 @@ function normalizeScreeningResult(row) {
     aiState: row?.ai_state || row?.aiState || (row?.assessment ? 'scored' : row?.resume ? 'unscored' : 'no_resume'),
     hrDecision: row?.hr_decision || row?.hrDecision || null,
     notification: row?.notification || { status: 'not_requested' },
+    greeting: row?.greeting || {
+      eligible: false,
+      status: 'not_requested',
+      reason_code: 'stable_identity_missing',
+      reason_label: '缺少平台稳定身份',
+    },
   }
 }
 
@@ -319,6 +335,8 @@ const stageProgress = computed(() => {
     }
   })
 })
+const greetableCandidateRows = computed(() => selectedCandidateRows.value.filter((row) => row.greeting?.eligible))
+const excludedGreetingRows = computed(() => selectedCandidateRows.value.filter((row) => !row.greeting?.eligible))
 const activePipelineCount = computed(() => screeningApplications.value.filter((application) => !['hired', 'rejected'].includes(application.stage)).length)
 const hiredCount = computed(() => screeningApplications.value.filter((application) => application.stage === 'hired').length)
 const hiringCompletion = computed(() => {
@@ -638,6 +656,98 @@ function selectedCandidateSnapshots() {
     notificationStatus: row.notification?.status || 'not_requested',
     notificationErrorCode: row.notification?.error_code || '',
   }))
+}
+
+function openGreetingDrawer(event) {
+  const accountId = screeningMeta.job?.boss_account || currentJob.value?.boss_account
+  if (!accountId) {
+    operationNotice.value = { tone: 'warning', message: '当前岗位未关联可用的 BOSS 账号，请刷新岗位配置后重试。' }
+    return
+  }
+  if (!greetableCandidateRows.value.length) {
+    const reasons = [...new Set(excludedGreetingRows.value.map((row) => row.greeting?.reason_label).filter(Boolean))]
+    operationNotice.value = {
+      tone: 'warning',
+      message: reasons.length
+        ? `所选候选人当前无法打招呼：${reasons.join('、')}。`
+        : '所选候选人当前无法打招呼，请刷新结果后重试。',
+    }
+    return
+  }
+  detailReturnFocus = event?.currentTarget || document.activeElement
+  greetingError.value = ''
+  greetingBusy.value = false
+  greetingCandidates.value = greetableCandidateRows.value.map((row) => ({
+    applicationId: row.application.id,
+    name: row.candidate?.name || '未命名候选人',
+    jobTitle: currentJob.value?.title || '',
+  }))
+  greetingExcludedCount.value = excludedGreetingRows.value.length
+  greetingAccountId.value = String(accountId)
+  greetingAccountName.value = currentJob.value?.account_name || ''
+  greetingDrawerOpen.value = true
+}
+
+async function closeGreetingDrawer(force = false) {
+  if (greetingBusy.value && !force) return
+  greetingDrawerOpen.value = false
+  greetingCandidates.value = []
+  greetingExcludedCount.value = 0
+  greetingAccountId.value = ''
+  greetingAccountName.value = ''
+  await nextTick()
+  detailReturnFocus?.focus?.()
+  detailReturnFocus = null
+}
+
+async function submitGreeting(snapshot) {
+  if (!greetingCandidates.value.length || greetingBusy.value) return
+  const accountId = greetingAccountId.value
+  if (!accountId) {
+    greetingError.value = '当前岗位未关联可用的 BOSS 账号，请刷新岗位配置后重试。'
+    return
+  }
+  const applicationIds = greetingCandidates.value.map((item) => Number(item.applicationId))
+  const signature = JSON.stringify({ accountId: Number(accountId), applicationIds, message: snapshot.message })
+  if (greetingRequest.signature !== signature) {
+    greetingRequest.id = createRequestId()
+    greetingRequest.signature = signature
+    greetingRequest.approvalId = ''
+  }
+  greetingBusy.value = true
+  greetingError.value = ''
+  try {
+    if (!greetingRequest.approvalId) {
+      const prepared = await api('recruitment/communication-actions/prepare/', {
+        method: 'POST',
+        body: JSON.stringify(communicationPayload({
+          accountId,
+          applicationIds,
+          action: 'greet',
+          message: snapshot.message,
+          requestId: greetingRequest.id,
+        })),
+      })
+      greetingRequest.approvalId = String(prepared.approval_id || prepared.id || '')
+    }
+    if (!greetingRequest.approvalId) throw new Error('服务端未返回有效的沟通审批记录')
+    const approved = await api(`recruitment/automation-approvals/${encodeURIComponent(greetingRequest.approvalId)}/approve/`, { method: 'POST' })
+    const steps = Array.isArray(approved?.batch?.steps) ? approved.batch.steps : []
+    if (!steps.some((step) => step.status === 'pending')) {
+      greetingError.value = '审批已保存，但服务端没有返回可执行的待处理步骤；请刷新候选人状态后人工核查。'
+      await loadResults()
+      return
+    }
+    const submitted = new Set(applicationIds.map(String))
+    selectedApplicationIds.value = selectedApplicationIds.value.filter((id) => !submitted.has(String(id)))
+    operationNotice.value = { tone: 'success', message: `已将 ${applicationIds.length} 位候选人的统一打招呼任务加入顺序执行队列。` }
+    await closeGreetingDrawer(true)
+    await loadResults()
+  } catch (error) {
+    greetingError.value = error.message || '批量打招呼提交失败，请核对候选人状态后重试。'
+  } finally {
+    greetingBusy.value = false
+  }
 }
 
 function openDecisionDrawer(mode, event) {
@@ -1161,8 +1271,8 @@ onUnmounted(() => {
 
           <div v-if="selectedCandidateRows.length" class="candidate-batch-bar" role="region" aria-label="候选人批量操作" data-test="candidate-batch-bar">
             <div><strong>已选择 {{ selectedCandidateRows.length }} 人</strong><button type="button" @click="selectedApplicationIds = []">清空选择</button></div>
-            <span>AI 建议不会限制 HR 的人工判断。</span>
-            <div><button class="secondary-button" type="button" data-test="bulk-pass" @click="openDecisionDrawer('pass', $event)">确认通过</button><button class="primary-button" type="button" data-test="bulk-fail" @click="openDecisionDrawer('fail', $event)">确认未通过</button></div>
+            <span>其中 {{ greetableCandidateRows.length }} 人可打招呼；AI 建议不会限制 HR 的人工判断。</span>
+            <div><button class="primary-button" type="button" data-test="bulk-greet" @click="openGreetingDrawer($event)">批量打招呼</button><button class="secondary-button" type="button" data-test="bulk-pass" @click="openDecisionDrawer('pass', $event)">确认通过</button><button class="secondary-button" type="button" data-test="bulk-fail" @click="openDecisionDrawer('fail', $event)">确认未通过</button></div>
           </div>
         </section>
 
@@ -1231,13 +1341,24 @@ onUnmounted(() => {
         @close="closeDecisionDrawer()"
         @confirm="submitScreeningDecision"
       />
+      <CommunicationConfirmDrawer
+        v-if="greetingDrawerOpen"
+        :candidates="greetingCandidates"
+        :account-name="greetingAccountName"
+        :saving="greetingBusy"
+        :excluded-count="greetingExcludedCount"
+        :error="greetingError"
+        fixed-action="greet"
+        @close="closeGreetingDrawer()"
+        @confirm="submitGreeting"
+      />
     </template>
   </div>
 </template>
 
 <style scoped>
 .results-center {
-  --results-font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --results-font-family: var(--app-font-family);
   --results-color-ink: #0f172a;
   --results-color-slate: #334155;
   --results-color-copy: var(--results-color-slate);
@@ -1280,23 +1401,23 @@ onUnmounted(() => {
   --results-radius-status: 999px;
   --results-border-width: 1px;
   --results-active-border-width: 2px;
-  --results-control-height: clamp(2.75rem, 1.7rem + 1cqi, 3.25rem);
-  --results-compact-control-height: clamp(2.5rem, 1.55rem + .9cqi, 3rem);
+  --results-control-height: clamp(2.875rem, 1.85rem + .95cqi, 3.25rem);
+  --results-compact-control-height: clamp(2.75rem, 1.8rem + .85cqi, 3rem);
   --results-touch-target: clamp(2.75rem, 1.5rem + 1.35cqi, 3.5rem);
-  --results-row-min-height: clamp(4rem, 2.25rem + 2.1cqi, 5.25rem);
-  --results-font-meta: .8125rem;
-  --results-font-detail: .875rem;
-  --results-font-control: .875rem;
-  --results-font-body: .875rem;
-  --results-font-title: 1rem;
+  --results-row-min-height: clamp(4.5rem, 2.75rem + 1.9cqi, 5.5rem);
+  --results-font-meta: .875rem;
+  --results-font-detail: .9375rem;
+  --results-font-control: .9375rem;
+  --results-font-body: .9375rem;
+  --results-font-title: 1.125rem;
   --results-font-metric: clamp(1.625rem, 1rem + .8cqi, 2.25rem);
   --results-font-campaign-metric: clamp(1.25rem, .55rem + .75cqi, 1.875rem);
   --results-weight-regular: 400;
   --results-weight-medium: 400;
   --results-weight-bold: 600;
   --results-weight-heavy: 600;
-  --results-leading-tight: 1.3;
-  --results-leading-body: 1.6;
+  --results-leading-tight: 1.45;
+  --results-leading-body: 1.65;
   --results-tracking-kicker: .12em;
   --results-tracking-metric: -.025em;
   --results-shadow-panel: 0 1px 2px rgba(15, 23, 42, .025);
@@ -1307,10 +1428,10 @@ onUnmounted(() => {
   --results-filter-status-min: 10.625rem;
   --results-empty-copy-max: 26.25rem;
   --results-avatar-size: clamp(2rem, 1rem + 1.15cqi, 2.75rem);
-  --results-candidate-name-min: 9.375rem;
-  --results-candidate-stage-min: 5.625rem;
-  --results-candidate-resume-min: 6.875rem;
-  --results-candidate-score-min: 9.6875rem;
+  --results-candidate-name-min: 15rem;
+  --results-candidate-stage-min: 9rem;
+  --results-candidate-resume-min: 12rem;
+  --results-candidate-score-min: 11rem;
   --results-action-column: 1.5rem;
   --results-stage-label-width: 5.625rem;
   --results-stage-count-width: 1.875rem;
@@ -2390,10 +2511,10 @@ onUnmounted(() => {
 }
 
 .candidate-filter-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(190px, 1fr)) auto;
   align-items: end;
   gap: 12px;
-  flex-wrap: wrap;
   padding: 16px var(--results-space-5) 18px;
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
   background: var(--results-color-surface);
@@ -2401,9 +2522,9 @@ onUnmounted(() => {
 
 .candidate-filter-bar label {
   display: grid;
-  flex: 1 1 150px;
   gap: 7px;
-  max-width: 190px;
+  min-width: 0;
+  max-width: none;
   color: var(--results-color-copy);
   font-size: var(--results-font-detail);
   font-weight: var(--results-weight-medium);
@@ -2435,9 +2556,8 @@ onUnmounted(() => {
 }
 
 .candidate-filter-bar button {
-  flex: 0 0 auto;
   min-height: var(--results-compact-control-height);
-  padding: 0 15px;
+  padding: 0 18px;
   border: 1px solid var(--results-color-line);
   border-radius: var(--results-radius-control);
   color: var(--results-color-brand-dark);
@@ -2487,6 +2607,7 @@ onUnmounted(() => {
 .candidate-ranking-scroll {
   overflow-x: auto;
   scrollbar-width: thin;
+  scrollbar-color: #a9bbb8 #edf3f2;
 }
 
 .candidate-table-footer {
@@ -2552,7 +2673,7 @@ onUnmounted(() => {
 
 .candidate-ranking-table {
   width: 100%;
-  min-width: 1480px;
+  min-width: 1600px;
   table-layout: fixed;
   border-collapse: collapse;
   color: var(--results-color-copy);
@@ -2560,20 +2681,21 @@ onUnmounted(() => {
 }
 
 .candidate-ranking-table th {
-  padding: 13px 14px;
+  padding: 15px 18px;
   border-bottom: var(--results-border-width) solid var(--results-color-line);
   color: var(--results-color-muted);
   background: var(--results-color-surface-soft);
   font-size: var(--results-font-meta);
   font-weight: var(--results-weight-heavy);
-  letter-spacing: .04em;
+  letter-spacing: .015em;
+  line-height: var(--results-leading-tight);
   text-align: left;
   white-space: nowrap;
 }
 
 .candidate-ranking-table td {
-  min-height: 58px;
-  padding: 12px 14px;
+  min-height: 68px;
+  padding: 16px 18px;
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
   vertical-align: middle;
 }
@@ -2600,7 +2722,7 @@ onUnmounted(() => {
 
 .candidate-rank {
   color: var(--results-color-ink);
-  font-size: 15px;
+  font-size: var(--results-font-body);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2649,22 +2771,22 @@ onUnmounted(() => {
   overflow: hidden;
   color: var(--results-color-muted);
   font-size: var(--results-font-meta);
-  line-height: 1.4;
+  line-height: var(--results-leading-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .candidate-score.has-score strong {
   color: var(--results-color-brand-dark);
-  font-size: 14px;
+  font-size: var(--results-font-body);
   font-variant-numeric: tabular-nums;
 }
 
 .candidate-status {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
-  padding: 5px 10px;
+  min-height: 32px;
+  padding: 6px 11px;
   border-radius: 8px;
   font-size: var(--results-font-meta);
   font-weight: var(--results-weight-regular);
@@ -2692,8 +2814,8 @@ onUnmounted(() => {
 }
 
 .candidate-action-cell button {
-  min-height: 38px;
-  padding: 0 13px;
+  min-height: 42px;
+  padding: 0 15px;
   border: var(--results-border-width) solid var(--results-color-brand-line);
   border-radius: var(--results-radius-control);
   color: var(--results-color-brand-dark);
@@ -2732,7 +2854,7 @@ onUnmounted(() => {
 
 .candidate-batch-bar strong {
   color: var(--results-color-ink);
-  font-size: 12px;
+  font-size: var(--results-font-detail);
 }
 
 .candidate-batch-bar > div:first-child button {
@@ -2740,12 +2862,12 @@ onUnmounted(() => {
   border: 0;
   color: var(--results-color-brand-dark);
   background: transparent;
-  font-size: 10px;
+  font-size: var(--results-font-meta);
 }
 
 .candidate-batch-bar > span {
   color: var(--results-color-muted);
-  font-size: 10px;
+  font-size: var(--results-font-meta);
 }
 
 .candidate-batch-bar .primary-button,
@@ -2763,16 +2885,16 @@ onUnmounted(() => {
 .candidate-rank.is-top-2 { color: #718096; }
 .candidate-rank.is-top-3 { color: #b46f3c; }
 
-.candidate-ranking-table th:nth-child(1) { width: 52px; }
-.candidate-ranking-table th:nth-child(2) { width: 64px; }
-.candidate-ranking-table th:nth-child(3) { width: 230px; }
-.candidate-ranking-table th:nth-child(4) { width: 140px; }
-.candidate-ranking-table th:nth-child(5) { width: 170px; }
-.candidate-ranking-table th:nth-child(6) { width: 125px; }
-.candidate-ranking-table th:nth-child(7) { width: 210px; }
-.candidate-ranking-table th:nth-child(8) { width: 150px; }
-.candidate-ranking-table th:nth-child(9) { width: 180px; }
-.candidate-ranking-table th:nth-child(10) { width: 160px; }
+.candidate-ranking-table th:nth-child(1) { width: 56px; }
+.candidate-ranking-table th:nth-child(2) { width: 72px; }
+.candidate-ranking-table th:nth-child(3) { width: 260px; }
+.candidate-ranking-table th:nth-child(4) { width: 165px; }
+.candidate-ranking-table th:nth-child(5) { width: 200px; }
+.candidate-ranking-table th:nth-child(6) { width: 135px; }
+.candidate-ranking-table th:nth-child(7) { width: 220px; }
+.candidate-ranking-table th:nth-child(8) { width: 170px; }
+.candidate-ranking-table th:nth-child(9) { width: 190px; }
+.candidate-ranking-table th:nth-child(10) { width: 170px; }
 
 .results-subpanel > header {
   min-height: 54px;
@@ -2914,6 +3036,103 @@ onUnmounted(() => {
 }
 
 /* Container conditions intentionally use literals because custom properties are invalid in query expressions. */
+@container results-center (max-width: 1180px) {
+  .candidate-filter-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .candidate-ranking-scroll {
+    overflow: visible;
+    background: var(--results-color-surface-soft);
+  }
+
+  .candidate-ranking-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .candidate-ranking-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+
+  .candidate-ranking-table tbody {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .candidate-ranking-table tbody tr {
+    display: grid;
+    grid-template-columns: 36px repeat(2, minmax(0, 1fr));
+    gap: 0 22px;
+    padding: 14px 16px;
+    border: 1px solid var(--results-color-line-soft);
+    border-radius: var(--results-radius-control);
+    background: var(--results-color-surface);
+  }
+
+  .candidate-ranking-table td {
+    display: grid;
+    grid-template-columns: 108px minmax(0, 1fr);
+    align-items: start;
+    gap: 12px;
+    min-width: 0;
+    padding: 9px 0;
+    border: 0;
+  }
+
+  .candidate-ranking-table td::before {
+    content: attr(data-label);
+    color: var(--results-color-muted);
+    font-size: var(--results-font-meta);
+    font-weight: var(--results-weight-regular);
+  }
+
+  .candidate-ranking-table .candidate-select-cell {
+    display: block;
+    grid-row: 1 / span 5;
+    grid-column: 1;
+    width: auto;
+    padding-top: 10px;
+  }
+
+  .candidate-ranking-table .candidate-select-cell::before,
+  .candidate-ranking-table .candidate-action-cell::before {
+    display: none;
+  }
+
+  .candidate-name-button,
+  .candidate-name-static,
+  .candidate-notification {
+    max-width: none;
+  }
+
+  .candidate-name-button small,
+  .candidate-resume small,
+  .candidate-score small {
+    white-space: normal;
+  }
+
+  .candidate-action-cell {
+    display: block !important;
+    grid-column: 2 / -1;
+    padding-top: 10px !important;
+    text-align: left;
+  }
+
+  .candidate-action-empty {
+    display: none;
+  }
+
+  .candidate-action-cell:has(.candidate-action-empty) {
+    display: none !important;
+  }
+}
+
 @container results-center (max-width: 1050px) {
   .candidate-result-list > article {
     grid-template-columns: var(--results-avatar-size) minmax(0, 1fr) auto;

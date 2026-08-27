@@ -50,7 +50,8 @@
 | W13 | 候选排名、人工初筛与未通过通知 | W8, W9, P5 | [x] 2026-08-26 完成；AI 建议与 HR 结论分离，通知安全队列已验收 | `services/screening.py`, `RecruitmentResultsView.vue` |
 | W14 | 岗位招聘任务停止、修改与重新开启 | W6–W10, W13, P5 | [x] 2026-08-26 完成；持久化方案、不可变修订、协作式停止与代际隔离已验收 | `services/automation_plans.py`, `RecruitmentOperationControl.vue` |
 | W15 | 主动寻访候选条件 | W7, W14, P5 | [~] 2026-08-26 实现作业台白金展开表单、草稿恢复与不可变条件快照；平台实际筛选受固定 BOSS CLI 能力约束 | `RecruitmentWorkbenchView.vue`, `services/automation_plans.py`, `services/standard_workflows.py` |
-| W16 | 招聘任务集合、独立详情与连续建任务 | W9, W13–W15, P4–P6 | [x] 已完成（2026-08-27）；执行成功进入独立任务结果页，作业台重置后可继续创建其他岗位任务；结果中心提供可见的跨岗位任务集合，并支持停止、修改、可恢复删除与结果深链 | `RecruitmentTasksView.vue`, `RecruitmentTaskDetailView.vue`, `RecruitmentResultsView.vue`, `RecruitmentWorkbenchView.vue`, `RecruitmentAutomationPlan` |
+| W16 | 招聘任务集合、独立详情与连续建任务 | W9, W13–W15, P4–P6 | [x] 已完成（2026-08-27）；执行成功进入独立任务结果页，作业台重置后可继续创建其他岗位任务；结果中心提供可见的跨岗位任务集合，并支持停止、修改、可恢复删除与结果深链；同日完成任务集合、详情和业务结果的控件层级、文案密度、宽列与 2560–390px 响应式打磨 | `RecruitmentTasksView.vue`, `RecruitmentTaskDetailView.vue`, `RecruitmentResultsView.vue`, `RecruitmentWorkbenchView.vue`, `RecruitmentAutomationPlan` |
+| W17 | 主动寻访结果批量打招呼 | W7、W9、W14–W16、P5 | [x] 已完成（2026-08-27）；在主动寻访结果中按岗位勾选候选人、整批只确认一份统一话术，复用不可变审批、逐项顺序执行、账号级 stable ID 复核、额度和审计链；已联系、无 stable ID、跨岗位和结果不确定项失败关闭或转人工，历史结果可回看；真实 BOSS 账号外发保留 HR 人工验收 | `RecruitmentResultsView.vue`, `CommunicationConfirmDrawer.vue`, `services/communications.py`, `rpa/boss_chat_bridge.mjs` |
 
 ## 未完成或边界功能
 

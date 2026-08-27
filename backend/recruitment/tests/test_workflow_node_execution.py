@@ -2,7 +2,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 
 from attendance.models import AccountProfile
-from recruitment.models import AutomationApproval, BossAccount, Candidate, HumanAttention, JobApplication, RecruitmentJob, RpaTask, WorkflowNodeRun, WorkflowRun, WorkflowTemplate
+from recruitment.models import AutomationApproval, BossAccount, Candidate, CandidateDiscovery, CandidateExternalIdentity, HumanAttention, JobApplication, RecruitmentJob, RpaTask, WorkflowNodeRun, WorkflowRun, WorkflowTemplate
 from recruitment.services.conversation_ingestion import ingest_conversation
 from recruitment.services.approvals import approve
 from recruitment.services.communications import materialize_communication_batch
@@ -84,6 +84,13 @@ class WorkflowNodeExecutionTests(TestCase):
     def test_communication_node_creates_draft_after_gate_not_direct_send(self):
         from recruitment.models import Candidate
         candidate = Candidate.objects.create(name="候选人", external_id="candidate")
+        CandidateExternalIdentity.objects.create(
+            boss_account=self.account,
+            candidate=candidate,
+            external_id="candidate",
+            fingerprint="d" * 64,
+            identity_quality=CandidateDiscovery.IdentityQuality.PLATFORM,
+        )
         application = JobApplication.objects.create(candidate=candidate, job=self.job, owner=self.user)
         run = create_run(
             version=self.version, actor=self.user, mode=WorkflowRun.Mode.FORMAL,

@@ -12,6 +12,8 @@ from recruitment.models import (
     AutomationUsage,
     BossAccount,
     Candidate,
+    CandidateDiscovery,
+    CandidateExternalIdentity,
     ConversationAction,
     JobApplication,
     RecruitmentAuditLog,
@@ -271,6 +273,13 @@ class RpaTaskApiTests(APITestCase):
             identity_key="communication-cancel-candidate",
             external_id="boss-communication-cancel",
             name="候选人",
+        )
+        CandidateExternalIdentity.objects.create(
+            boss_account=self.account,
+            candidate=candidate,
+            external_id="boss-communication-cancel",
+            fingerprint="c" * 64,
+            identity_quality=CandidateDiscovery.IdentityQuality.PLATFORM,
         )
         application = JobApplication.objects.create(candidate=candidate, job=job, source="boss")
         approval = prepare_communication(

@@ -20,6 +20,38 @@ class ConversationCliTests(SimpleTestCase):
         self.assertEqual(command[1:], ["greet", "林然", "--job", "测试工程师"])
         self.assertFalse(run.call_args.kwargs["shell"])
 
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    def test_stable_greet_passes_uniform_snapshot_and_requires_verified_receipt(self, bridge):
+        bridge.return_value = {"ok": True, "receipt": {
+            "verified": True,
+            "greeting_verified": True,
+            "expected_external_id": "geek-101",
+            "observed_external_id": "geek-101",
+        }}
+
+        receipt = self.runner.greet_by_external_id(
+            self.account,
+            "geek-101",
+            message="你好，想和你聊聊测试工程师岗位。",
+            job_title="测试工程师",
+            source="recommend",
+            expected_name="林然",
+        )
+
+        self.assertTrue(receipt["greeting_verified"])
+        bridge.assert_called_once_with(
+            self.account,
+            "greet_candidate",
+            {
+                "external_id": "geek-101",
+                "message": "你好，想和你聊聊测试工程师岗位。",
+                "job_title": "测试工程师",
+                "source": "recommend",
+                "expected_name": "林然",
+            },
+            timeout_seconds=60,
+        )
+
     @patch("recruitment.rpa.cli.subprocess.run")
     def test_request_resume_opens_strict_chat_before_action(self, run):
         run.return_value = SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")

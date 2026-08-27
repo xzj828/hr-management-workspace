@@ -91,6 +91,38 @@ class CandidateRunnerTests(SimpleTestCase):
         self.assertFalse(run.call_args.kwargs["shell"])
         self.assertEqual(rows[0]["display_name"], "周敏")
 
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_recommend_enriches_aligned_snapshot_with_platform_stable_id(self, run, bridge):
+        run.return_value = subprocess.CompletedProcess([], 0, RECOMMEND_OUTPUT.encode("utf-8"), b"")
+        bridge.return_value = {
+            "ok": True,
+            "rows": [{"index": 1, "display_name": "林晓", "external_id": "geek-101"}],
+        }
+
+        rows = BossCliRunner(cli_path="C:/tools/boss.exe").recommend(self.account, "前端工程师")
+
+        self.assertEqual(rows[0]["external_id"], "geek-101")
+        bridge.assert_called_once_with(
+            self.account,
+            "candidate_list",
+            {"source": "recommend"},
+            timeout_seconds=45,
+        )
+
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_candidate_enrichment_refuses_misaligned_browser_snapshot(self, run, bridge):
+        run.return_value = subprocess.CompletedProcess([], 0, RECOMMEND_OUTPUT.encode("utf-8"), b"")
+        bridge.return_value = {
+            "ok": True,
+            "rows": [{"index": 1, "display_name": "同名但不同目标", "external_id": "geek-101"}],
+        }
+
+        rows = BossCliRunner(cli_path="C:/tools/boss.exe").recommend(self.account, "前端工程师")
+
+        self.assertEqual(rows[0]["external_id"], "")
+
     def test_runner_rejects_control_characters(self):
         runner = BossCliRunner(cli_path="C:/tools/boss.exe")
 

@@ -224,3 +224,33 @@
 - 启动已归档 Plan 时在同一服务端事务中恢复可见性，再按现有不可变 Revision 与 control generation 规则开启。Workflow Run 读模型暴露所属 Plan 和归档状态，用于任务详情深链与结果中心当前/已删除过滤。
 - “修改任务”不热改运行配置：活动态先建立停止 fence，再把当前不可变 Revision 回填作业台；重新执行继续通过 `start_plan` 生成受乐观版本保护的新版本。
 - 多任务仍遵守“每岗位一个 Plan”。不同岗位可以同时处于活动状态；共享 BOSS 账号的外部浏览器动作继续由账号锁与 Worker 租约安全串行。
+
+## 新增功能：主动寻访结果批量打招呼（W17，2026-08-27）
+
+状态：`[x]` 代码、自动测试与本地结果中心运行态已验收；真实 BOSS 账号外发需 HR 人工验收。
+
+### 架构影响
+
+- 不新增依赖、数据库表或新的并行发送框架。前端扩展 `RecruitmentResultsView` 的既有候选人选择状态并复用 `CommunicationConfirmDrawer`；后端继续使用 `AutomationApproval → ExecutionBatch → StepExecution → ConversationAction → RpaTask` 领域链路。
+- 批量内只允许一份统一话术。前端提交一个 `message`，服务端把同一规范化文本复制到每个 `ConversationAction.message_snapshot`，审批后不得逐人修改。
+- `screening-results` 读模型增加打招呼资格与最近动作投影，使页面能在发送前解释已联系、缺少稳定 ID、已有活动动作等排除原因；资格投影只用于交互提示，`prepare_communication` 仍须在事务内重新校验。
+- 默认 `BossCliRunner` 增加按平台稳定 ID 执行打招呼的原子适配器。适配器必须在受管浏览器同一 CDP 会话中恢复批准快照的来源/职位范围、刷新列表、按 stable ID 唯一定位、复核展示名与职位并触发 BOSS 原生打招呼；任何来源无法暴露 stable ID 时失败关闭，禁止回退姓名或列表序号。
+- 成功回执必须包含 `verified=true`、批准目标一致的 `expected_external_id/observed_external_id` 和 `greeting_verified=true`。结果不确定时批次停止后续项且不自动重试；可确定的单项身份缺失进入 `waiting_human`，不冒充成功。
+
+### 组件扩展与职责
+
+| 能力 | 主责组件 | 扩展方式 |
+|---|---|---|
+| 候选人多选与批量入口 | `RecruitmentResultsView.vue` | 复用当前岗位候选表复选框，在批量操作栏增加“批量打招呼”，只把服务端标记可执行的同岗位应聘送入确认抽屉 |
+| 统一话术确认 | `CommunicationConfirmDrawer.vue`、`recruitmentCommunications.js` | 增加固定 `greet` 模式和资格摘要；一次编辑整批共用，不生成逐人话术 |
+| 资格与状态投影 | `services/screening.py` | 投影稳定身份、历史成功打招呼、活动沟通动作和最近结果；不返回平台稳定 ID 明文 |
+| 不可变审批与逐项队列 | `services/communications.py` | 扩展准备校验、重复联系跳过、顺序入队和批次汇总；成功后关闭对应 `greeting_required` 人工事项 |
+| 稳定 ID 外部动作 | `rpa/cli.py`、受管 Puppeteer bridge、`run_rpa_worker.py` | 默认 Runner 提供 `greet_by_external_id`；Worker 以审批快照的来源、职位、姓名和 stable ID 执行并校验回执 |
+| 结果回写 | `worker_api.py`、`services/stages.py` | 继续复用沟通任务完成入口；核验成功后推进到 `greeted`，写阶段历史、任务事件和招聘审计 |
+
+### 边界
+
+- 本功能只处理当前岗位结果中的候选人，不能跨岗位、跨 BOSS 账号拼批。
+- `rejected/hired` 等不适合新联系的终态、任意账号已成功打招呼、缺少平台 stable ID、已有 `approved/pending/running/waiting_human` 打招呼动作的候选人不得重复排队。
+- “标记人工事项已处理”继续只是人工状态操作；真正成功的打招呼由服务端自动解决同一应聘的开放 `greeting_required` 事项，避免用户把未发送误标成已发送。
+- 自动化测试不得向真实候选人发送消息；真实账号验收只允许用户指定的测试候选人，并需人工确认 BOSS 当前统一打招呼语与审批快照一致。

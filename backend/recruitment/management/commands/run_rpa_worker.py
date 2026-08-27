@@ -321,13 +321,22 @@ def execute_greet(task, account, runner):
     fingerprint = str(target.get("fingerprint", "")).strip()
     external_id = str(target.get("external_id", "")).strip()
     job_title = str(target.get("job_title", "")).strip()
+    verification = target.get("verification") if isinstance(target.get("verification"), dict) else {}
+    source = str(verification.get("source") or "recommend").strip()
+    criteria = verification.get("criteria") if isinstance(verification.get("criteria"), dict) else {}
     stable_action = getattr(runner, "greet_by_external_id", None)
-    if not name or not fingerprint or not external_id or not callable(stable_action):
+    if not name or not external_id or not callable(stable_action):
         return {
             "status": "waiting_human", "result": {}, "error_code": "stable_identity_action_unavailable",
             "error_message": "当前 BOSS 适配器不能按平台稳定 ID 打招呼，请由 HR 人工处理",
         }
-    refreshed = runner.recommend(account, job_title)
+    refreshed = _candidate_rows_for_verification(
+        runner=runner,
+        account=account,
+        source=source,
+        job_title=job_title,
+        criteria=criteria,
+    )
     from recruitment.services.discovery import _fingerprint
 
     account_id = target.get("boss_account_id")
@@ -335,7 +344,12 @@ def execute_greet(task, account, runner):
     matches = [
         row for row in refreshed
         if row.get("display_name") == name
-        and (row.get("fingerprint") == fingerprint or (account_id and _fingerprint(account_id, row) == fingerprint))
+        and str(row.get("external_id", "")).strip() == external_id
+        and (
+            not fingerprint
+            or row.get("fingerprint") == fingerprint
+            or (account_id and _fingerprint(account_id, row) == fingerprint)
+        )
     ]
     if (
         len(matches) != 1
@@ -346,14 +360,40 @@ def execute_greet(task, account, runner):
             "status": "waiting_human", "result": {}, "error_code": "target_identity_ambiguous",
             "error_message": "刷新后无法唯一确认候选人，已禁止发送",
         }
-    stable_action(account, external_id, job=job_title)
+    try:
+        receipt = stable_action(
+            account,
+            external_id,
+            message=str(payload.get("message", "")),
+            job_title=job_title,
+            source=source,
+            expected_name=name,
+        )
+    except Exception:
+        return {
+            "status": "waiting_human", "result": {}, "error_code": "external_result_uncertain",
+            "error_message": "打招呼可能已执行，请在 BOSS 中人工核查；系统不会自动重试",
+        }
+    receipt_confirmed = (
+        isinstance(receipt, dict)
+        and receipt.get("verified") is True
+        and receipt.get("greeting_verified") is True
+        and str(receipt.get("expected_external_id", "")).strip() == external_id
+        and str(receipt.get("observed_external_id", "")).strip() == external_id
+    )
+    if not receipt_confirmed:
+        return {
+            "status": "waiting_human", "result": {}, "error_code": "external_result_uncertain",
+            "error_message": "打招呼回执不完整，请在 BOSS 中人工核查；系统不会自动重试",
+        }
     return {
         "status": "succeeded",
         "result": {
             "verified": True,
+            "greeting_verified": True,
             "target_name": name,
             "expected_external_id": external_id,
-            "observed_external_id": str(matches[0].get("external_id", "")).strip(),
+            "observed_external_id": str(receipt.get("observed_external_id", "")).strip(),
         },
     }
 
