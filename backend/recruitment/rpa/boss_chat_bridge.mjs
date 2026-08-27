@@ -75,25 +75,28 @@ async function selectScope(page, jobTitle, unread) {
     (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim().split(/\s+_\s+/, 1)[0].trim(),
   );
   if (currentJob !== expectedJob) {
-    await page.click(".chat-top-job .chat-select-job");
+    const opened = await page.evaluate(() => {
+      const matches = Array.from(document.querySelectorAll(".chat-top-job .chat-select-job"));
+      if (matches.length !== 1) return false;
+      matches[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      matches[0].click();
+      return true;
+    });
+    if (!opened) throw new Error("未找到 BOSS 沟通职位筛选器");
     await page.waitForFunction(
       `document.querySelectorAll('.chat-top-job .ui-dropmenu-list li').length > 0`,
       { timeout: 10_000 },
     );
-    const matchingIndexes = await page.$$eval(
-      ".chat-top-job .ui-dropmenu-list li",
-      (items, expected) => items
-        .map((item, index) => ({
-          index,
-          title: (item.textContent ?? "").replace(/\s+/g, " ").trim().split(/\s+_\s+/, 1)[0].trim(),
-        }))
-        .filter((item) => item.title === expected)
-        .map((item) => item.index),
-      expectedJob,
-    );
-    if (matchingIndexes.length !== 1) throw new Error("BOSS 沟通职位无法精确唯一匹配");
-    const options = await page.$$(".chat-top-job .ui-dropmenu-list li");
-    await options[matchingIndexes[0]].click();
+    const selected = await page.evaluate((expected) => {
+      const items = Array.from(document.querySelectorAll(".chat-top-job .ui-dropmenu-list li"));
+      const matches = items.filter((item) => (item.textContent ?? "")
+        .replace(/\s+/g, " ").trim().split(/\s+_\s+/, 1)[0].trim() === expected);
+      if (matches.length !== 1) return false;
+      matches[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      matches[0].click();
+      return true;
+    }, expectedJob);
+    if (!selected) throw new Error("BOSS 沟通职位无法精确唯一匹配");
     await page.waitForFunction(
       `(expected) => {
         const value = (document.querySelector('.chat-top-job .chat-select-job')?.textContent ?? '')
@@ -140,26 +143,30 @@ async function selectScope(page, jobTitle, unread) {
     { timeout: 15_000 },
     filterLabel,
   );
-  const tabMatch = await page.$$eval(
-    ".chat-message-filter-left span",
-    (items, expected) => items
-      .map((item, index) => ({
-        index,
-        label: (item.textContent ?? "").replace(/\s+/g, " ").trim(),
-        className: String(item.className ?? ""),
-        selected: item.getAttribute("aria-selected") === "true"
-          || Boolean(item.closest(".active, .selected, .current, .checked")),
-      }))
-      .filter((item) => item.label.replace(/\s+/g, "").includes(expected)),
-    filterLabel,
-  );
-  if (tabMatch.length !== 1) {
-    throw new Error(`未找到 BOSS 沟通“${filterLabel}”筛选（匹配数 ${tabMatch.length}）`);
+  let filterApplied = false;
+  for (let attempt = 0; attempt < 5 && !filterApplied; attempt += 1) {
+    try {
+      filterApplied = await page.evaluate((expected) => {
+        const items = Array.from(document.querySelectorAll(".chat-message-filter-left span"));
+        const matches = items.filter((item) => (item.textContent ?? "")
+          .replace(/\s+/g, "").includes(expected));
+        if (matches.length !== 1) return false;
+        const tab = matches[0];
+        const selected = /(active|selected|current|checked)/.test(String(tab.className ?? ""))
+          || tab.getAttribute("aria-selected") === "true"
+          || Boolean(tab.closest(".active, .selected, .current, .checked"));
+        if (!selected) {
+          tab.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+          tab.click();
+        }
+        return true;
+      }, filterLabel);
+    } catch (error) {
+      if (!/detached|context|navigation/i.test(String(error)) || attempt === 4) throw error;
+    }
+    if (!filterApplied) await new Promise((resolve) => setTimeout(resolve, 300));
   }
-  if (!tabMatch[0].selected && !/(active|selected|current|checked)/.test(tabMatch[0].className)) {
-    const tabs = await page.$$(".chat-message-filter-left span");
-    await tabs[tabMatch[0].index].click();
-  }
+  if (!filterApplied) throw new Error(`未找到 BOSS 沟通“${filterLabel}”筛选`);
   await new Promise((resolve) => setTimeout(resolve, 750));
   await page.waitForFunction(
     `(scope) => {
