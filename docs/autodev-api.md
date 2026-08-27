@@ -311,11 +311,11 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - 服务端仅在稳定 ID 存在、岗位属于冻结 `allowed_job_ids` 且标题唯一匹配时创建或复用候选人、平台身份与应聘。兼容旧任务时，可把缺少稳定 ID 的行绑定到账号内既有且全局唯一的应聘，但不得据此创建新候选人或执行外发。
 - 标准工作流首次同步携带 `backfill_conversations=true` 并读取岗位列表，但只打开未读或当前选中行；周期性 `passive_plan_scopes` 同步仍只读取未读。
 - Worker 必须先在 BOSS 页面精确选择冻结职位，再切换未读/全部状态；账号共享的多个被动岗位逐岗位读取并按 stable ID 合并，任何职位筛选歧义或跨 scope 重复 stable ID 都失败关闭。
-- `request_resume_by_external_id` 必须在同一次执行中重新应用批准快照的职位 scope、刷新列表、按 stable ID 唯一解析、以该快照序号打开，并复核选中行 stable ID、展示名和职位，再发送已批准话术并调用 BOSS 原生“求简历”。
+- `request_resume_by_external_id` 必须在同一次 Puppeteer bridge 执行中重新应用批准快照的职位 scope、刷新列表、按 stable ID 唯一解析、打开并复核选中行 stable ID、展示名和职位，再发送已批准话术并调用 BOSS 原生“求简历”；不得在定位后切回另一个 CLI 子进程执行写动作。
 - 作业台只有在确认接口返回沟通批次且批次中至少存在一个 `pending` 执行步骤时，才能提示动作已排队；审批提交期间禁止同时停止或重启岗位计划，计划控制期间也禁止提交审批。
 - Worker 的目标职位会话适配器必须在一次调用中按“精确职位 → 未读/全部 → stable ID”定位并点击，返回选中会话消息；不得先通过 CLI 切换账号级列表，也不得把 CLI 序号作为跨筛选快照的动作目标。同步调用必须把原始 `unread` 范围传到打开动作。
-- 首次 `request_resume` 必须把文字发送和原生求简历拆开：发送后以选中 stable ID 下新增的精确己方消息作为成功回执，随后才允许求简历。缺少新增消息回执时任务进入 `waiting_human/external_result_uncertain`，不得自动重试或继续求简历。
-- 会话读取、打开、消息回执和附件下载由本地 `boss_chat_bridge.mjs` 通过固定 CLI 包内的 `puppeteer-core` 执行；bridge 输入为 JSON stdin，Node/脚本/包根均为固定 argv，继承最小账号环境。bridge 只能断开自身 CDP 连接，不得关闭受管浏览器。`request_resume` 成功回执必须明确包含 `greeting_verified`（首次联系时）、`resume_requested` 及与批准目标一致的 `observed_external_id`。
+- 首次 `request_resume` 必须把文字发送和原生求简历拆开：发送后以选中 stable ID 下新增的精确己方消息作为成功回执，随后才允许求简历。缺少新增消息回执时任务进入 `waiting_human/external_result_uncertain`，不得自动重试或继续求简历。消息方向类既可能位于 `.message-item` 自身也可能位于后代，解析和回执必须兼容两种 DOM 形态。
+- 会话读取、打开、发送、消息回执、原生求简历和附件下载由本地 `boss_chat_bridge.mjs` 通过固定 CLI 包内的 `puppeteer-core` 执行；bridge 输入为 JSON stdin，Node/脚本/包根均为固定 argv，继承最小账号环境。bridge 只能断开自身 CDP 连接，不得关闭受管浏览器。`request_resume` 成功回执必须明确包含 `greeting_verified`（首次联系时）、`resume_requested`、`request_acknowledged` 及与批准目标一致的 `observed_external_id`；`request_acknowledged` 只接受原生求简历确认后的 BOSS 非遥测 2xx 响应或明确成功提示。
 
 ### 独立招聘任务详情与可恢复删除（W16，2026-08-27）
 

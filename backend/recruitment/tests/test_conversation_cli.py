@@ -69,9 +69,15 @@ class ConversationCliTests(SimpleTestCase):
         bridge.side_effect = [
             {"ok": True, "conversation": snapshot},
             {"ok": True, "conversation": selected},
-            {"ok": True, "receipt": {**selected, "sent": True, "verified": True}},
-            {"ok": True, "conversation": selected},
-            {"ok": True, "conversation": selected},
+            {"ok": True, "receipt": {
+                **selected,
+                "verified": True,
+                "greeting_verified": True,
+                "resume_requested": True,
+                "request_acknowledged": True,
+                "expected_external_id": "conversation-101",
+                "observed_external_id": "conversation-101",
+            }},
         ]
 
         self.runner.request_resume_by_external_id(
@@ -82,20 +88,45 @@ class ConversationCliTests(SimpleTestCase):
             job_title="测试工程师",
         )
 
-        commands = [call.args[0][1:] for call in run.call_args_list]
-        self.assertEqual(
-            commands,
-            [
-                ["send", "--text", "您好，方便发送一份简历吗？"],
-                ["action", "request-attachment-resume"],
-            ],
-        )
+        run.assert_not_called()
         operations = [call.args[1] for call in bridge.call_args_list]
-        self.assertEqual(operations, ["open", "selected", "wait_outgoing", "selected", "selected"])
-        wait_payload = bridge.call_args_list[2].args[2]
-        self.assertEqual(wait_payload["external_id"], "conversation-101")
-        self.assertEqual(wait_payload["message"], "您好，方便发送一份简历吗？")
-        self.assertEqual(wait_payload["previous_count"], 0)
+        self.assertEqual(operations, ["open", "selected", "request_resume"])
+        request_payload = bridge.call_args_list[2].args[2]
+        self.assertEqual(request_payload["external_id"], "conversation-101")
+        self.assertEqual(request_payload["message"], "您好，方便发送一份简历吗？")
+        self.assertEqual(request_payload["previous_count"], 0)
+        self.assertIs(request_payload["first_contact"], True)
+
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_stable_request_resume_rejects_receipt_without_native_ack(self, run, bridge):
+        selected = {
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+        }
+        bridge.side_effect = [
+            {"ok": True, "conversation": {**selected, "messages": []}},
+            {"ok": True, "conversation": selected},
+            {"ok": True, "receipt": {
+                **selected,
+                "verified": True,
+                "greeting_verified": True,
+                "resume_requested": True,
+                "observed_external_id": "conversation-101",
+            }},
+        ]
+
+        with self.assertRaises(BossCliError):
+            self.runner.request_resume_by_external_id(
+                self.account,
+                "conversation-101",
+                message="您好，方便发送一份简历吗？",
+                first_contact=True,
+                job_title="测试工程师",
+            )
+
+        run.assert_not_called()
 
     @patch.object(BossCliRunner, "_run_chat_bridge")
     @patch("recruitment.rpa.cli.subprocess.run")
@@ -127,8 +158,41 @@ class ConversationCliTests(SimpleTestCase):
                 job_title="测试工程师",
             )
 
-        commands = [call.args[0][1:] for call in run.call_args_list]
-        self.assertEqual(commands, [["send", "--text", "您好，方便发送一份简历吗？"]])
+        run.assert_not_called()
+
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_stable_send_text_uses_same_edge_session_and_requires_receipt(self, run, bridge):
+        snapshot = {
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+            "messages": [],
+        }
+        selected = {
+            "external_id": "conversation-101",
+            "name": "林然",
+            "job_title": "测试工程师",
+        }
+        bridge.side_effect = [
+            {"ok": True, "conversation": snapshot},
+            {"ok": True, "conversation": selected},
+            {"ok": True, "receipt": {**selected, "verified": True}},
+        ]
+
+        result = self.runner.send_text_by_external_id(
+            self.account,
+            "conversation-101",
+            "您好，方便发送一份简历吗？",
+            job_title="测试工程师",
+        )
+
+        run.assert_not_called()
+        self.assertTrue(result["sent"])
+        self.assertEqual(
+            [call.args[1] for call in bridge.call_args_list],
+            ["open", "selected", "send_text"],
+        )
 
     @patch.object(BossCliRunner, "_run_chat_bridge")
     def test_job_scoped_conversations_do_not_run_cli_list_first(self, bridge):

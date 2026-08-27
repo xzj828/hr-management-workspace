@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 
 from recruitment.management.commands.run_rpa_worker import execute_greet, execute_request_resume, execute_send_interview
@@ -122,6 +124,7 @@ class CommunicationWorkerTests(SimpleTestCase):
                 "verified": True,
                 "greeting_verified": first_contact,
                 "resume_requested": True,
+                "request_acknowledged": True,
                 "observed_external_id": external_id,
             }
 
@@ -139,6 +142,34 @@ class CommunicationWorkerTests(SimpleTestCase):
             runner.calls,
         )
 
+    @patch("recruitment.management.commands.run_rpa_worker.time.sleep")
+    def test_request_resume_rechecks_transient_empty_scoped_snapshot_before_action(self, sleep):
+        runner = FakeRunner()
+        snapshots = iter([
+            "",
+            "1. 林然｜产品经理｜external_id:boss-1｜未读 1",
+        ])
+        runner.conversations = lambda account, **kwargs: next(snapshots)
+
+        def stable_action(account, external_id, *, message="", first_contact=False, job_title=""):
+            return {
+                "verified": True,
+                "greeting_verified": first_contact,
+                "resume_requested": True,
+                "request_acknowledged": True,
+                "observed_external_id": external_id,
+            }
+
+        runner.request_resume_by_external_id = stable_action
+        outcome = execute_request_resume({"request_payload": {
+            "target": {"name": "林然", "external_id": "boss-1", "job_title": "产品经理"},
+            "message": "您好，方便发送一份简历吗？",
+            "first_contact": True,
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "succeeded")
+        sleep.assert_called_once_with(0.4)
+
     def test_request_resume_adapter_exception_is_never_retryable(self):
         runner = FakeRunner()
 
@@ -149,6 +180,25 @@ class CommunicationWorkerTests(SimpleTestCase):
 
         outcome = execute_request_resume({"request_payload": {
             "target": {"name": "林然", "external_id": "boss-1"},
+            "message": "您好，方便发送一份简历吗？",
+            "first_contact": True,
+        }}, self.account, runner)
+
+        self.assertEqual(outcome["status"], "waiting_human")
+        self.assertEqual(outcome["error_code"], "external_result_uncertain")
+
+    def test_request_resume_without_native_acknowledgement_is_waiting_human(self):
+        runner = FakeRunner()
+
+        runner.request_resume_by_external_id = lambda *args, **kwargs: {
+            "verified": True,
+            "greeting_verified": True,
+            "resume_requested": True,
+            "observed_external_id": "boss-1",
+        }
+
+        outcome = execute_request_resume({"request_payload": {
+            "target": {"name": "林然", "external_id": "boss-1", "job_title": "产品经理"},
             "message": "您好，方便发送一份简历吗？",
             "first_contact": True,
         }}, self.account, runner)

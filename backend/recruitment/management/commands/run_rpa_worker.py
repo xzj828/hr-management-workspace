@@ -296,16 +296,24 @@ def _verify_conversation_target(*, runner, account, target):
     if not name or not external_id:
         return None
     job_title = str(target.get("job_title", "")).strip()
-    rows = parse_conversation_list(runner.conversations(account, job_title=job_title))
-    matches = [
-        row for row in rows
-        if str(row.get("external_id", "")).strip() == external_id
-        and str(row.get("name", "")).strip() == name
-        and (not job_title or _normalize_job_title(row.get("job_title", "")) == _normalize_job_title(job_title))
-    ]
-    if len(matches) != 1:
-        return None
-    return matches[0]
+    for attempt in range(3):
+        rows = parse_conversation_list(runner.conversations(account, job_title=job_title))
+        matches = [
+            row for row in rows
+            if str(row.get("external_id", "")).strip() == external_id
+            and str(row.get("name", "")).strip() == name
+            and (not job_title or _normalize_job_title(row.get("job_title", "")) == _normalize_job_title(job_title))
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+        if attempt < 2:
+            # The BOSS SPA can replace the scoped list between its job label
+            # update and row render.  Repeat the read-only, stable-ID check;
+            # never retry after entering an external write adapter.
+            time.sleep(0.4)
+    return None
 
 
 def execute_greet(task, account, runner):
@@ -390,6 +398,7 @@ def execute_request_resume(task, account, runner):
         isinstance(receipt, dict)
         and receipt.get("verified") is True
         and receipt.get("resume_requested") is True
+        and receipt.get("request_acknowledged") is True
         and str(receipt.get("observed_external_id", "")).strip() == external_id
     )
     if bool(payload.get("first_contact", False)):
@@ -407,6 +416,7 @@ def execute_request_resume(task, account, runner):
             "verified": True,
             "greeting_verified": bool(receipt.get("greeting_verified", False)),
             "resume_requested": True,
+            "request_acknowledged": True,
             "target_name": name,
             "conversation_index": refreshed.get("index"),
             "expected_external_id": external_id,

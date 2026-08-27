@@ -603,10 +603,11 @@ class BossCliRunner:
     ):
         opened = self.open_chat_by_external_id(account, external_id, job_title=job_title)
         self._assert_selected_conversation(account, external_id, job_title=job_title)
+        normalized = str(message or "").strip()
+        previous_count = 0
         if first_contact:
             from recruitment.rpa.conversations import parse_chat_messages
 
-            normalized = str(message or "").strip()
             if not normalized or len(normalized) > 1000 or "\n" in normalized or "\r" in normalized:
                 raise BossCliError("首次联系求简历必须提供 1 到 1000 个字符的单行话术")
             previous_count = sum(
@@ -614,38 +615,28 @@ class BossCliRunner:
                 if item.get("direction") == "hr"
                 and " ".join(str(item.get("content", "")).split()).strip() == normalized
             )
-            self._run(
-                ["send", "--text", normalized],
-                env=self._account_env(account),
-                timeout_seconds=120,
-            )
-            receipt = self._run_chat_bridge(
-                account,
-                "wait_outgoing",
-                {
-                    "external_id": str(external_id),
-                    "job_title": str(job_title),
-                    "message": normalized,
-                    "previous_count": previous_count,
-                },
-            )
-            if not isinstance(receipt.get("receipt"), dict) or receipt["receipt"].get("verified") is not True:
-                raise BossCliError("发送后未确认聊天区出现新的己方消息")
-            self._assert_selected_conversation(account, external_id, job_title=job_title)
-        action = self._run(
-            ["action", "request-attachment-resume"],
-            env=self._account_env(account),
-            timeout_seconds=120,
+        response = self._run_chat_bridge(
+            account,
+            "request_resume",
+            {
+                "external_id": str(external_id),
+                "job_title": str(job_title),
+                "message": normalized,
+                "previous_count": previous_count,
+                "first_contact": bool(first_contact),
+            },
         )
-        selected = self._assert_selected_conversation(account, external_id, job_title=job_title)
-        return {
-            "verified": True,
-            "greeting_verified": bool(first_contact),
-            "resume_requested": True,
-            "expected_external_id": str(external_id),
-            "observed_external_id": str(selected.get("external_id", "")),
-            "adapter_output": action.stdout.strip()[:500],
-        }
+        receipt = response.get("receipt") if isinstance(response, dict) else None
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("verified") is not True
+            or receipt.get("greeting_verified") is not True
+            or receipt.get("resume_requested") is not True
+            or receipt.get("request_acknowledged") is not True
+            or str(receipt.get("observed_external_id", "")) != str(external_id)
+        ):
+            raise BossCliError("未能确认已向目标候选人打招呼并发出求简历请求")
+        return receipt
 
     def send_text_by_external_id(self, account, external_id, message, *, job_title=""):
         from recruitment.rpa.conversations import parse_chat_messages
@@ -660,12 +651,9 @@ class BossCliRunner:
             if item.get("direction") == "hr"
             and " ".join(str(item.get("content", "")).split()).strip() == normalized
         )
-        result = self._run(
-            ["send", "--text", normalized], env=self._account_env(account), timeout_seconds=120
-        )
-        receipt = self._run_chat_bridge(
+        response = self._run_chat_bridge(
             account,
-            "wait_outgoing",
+            "send_text",
             {
                 "external_id": str(external_id),
                 "job_title": str(job_title),
@@ -673,16 +661,18 @@ class BossCliRunner:
                 "previous_count": previous_count,
             },
         )
-        confirmed = receipt.get("receipt") if isinstance(receipt, dict) else None
-        if not isinstance(confirmed, dict) or confirmed.get("verified") is not True:
+        confirmed = response.get("receipt") if isinstance(response, dict) else None
+        if (
+            not isinstance(confirmed, dict)
+            or confirmed.get("verified") is not True
+            or str(confirmed.get("external_id", "")) != str(external_id)
+        ):
             raise BossCliError("发送后未确认聊天区出现新的己方消息")
-        selected = self._assert_selected_conversation(account, external_id, job_title=job_title)
         return {
             "sent": True,
             "verified": True,
             "expected_external_id": str(external_id),
-            "observed_external_id": str(selected.get("external_id", "")),
-            "adapter_output": result.stdout.strip()[:500],
+            "observed_external_id": str(confirmed.get("external_id", "")),
         }
 
     def download_resume_attachments(

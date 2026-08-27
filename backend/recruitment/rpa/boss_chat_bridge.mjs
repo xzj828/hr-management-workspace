@@ -59,13 +59,26 @@ async function existingBossPage(browser) {
 }
 
 async function chatPage(browser) {
-  const page = await existingBossPage(browser);
-  if (!page.url().startsWith(CHAT_URL)) {
-    await page.goto(CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const page = await existingBossPage(browser);
+    try {
+      if (!page.url().startsWith(CHAT_URL)) {
+        await page.goto(CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      }
+      await page.waitForFunction(
+        `Boolean(document.querySelector('.chat-top-job .chat-select-job'))
+          && Boolean(document.querySelector('.chat-message-filter-left'))`,
+        { timeout: 20_000 },
+      );
+      return page;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
   }
-  await page.waitForSelector(".chat-top-job .chat-select-job", { timeout: 15_000 });
-  await page.waitForSelector(".chat-message-filter-left", { timeout: 15_000 });
-  return page;
+  throw lastError;
 }
 
 async function selectScope(page, jobTitle, unread) {
@@ -78,7 +91,6 @@ async function selectScope(page, jobTitle, unread) {
     const opened = await page.evaluate(() => {
       const matches = Array.from(document.querySelectorAll(".chat-top-job .chat-select-job"));
       if (matches.length !== 1) return false;
-      matches[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       matches[0].click();
       return true;
     });
@@ -92,7 +104,6 @@ async function selectScope(page, jobTitle, unread) {
       const matches = items.filter((item) => (item.textContent ?? "")
         .replace(/\s+/g, " ").trim().split(/\s+_\s+/, 1)[0].trim() === expected);
       if (matches.length !== 1) return false;
-      matches[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       matches[0].click();
       return true;
     }, expectedJob);
@@ -156,7 +167,6 @@ async function selectScope(page, jobTitle, unread) {
           || tab.getAttribute("aria-selected") === "true"
           || Boolean(tab.closest(".active, .selected, .current, .checked"));
         if (!selected) {
-          tab.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
           tab.click();
         }
         return true;
@@ -235,19 +245,21 @@ async function currentMessages(page) {
     for (const item of list.querySelectorAll(".message-item")) {
       const time = norm(item.querySelector(".message-time .time")?.textContent);
       if (time) currentTime = time;
-      const friend = item.querySelector(".item-friend");
-      const mine = item.querySelector(".item-myself");
-      const system = item.querySelector(".item-system");
+      const friend = item.matches(".item-friend") ? item : item.querySelector(".item-friend");
+      const mine = item.matches(".item-myself") ? item : item.querySelector(".item-myself");
+      const system = item.matches(".item-system") ? item : item.querySelector(".item-system");
       let direction = "";
       let content = "";
       if (friend) {
         direction = "candidate";
-        content = norm(friend.querySelector(".text > span")?.textContent)
+        content = norm(friend.querySelector(".text-content")?.textContent)
+          || norm(friend.querySelector(".text > span")?.textContent)
           || norm(friend.querySelector(".message-card-top-title")?.textContent)
           || norm(friend.querySelector(".text")?.textContent);
       } else if (mine) {
         direction = "hr";
-        content = norm(mine.querySelector(".text span")?.textContent)
+        content = norm(mine.querySelector(".text-content")?.textContent)
+          || norm(mine.querySelector(".text span")?.textContent)
           || norm(mine.querySelector(".text")?.textContent);
       } else if (system) {
         direction = "system";
@@ -288,8 +300,17 @@ async function openConversation(page, request) {
   const matches = rows.filter((row) => row.external_id === externalId && row.job_title === expectedJob);
   if (matches.length !== 1) throw new Error("所选职位范围内无法唯一定位批准的 BOSS 会话");
   const target = matches[0];
-  const handles = await page.$$(".geek-item");
-  await handles[target.index - 1].click();
+  const current = await selectedConversation(page);
+  const alreadyOpen = current
+    && current.external_id === externalId
+    && current.name === target.name
+    && current.job_title === expectedJob
+    && current.detail_name === target.name
+    && current.editor_ready;
+  if (!alreadyOpen) {
+    const handles = await page.$$(".geek-item");
+    await handles[target.index - 1].click();
+  }
   await page.waitForFunction(
     `(target) => {
       const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
@@ -310,6 +331,26 @@ async function openConversation(page, request) {
       return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
     })`,
     { timeout: 15_000 },
+  );
+  await page.waitForFunction(
+    `(externalId) => {
+      const lists = Array.from(document.querySelectorAll('.chat-message-list')).filter((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      });
+      const list = lists[lists.length - 1];
+      if (!list) return false;
+      const count = list.querySelectorAll('.message-item').length;
+      const key = externalId + ':' + count;
+      const now = Date.now();
+      const previous = window.__ximingMessageListStable;
+      if (previous?.key === key && now - previous.since >= (count > 0 ? 500 : 5000)) return true;
+      window.__ximingMessageListStable = { key, since: now };
+      return false;
+    }`,
+    { timeout: 15_000 },
+    externalId,
   );
   return { ...target, selected: true, messages: await currentMessages(page) };
 }
@@ -347,15 +388,184 @@ async function waitForOutgoing(page, request) {
       });
       const list = lists[lists.length - 1];
       if (!list) return false;
-      const messages = Array.from(list.querySelectorAll(
-        '.message-item .item-myself .text span'
-      )).map((item) => norm(item.textContent));
+      const messages = Array.from(list.querySelectorAll('.message-item.item-myself, .message-item .item-myself')).map((item) =>
+        norm(item.querySelector('.text-content')?.textContent)
+          || norm(item.querySelector('.text')?.textContent)
+          || norm(item.textContent)
+      );
       return messages.filter((value) => value === expected.message).length > expected.previousCount;
     }`,
     { timeout: 15_000 },
     { externalId, jobTitle: expectedJob, message, previousCount },
   );
   return { ...(await verifySelected(page, request)), sent: true, verified: true };
+}
+
+async function sendText(page, request) {
+  await verifySelected(page, request);
+  const message = requireText(request.message, "发送内容", 1000);
+  const previousCount = Number.parseInt(request.previous_count, 10);
+  if (!Number.isInteger(previousCount) || previousCount < 0) throw new Error("发送回执基线无效");
+  const editor = await page.$("#boss-chat-editor-input");
+  if (!editor) throw new Error("未找到 BOSS 聊天输入框");
+  await editor.click();
+  await page.keyboard.down("Control");
+  await page.keyboard.press("KeyA");
+  await page.keyboard.up("Control");
+  await page.keyboard.press("Backspace");
+  await editor.type(message, { delay: 35 });
+  await page.keyboard.press("Enter");
+  const receipt = await waitForOutgoing(page, {
+    ...request,
+    message,
+    previous_count: previousCount,
+  });
+  return receipt;
+}
+
+async function requestResume(page, request) {
+  await verifySelected(page, request);
+  const modalAlreadyOpen = await page.evaluate(() => {
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
+    return Array.from(document.querySelectorAll(".exchange-tooltip"))
+      .some((tip) => visible(tip) && norm(tip.textContent).includes("索取简历"));
+  });
+  const availability = modalAlreadyOpen ? { found: true, available: true } : await page.evaluate(() => {
+    const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
+    const items = Array.from(document.querySelectorAll(
+      ".operate-exchange-left .operate-icon-item, .operate-icon-item",
+    ));
+    const matches = items.filter((item) => norm(item.querySelector(".operate-btn")?.textContent)
+      .includes("求简历"));
+    if (matches.length !== 1) return { found: false, available: false };
+    const target = matches[0];
+    const button = target.querySelector(".operate-btn");
+    const className = `${String(target.className ?? "")} ${String(button?.className ?? "")}`;
+    const disabled = /disabled|forbid|ban/i.test(className)
+      || button?.getAttribute("disabled") !== null;
+    if (!disabled) (button instanceof HTMLElement ? button : target).click();
+    return { found: true, available: !disabled };
+  });
+  if (!availability.found) throw new Error("未找到 BOSS“求简历”按钮");
+  if (!availability.available) throw new Error("当前 BOSS“求简历”按钮不可用");
+  await page.waitForFunction(
+    `() => {
+      const visible = (element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const norm = (value) => (value ?? '').replace(/\\s+/g, '').trim();
+      return Array.from(document.querySelectorAll('.exchange-tooltip')).some((tip) =>
+        visible(tip) && norm(tip.textContent).includes('索取简历')
+          && Boolean(tip.querySelector('.btn-box .boss-btn-primary'))
+      );
+    }`,
+    { timeout: 12_000 },
+  );
+  const tips = await page.$$(".exchange-tooltip");
+  let confirmButton = null;
+  for (const tip of tips) {
+    const matches = await tip.evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
+      return style.display !== "none" && style.visibility !== "hidden"
+        && rect.width > 0 && rect.height > 0 && norm(element.textContent).includes("索取简历");
+    });
+    if (!matches) continue;
+    const candidates = await tip.$$(".btn-box .boss-btn-primary");
+    if (candidates.length === 1) {
+      const candidate = candidates[0];
+      confirmButton = candidate;
+      break;
+    }
+  }
+  if (!confirmButton) throw new Error("BOSS 求简历确认弹窗未能确认");
+  const responseTasks = [];
+  const onResponse = (response) => {
+    if (response.request().method() !== "POST") return;
+    try {
+      const pathName = new URL(response.url()).pathname;
+      responseTasks.push((async () => {
+        const body = await response.json().catch(() => null);
+        return {
+          path: pathName,
+          status: response.status(),
+          code: body && Object.hasOwn(body, "code") ? body.code : null,
+        };
+      })());
+    } catch {
+      // Ignore malformed browser resource URLs.
+    }
+  };
+  page.on("response", onResponse);
+  await page.evaluate(() => {
+    window.__ximingResumeSignals = [];
+    window.__ximingResumeObserver?.disconnect();
+    window.__ximingResumeObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+          if (text && text.length <= 100 && /简历|成功|已发送|已发出|失败|错误|频繁/.test(text)) {
+            window.__ximingResumeSignals.push(text);
+          }
+        }
+      }
+    });
+    window.__ximingResumeObserver.observe(document.body, { childList: true, subtree: true });
+  });
+  await confirmButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  page.off("response", onResponse);
+  const observedResponses = await Promise.all(responseTasks);
+  const signals = await page.evaluate(() => {
+    window.__ximingResumeObserver?.disconnect();
+    return Array.from(new Set(window.__ximingResumeSignals ?? []));
+  });
+  const negativeSignal = signals.find((text) => /失败|错误|频繁/.test(text));
+  if (negativeSignal) throw new Error(`BOSS 求简历失败：${negativeSignal}`);
+  const positiveSignal = signals.find((text) => /成功|已发送|已发出/.test(text));
+  const nativeResponses = observedResponses.filter((item) => item.path === "/wapi/zpchat/exchange/test");
+  const failedResponse = nativeResponses.find((item) =>
+    item.status < 200 || item.status >= 300 || (item.code !== null && ![0, "0"].includes(item.code)));
+  if (failedResponse) throw new Error("BOSS 求简历接口返回失败");
+  const acknowledgement = nativeResponses.find((item) =>
+    item.status >= 200 && item.status < 300 && (item.code === null || [0, "0"].includes(item.code)));
+  if (!positiveSignal && !acknowledgement) {
+    const observed = observedResponses.map((item) => `${item.path}:${item.status}`).join(",") || "none";
+    throw new Error(`BOSS 求简历未返回可验证回执（POST=${observed}）`);
+  }
+  await page.waitForFunction(
+    `() => {
+      const visible = (element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const norm = (value) => (value ?? '').replace(/\\s+/g, '').trim();
+      const modalOpen = Array.from(document.querySelectorAll('.exchange-tooltip'))
+        .some((tip) => visible(tip) && norm(tip.textContent).includes('索取简历'));
+      return !modalOpen;
+    }`,
+    { timeout: 12_000 },
+  );
+  return {
+    ...(await verifySelected(page, request)),
+    resume_requested: true,
+    request_acknowledged: true,
+    response_status: acknowledgement?.status ?? 0,
+    response_path: acknowledgement?.path ?? "ui-signal",
+    verified: true,
+  };
 }
 
 async function waitForDownloadedPdf(directory, previousNames, timeoutMs) {
@@ -406,7 +616,9 @@ async function downloadAttachments(page, browser, request) {
   });
   const visibleListElement = visibleList.asElement();
   if (!visibleListElement) throw new Error("未找到当前 BOSS 聊天消息区");
-  const cards = await visibleListElement.$$(".message-item .item-friend .resume-icon");
+  const cards = await visibleListElement.$$(
+    ".message-item.item-friend .resume-icon, .message-item .item-friend .resume-icon",
+  );
   const downloaded = [];
   for (const card of cards.slice(0, 10)) {
     const messageItem = await card.evaluateHandle((element) => element.closest(".message-item"));
@@ -430,78 +642,6 @@ async function downloadAttachments(page, browser, request) {
 
 async function execute(page, browser, request) {
   switch (request.operation) {
-    case "diagnostic_click_job_filter": {
-      await page.click(".chat-top-job .chat-select-job");
-      await page.waitForFunction(
-        `document.querySelectorAll('.chat-top-job .ui-dropmenu-list li').length > 0`,
-        { timeout: 10_000 },
-      );
-      const optionCount = await page.$$eval(
-        ".chat-top-job .ui-dropmenu-list li",
-        (items) => items.length,
-      );
-      return { option_count: optionCount };
-    }
-    case "diagnostic_select_job": {
-      const expectedJob = requireText(normalizeJob(request.job_title), "BOSS 沟通职位筛选值", 120);
-      const options = await page.$$(".chat-top-job .ui-dropmenu-list li");
-      const optionTitles = await page.$$eval(
-        ".chat-top-job .ui-dropmenu-list li",
-        (items) => items.map((item) => (item.textContent ?? "").replace(/\s+/g, " ").trim().split(/\s+_\s+/, 1)[0].trim()),
-      );
-      const matchingIndexes = optionTitles
-        .map((title, index) => ({ title, index }))
-        .filter((item) => item.title === expectedJob)
-        .map((item) => item.index);
-      if (matchingIndexes.length !== 1) throw new Error("BOSS 沟通职位无法精确唯一匹配");
-      await options[matchingIndexes[0]].click();
-      await page.waitForFunction(
-        `(expected) => {
-          const value = (document.querySelector('.chat-top-job .chat-select-job')?.textContent ?? '')
-            .replace(/\\s+/g, ' ').trim().split(/\\s+_\\s+/, 1)[0].trim();
-          return value === expected;
-        }`,
-        { timeout: 15_000 },
-        expectedJob,
-      );
-      return { selected_job: expectedJob };
-    }
-    case "diagnostic_select_unread": {
-      const tabs = await page.$$(".chat-message-filter-left span");
-      const tabLabels = await page.$$eval(
-        ".chat-message-filter-left span",
-        (items) => items.map((item) => (item.textContent ?? "").replace(/\s+/g, " ").trim()),
-      );
-      const matchingIndexes = tabLabels
-        .map((label, index) => ({ label, index }))
-        .filter((item) => item.label === "未读")
-        .map((item) => item.index);
-      if (matchingIndexes.length !== 1) throw new Error("未找到 BOSS 沟通“未读”筛选");
-      await tabs[matchingIndexes[0]].click();
-      await page.waitForFunction(
-        `() => {
-          const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
-          const tabs = Array.from(document.querySelectorAll('.chat-message-filter-left span'));
-          const tab = tabs.find((item) => norm(item.textContent) === '未读');
-          return Boolean(tab && /(active|selected|current|checked)/.test(String(tab.className ?? '')));
-        }`,
-        { timeout: 10_000 },
-      );
-      return { unread_selected: true };
-    }
-    case "diagnostic_filter_match": {
-      const expected = request.unread ? "未读" : "全部";
-      const matches = await page.$$eval(
-        ".chat-message-filter-left span",
-        (items, label) => items.map((item, index) => ({
-          index,
-          text: (item.textContent ?? "").replace(/\s+/g, " ").trim(),
-          matches: (item.textContent ?? "").replace(/\s+/g, "").includes(label),
-        })),
-        expected,
-      );
-      return { expected, matches };
-    }
     case "list": {
       if (request.job_title) await selectScope(page, request.job_title, Boolean(request.unread));
       const rows = await conversationRows(page);
@@ -514,6 +654,22 @@ async function execute(page, browser, request) {
       return { conversation: await verifySelected(page, request) };
     case "wait_outgoing":
       return { receipt: await waitForOutgoing(page, request) };
+    case "send_text":
+      return { receipt: await sendText(page, request) };
+    case "request_resume": {
+      let greeting = null;
+      if (request.first_contact) greeting = await sendText(page, request);
+      const requested = await requestResume(page, request);
+      return {
+        receipt: {
+          ...requested,
+          greeting_verified: request.first_contact ? greeting?.verified === true : true,
+          resume_requested: true,
+          expected_external_id: String(request.external_id ?? ""),
+          observed_external_id: String(requested.external_id ?? ""),
+        },
+      };
+    }
     case "download_attachments":
       return { attachments: await downloadAttachments(page, browser, request) };
     default:
@@ -538,26 +694,6 @@ try {
   if (request.operation === "ping") {
     process.stdout.write(JSON.stringify({ ok: true, connected: true }));
     process.exitCode = 0;
-  } else if (request.operation === "inspect_page") {
-    const page = await existingBossPage(browser);
-    const snapshot = await page.evaluate(() => ({
-      url: window.location.href,
-      title: document.title,
-      job_filter_count: document.querySelectorAll(".chat-top-job .chat-select-job").length,
-      message_filter_count: document.querySelectorAll(".chat-message-filter-left").length,
-      conversation_count: document.querySelectorAll(".geek-item").length,
-      filter_labels: Array.from(document.querySelectorAll(".chat-message-filter-left span"))
-        .map((element) => (element.textContent ?? "").replace(/\s+/g, " ").trim()),
-      filter_nodes: Array.from(document.querySelectorAll(".chat-message-filter-left span"))
-        .map((element) => ({
-          label: (element.textContent ?? "").replace(/\s+/g, " ").trim(),
-          class_name: String(element.className ?? ""),
-          child_span_count: element.querySelectorAll("span").length,
-        })),
-      current_job: (document.querySelector(".chat-top-job .chat-select-job")?.textContent ?? "")
-        .replace(/\s+/g, " ").trim(),
-    }));
-    process.stdout.write(JSON.stringify({ ok: true, snapshot }));
   } else {
     const page = await chatPage(browser);
     const result = await execute(page, browser, request);
