@@ -129,6 +129,17 @@ async function selectScope(page, jobTitle, unread) {
   }
 
   const filterLabel = unread ? "未读" : "全部";
+  await page.waitForFunction(
+    `(expected) => {
+      const container = document.querySelector('.chat-message-filter-left');
+      if (!container) return false;
+      const labels = Array.from(container.querySelectorAll('span'))
+        .map((item) => (item.textContent ?? '').replace(/\\s+/g, ''));
+      return labels.length >= 2 && labels.some((label) => label.includes(expected));
+    }`,
+    { timeout: 15_000 },
+    filterLabel,
+  );
   const tabMatch = await page.$$eval(
     ".chat-message-filter-left span",
     (items, expected) => items
@@ -136,12 +147,16 @@ async function selectScope(page, jobTitle, unread) {
         index,
         label: (item.textContent ?? "").replace(/\s+/g, " ").trim(),
         className: String(item.className ?? ""),
+        selected: item.getAttribute("aria-selected") === "true"
+          || Boolean(item.closest(".active, .selected, .current, .checked")),
       }))
-      .filter((item) => item.label === expected),
+      .filter((item) => item.label.replace(/\s+/g, "").includes(expected)),
     filterLabel,
   );
-  if (tabMatch.length !== 1) throw new Error(`未找到 BOSS 沟通“${filterLabel}”筛选`);
-  if (!/(active|selected|current|checked)/.test(tabMatch[0].className)) {
+  if (tabMatch.length !== 1) {
+    throw new Error(`未找到 BOSS 沟通“${filterLabel}”筛选（匹配数 ${tabMatch.length}）`);
+  }
+  if (!tabMatch[0].selected && !/(active|selected|current|checked)/.test(tabMatch[0].className)) {
     const tabs = await page.$$(".chat-message-filter-left span");
     await tabs[tabMatch[0].index].click();
   }
@@ -150,8 +165,13 @@ async function selectScope(page, jobTitle, unread) {
     `(scope) => {
       const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
       const tabs = Array.from(document.querySelectorAll('.chat-message-filter-left span'));
-      const tab = tabs.find((item) => norm(item.textContent) === scope.filter);
-      if (!tab || !/(active|selected|current|checked)/.test(String(tab.className ?? ''))) return false;
+      const tab = tabs.find((item) => norm(item.textContent).replace(/\s+/g, '').includes(scope.filter));
+      const selected = tab && (
+        /(active|selected|current|checked)/.test(String(tab.className ?? ''))
+        || tab.getAttribute('aria-selected') === 'true'
+        || Boolean(tab.closest('.active, .selected, .current, .checked'))
+      );
+      if (!selected) return false;
       const rows = Array.from(document.querySelectorAll('.geek-item'));
       if (!rows.length) {
         const key = scope.job + ':' + scope.filter;
@@ -462,6 +482,19 @@ async function execute(page, browser, request) {
       );
       return { unread_selected: true };
     }
+    case "diagnostic_filter_match": {
+      const expected = request.unread ? "未读" : "全部";
+      const matches = await page.$$eval(
+        ".chat-message-filter-left span",
+        (items, label) => items.map((item, index) => ({
+          index,
+          text: (item.textContent ?? "").replace(/\s+/g, " ").trim(),
+          matches: (item.textContent ?? "").replace(/\s+/g, "").includes(label),
+        })),
+        expected,
+      );
+      return { expected, matches };
+    }
     case "list": {
       if (request.job_title) await selectScope(page, request.job_title, Boolean(request.unread));
       const rows = await conversationRows(page);
@@ -506,6 +539,14 @@ try {
       job_filter_count: document.querySelectorAll(".chat-top-job .chat-select-job").length,
       message_filter_count: document.querySelectorAll(".chat-message-filter-left").length,
       conversation_count: document.querySelectorAll(".geek-item").length,
+      filter_labels: Array.from(document.querySelectorAll(".chat-message-filter-left span"))
+        .map((element) => (element.textContent ?? "").replace(/\s+/g, " ").trim()),
+      filter_nodes: Array.from(document.querySelectorAll(".chat-message-filter-left span"))
+        .map((element) => ({
+          label: (element.textContent ?? "").replace(/\s+/g, " ").trim(),
+          class_name: String(element.className ?? ""),
+          child_span_count: element.querySelectorAll("span").length,
+        })),
       current_job: (document.querySelector(".chat-top-job .chat-select-job")?.textContent ?? "")
         .replace(/\s+/g, " ").trim(),
     }));
