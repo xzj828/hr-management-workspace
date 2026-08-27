@@ -358,7 +358,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="task-detail-actions">
-          <RouterLink class="task-button is-primary" :to="{ name: 'recruitment-workbench', query: { new: '1' } }"><AppIcon name="plus" :size="14" />继续创建任务</RouterLink>
+          <RouterLink class="task-button" :to="{ name: 'recruitment-workbench', query: { new: '1' } }"><AppIcon name="plus" :size="15" />继续创建任务</RouterLink>
           <button v-if="active" class="task-button" type="button" :disabled="Boolean(busy)" data-test="stop-modify-task" @click="modifyPlan">{{ busy === 'stop' ? '正在停止…' : '停止并修改' }}</button>
           <button v-if="active || state === 'paused'" class="task-button is-danger" type="button" :disabled="Boolean(busy)" data-test="stop-task" @click="controlPlan('stop')">{{ busy === 'stop' ? '正在停止…' : '停止任务' }}</button>
           <button v-if="state === 'paused'" class="task-button" type="button" :disabled="Boolean(busy)" data-test="resume-task" @click="controlPlan('resume')">{{ busy === 'resume' ? '正在继续…' : '继续任务' }}</button>
@@ -414,7 +414,7 @@ onUnmounted(() => {
 
 <style scoped>
 .task-detail {
-  --task-font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --task-font-family: var(--app-font-family);
   --task-ink: #0f172a;
   --task-slate: #334155;
   --task-muted: #64748b;
@@ -428,11 +428,11 @@ onUnmounted(() => {
   --task-warning-soft: #fff7e3;
   --task-danger: #dc4a4a;
   --task-danger-soft: #fff0f2;
-  --task-space-1: clamp(.25rem, .2rem + .09cqi, .375rem);
-  --task-space-2: clamp(.5rem, .25rem + .3cqi, .75rem);
-  --task-space-3: clamp(.75rem, .4rem + .42cqi, 1rem);
-  --task-space-4: clamp(1rem, .55rem + .55cqi, 1.375rem);
-  --task-space-5: clamp(1.375rem, .75rem + .75cqi, 1.875rem);
+  --task-space-1: clamp(.3rem, .2rem + .1cqi, .45rem);
+  --task-space-2: clamp(.55rem, .3rem + .3cqi, .85rem);
+  --task-space-3: clamp(.8rem, .45rem + .42cqi, 1.1rem);
+  --task-space-4: clamp(1.1rem, .6rem + .55cqi, 1.5rem);
+  --task-space-5: clamp(1.5rem, .8rem + .75cqi, 2.1rem);
   --task-radius-control: clamp(.5625rem, .48rem + .06cqi, .75rem);
   --task-radius-panel: clamp(.9375rem, .78rem + .12cqi, 1.25rem);
   --task-transition: 180ms ease;
@@ -449,13 +449,13 @@ onUnmounted(() => {
 .task-detail *, .task-detail *::before, .task-detail *::after { box-sizing: border-box; }
 .task-detail-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--task-space-5); }
 .task-detail-heading { display: grid; gap: var(--task-space-3); min-width: 0; }
-.task-detail-heading nav { display: flex; align-items: center; gap: var(--task-space-2); color: var(--task-muted); font-size: 12px; }
+.task-detail-heading nav { display: flex; align-items: center; gap: var(--task-space-2); color: var(--task-muted); font-size: clamp(13px, .35rem + .45cqi, 16px); }
 .task-detail-heading nav a { display: inline-flex; align-items: center; gap: 3px; color: var(--task-brand-dark); font-weight: 700; text-decoration: none; }
 .task-detail-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--task-space-4); }
 .task-detail-title-row > div { min-width: 0; }
-.task-detail-title-row h2 { margin: 0; color: var(--task-ink); font-size: clamp(1.6875rem, .8rem + 1cqi, 2.5rem); letter-spacing: -.025em; }
-.task-detail-title-row p { margin: var(--task-space-1) 0 0; color: var(--task-muted); font-size: clamp(.8125rem, .2rem + .65cqi, 1.125rem); }
-.task-state { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 11px; border-radius: 999px; color: var(--task-slate); background: var(--task-soft); font-size: 12px; font-weight: 800; }
+.task-detail-title-row h2 { margin: 0; color: var(--task-ink); font-size: clamp(2rem, 1.05rem + 1.15cqi, 2.75rem); letter-spacing: -.03em; }
+.task-detail-title-row p { margin: var(--task-space-1) 0 0; color: var(--task-muted); font-size: clamp(14px, .35rem + .55cqi, 18px); }
+.task-state { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 13px; border-radius: 999px; color: var(--task-slate); background: var(--task-soft); font-size: clamp(12px, .35rem + .4cqi, 15px); font-weight: 800; }
 .task-state i { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }
 .task-state.is-running, .task-state.is-starting, .task-state.is-completed { color: var(--task-brand-dark); background: var(--task-brand-soft); }
 .task-state.is-running i, .task-state.is-starting i, .task-state.is-completed i { background: var(--task-brand); }
@@ -464,8 +464,9 @@ onUnmounted(() => {
 .task-state.is-failed { color: #b42332; background: var(--task-danger-soft); }
 .task-state.is-failed i { background: var(--task-danger); }
 .task-detail-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--task-space-2); }
-.task-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 0 13px; border: 1px solid var(--task-line); border-radius: var(--task-radius-control); color: var(--task-slate); background: var(--task-paper); font: 700 12px/1.3 var(--task-font-family); text-decoration: none; transition: border-color var(--task-transition), background var(--task-transition), color var(--task-transition); }
+.task-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: clamp(44px, 2.25rem + .75cqi, 52px); padding: 0 clamp(15px, .8rem + .35cqi, 20px); border: 1px solid #cdd9d8; border-radius: var(--task-radius-control); color: var(--task-slate); background: var(--task-paper); font: 750 clamp(14px, .4rem + .45cqi, 16px)/1.3 var(--task-font-family); text-decoration: none; transition: border-color var(--task-transition), background var(--task-transition), color var(--task-transition), transform var(--task-transition); }
 .task-button:not(:disabled):hover { border-color: #9bd3cc; color: var(--task-brand-dark); background: var(--task-brand-soft); }
+.task-button:not(:disabled):active { transform: translateY(1px); }
 .task-button.is-primary { color: white; border-color: var(--task-brand); background: var(--task-brand); }
 .task-button.is-primary:not(:disabled):hover { color: white; border-color: var(--task-brand-dark); background: var(--task-brand-dark); }
 .task-button.is-danger { color: #b42332; border-color: #f3c9cf; background: var(--task-danger-soft); }
@@ -473,30 +474,30 @@ onUnmounted(() => {
 .task-button:disabled { cursor: wait; opacity: .55; }
 .task-button:focus-visible, .task-detail a:focus-visible, .task-detail button:focus-visible { outline: 2px solid var(--task-brand); outline-offset: 2px; }
 .task-detail-card { min-width: 0; overflow: hidden; background: var(--task-paper); border: 1px solid var(--task-line); border-radius: var(--task-radius-panel); box-shadow: 0 1px 2px rgba(15, 23, 42, .025); }
-.task-status-card { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(360px, .9fr); align-items: center; gap: var(--task-space-5); padding: var(--task-space-4) var(--task-space-5); border-left: 4px solid #94a3b8; }
+.task-status-card { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(440px, 1fr); align-items: center; gap: var(--task-space-5); padding: clamp(22px, 1.1rem + .65cqi, 32px) var(--task-space-5); border-left: 4px solid #94a3b8; }
 .task-status-card.is-running, .task-status-card.is-starting, .task-status-card.is-completed { border-left-color: var(--task-brand); }
 .task-status-card.is-waiting_human, .task-status-card.is-paused, .task-status-card.is-pausing, .task-status-card.is-stopping { border-left-color: var(--task-warning); }
 .task-status-card.is-failed { border-left-color: var(--task-danger); }
 .task-status-card > div { display: grid; gap: var(--task-space-1); }
-.task-status-card span, .task-status-card dt { color: var(--task-muted); font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.task-status-card strong { font-size: 17px; }
-.task-status-card p { margin: 0; color: var(--task-slate); font-size: 13px; line-height: 1.6; }
+.task-status-card span, .task-status-card dt { color: var(--task-muted); font-size: clamp(12px, .35rem + .36cqi, 14px); font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.task-status-card strong { font-size: clamp(19px, .8rem + .55cqi, 24px); }
+.task-status-card p { margin: 0; color: var(--task-slate); font-size: clamp(14px, .35rem + .5cqi, 17px); line-height: 1.65; }
 .task-status-card dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--task-space-3); margin: 0; }
 .task-status-card dl div { display: grid; gap: var(--task-space-1); min-width: 0; }
-.task-status-card dd { margin: 0; overflow: hidden; color: var(--task-ink); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.task-status-card dd { margin: 0; overflow: hidden; color: var(--task-ink); font-size: clamp(13px, .35rem + .42cqi, 16px); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .task-approval-inbox { display: grid; gap: var(--task-space-3); padding: var(--task-space-4) var(--task-space-5); border-left: 4px solid var(--task-warning); }
 .task-approval-inbox > header { display: flex; align-items: center; gap: var(--task-space-3); }
 .task-approval-inbox > header > span { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 10px; color: #9a5b08; background: var(--task-warning-soft); }
 .task-approval-inbox > header > div, .task-approval-inbox article > div { display: grid; gap: 2px; min-width: 0; }
-.task-approval-inbox > header strong, .task-approval-inbox article strong { color: var(--task-ink); font-size: 13px; }
-.task-approval-inbox > header small, .task-approval-inbox article small, .task-approval-inbox > p { margin: 0; color: var(--task-muted); font-size: 12px; line-height: 1.5; }
+.task-approval-inbox > header strong, .task-approval-inbox article strong { color: var(--task-ink); font-size: clamp(14px, .35rem + .45cqi, 17px); }
+.task-approval-inbox > header small, .task-approval-inbox article small, .task-approval-inbox > p { margin: 0; color: var(--task-muted); font-size: clamp(13px, .35rem + .4cqi, 15px); line-height: 1.55; }
 .task-approval-inbox > header em { margin-left: auto; padding: 3px 8px; border-radius: 999px; color: #9a5b08; background: var(--task-warning-soft); font-size: 11px; font-style: normal; font-weight: 800; }
 .task-approval-inbox article { display: grid; grid-template-columns: minmax(150px, .55fr) minmax(240px, 1.25fr) auto; align-items: center; gap: var(--task-space-4); padding-top: var(--task-space-3); border-top: 1px solid var(--task-line); }
-.task-approval-inbox blockquote { margin: 0; color: var(--task-slate); font-size: 12px; line-height: 1.55; }
+.task-approval-inbox blockquote { margin: 0; color: var(--task-slate); font-size: clamp(13px, .35rem + .4cqi, 15px); line-height: 1.6; }
 .task-approval-inbox article button { min-height: 36px; padding: 0 12px; border: 1px solid var(--task-brand); border-radius: var(--task-radius-control); color: white; background: var(--task-brand); font: 700 12px/1.3 var(--task-font-family); cursor: pointer; }
 .task-approval-inbox article button:disabled { cursor: wait; opacity: .55; }
 .task-approval-notice { color: var(--task-brand-dark) !important; }
-.task-action-error { display: flex; align-items: center; gap: var(--task-space-2); margin: 0; padding: var(--task-space-3) var(--task-space-4); color: #b42332; background: var(--task-danger-soft); border: 1px solid #f3c9cf; border-radius: var(--task-radius-control); font-size: 12px; }
+.task-action-error { display: flex; align-items: center; gap: var(--task-space-2); margin: 0; padding: var(--task-space-3) var(--task-space-4); color: #b42332; background: var(--task-danger-soft); border: 1px solid #f3c9cf; border-radius: var(--task-radius-control); font-size: clamp(13px, .35rem + .4cqi, 15px); }
 .task-detail-loading { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--task-space-3); padding: var(--task-space-5); }
 .task-detail-loading span { height: 76px; border-radius: var(--task-radius-control); background: #f1f5f9; animation: task-pulse 1.2s ease-in-out infinite; }
 .task-detail-loading p { grid-column: 1 / -1; margin: 0; color: var(--task-muted); text-align: center; }
@@ -508,7 +509,7 @@ onUnmounted(() => {
 .task-detail-error a { text-decoration: none; }
 @keyframes task-pulse { 50% { opacity: .55; } }
 
-@container task-detail (max-width: 900px) {
+@container task-detail (max-width: 980px) {
   .task-detail-hero { align-items: stretch; flex-direction: column; }
   .task-detail-actions { justify-content: flex-start; }
   .task-status-card { grid-template-columns: 1fr; }

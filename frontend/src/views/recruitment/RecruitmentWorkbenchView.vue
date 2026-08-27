@@ -1761,7 +1761,7 @@ onUnmounted(() => {
   --wb-color-danger-border: #f2caca;
   --wb-color-danger-soft: #fffafa;
   --wb-color-transparent: transparent;
-  --wb-font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --wb-font-family: var(--app-font-family);
   --wb-font-size-meta: 12px;
   --wb-font-size-small: 12px;
   --wb-font-size-control: 14px;

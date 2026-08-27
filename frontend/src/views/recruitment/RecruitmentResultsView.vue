@@ -482,6 +482,10 @@ function resumeStatusLabel(row) {
   return '原件与报告已就绪'
 }
 
+function candidateMeta(row) {
+  return [row.candidate?.current_title, row.candidate?.current_city].filter(Boolean).join(' · ')
+}
+
 function hrDecisionLabel(decision) {
   if (!decision) return 'HR 待确认'
   return decision.decision === 'pass' ? 'HR 已确认通过' : 'HR 已确认未通过'
@@ -930,16 +934,16 @@ onUnmounted(() => {
     <section v-if="!currentJob" class="panel results-required" data-test="results-job-required">
       <AppIcon name="briefcase" :size="25" />
       <div><strong>请先选择在招职位</strong><p>结果中心按职位隔离展示，不会把不同岗位的候选人和任务混在一起。</p></div>
-      <select v-if="context.jobs.length" data-test="empty-job-filter" aria-label="选择在招职位" @change="chooseJob"><option value="">选择职位</option><option v-for="job in context.jobs" :key="job.id" :value="job.id">{{ job.title }}</option></select>
+      <div v-if="context.jobs.length" class="results-select results-select--required"><select data-test="empty-job-filter" aria-label="选择在招职位" @change="chooseJob"><option value="">选择职位</option><option v-for="job in context.jobs" :key="job.id" :value="job.id">{{ job.title }}</option></select><AppIcon name="chevron-down" :size="16" /></div>
       <RouterLink v-else class="primary-button" to="/recruitment/workbench">返回招聘作业台</RouterLink>
     </section>
 
     <template v-else>
       <div class="results-overview">
         <section v-if="!embedded" class="results-context" aria-label="当前结果范围">
-          <label class="results-context__job"><span>当前岗位</span><select :value="currentJobId" data-test="job-filter" @change="chooseJob"><option v-for="job in context.jobs" :key="job.id" :value="String(job.id)">{{ job.title }} · {{ job.account_name || '未绑定账号' }}</option></select><small>招聘目标 {{ currentJob.headcount || '未设置' }} 人</small></label>
-          <label><span>任务运行</span><select v-model="selectedRunId" data-test="run-filter"><option value="">该岗位全部运行</option><option v-for="run in jobRuns" :key="run.id" :value="String(run.id)">{{ run.template_name || '自动化任务' }} · {{ statusLabel(run.status) }} · {{ formatDateTime(run.created_at) }}</option></select></label>
-          <label><span>结果状态</span><select v-model="statusFilter" data-test="status-filter"><option v-for="option in visibleStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+          <label class="results-context__job"><span>当前岗位</span><span class="results-select"><select :value="currentJobId" data-test="job-filter" @change="chooseJob"><option v-for="job in context.jobs" :key="job.id" :value="String(job.id)">{{ job.title }} · {{ job.account_name || '未绑定账号' }}</option></select><AppIcon name="chevron-down" :size="16" /></span><small>招聘目标 {{ currentJob.headcount || '未设置' }} 人</small></label>
+          <label><span>任务运行</span><span class="results-select"><select v-model="selectedRunId" data-test="run-filter"><option value="">该岗位全部运行</option><option v-for="run in jobRuns" :key="run.id" :value="String(run.id)">{{ run.template_name || '自动化任务' }} · {{ statusLabel(run.status) }} · {{ formatDateTime(run.created_at) }}</option></select><AppIcon name="chevron-down" :size="16" /></span></label>
+          <label><span>结果状态</span><span class="results-select"><select v-model="statusFilter" data-test="status-filter"><option v-for="option in visibleStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><AppIcon name="chevron-down" :size="16" /></span></label>
         </section>
 
         <section v-if="hasLegacyContext" class="results-context-note" data-test="legacy-context">
@@ -1089,11 +1093,11 @@ onUnmounted(() => {
           <p v-if="resources.screening.error" class="results-inline-error">候选排名加载失败：{{ resources.screening.error }}</p>
 
           <div class="candidate-filter-bar" aria-label="候选人筛选">
-            <label><span>招聘阶段</span><select v-model="candidateFilters.stage" data-test="candidate-filter-stage"><option v-for="option in candidateStageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label><span>AI 初筛建议</span><select v-model="candidateFilters.ai" data-test="candidate-filter-ai"><option v-for="option in candidateAiOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label><span>简历状态</span><select v-model="candidateFilters.resume" data-test="candidate-filter-resume"><option v-for="option in candidateResumeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label><span>HR 结论</span><select v-model="candidateFilters.hr" data-test="candidate-filter-hr"><option v-for="option in candidateHrOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label><span>通知状态</span><select v-model="candidateFilters.notification" data-test="candidate-filter-notification"><option v-for="option in candidateNotificationOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label><span>招聘阶段</span><span class="results-select"><select v-model="candidateFilters.stage" data-test="candidate-filter-stage"><option v-for="option in candidateStageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><AppIcon name="chevron-down" :size="15" /></span></label>
+            <label><span>AI 初筛建议</span><span class="results-select"><select v-model="candidateFilters.ai" data-test="candidate-filter-ai"><option v-for="option in candidateAiOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><AppIcon name="chevron-down" :size="15" /></span></label>
+            <label><span>简历状态</span><span class="results-select"><select v-model="candidateFilters.resume" data-test="candidate-filter-resume"><option v-for="option in candidateResumeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><AppIcon name="chevron-down" :size="15" /></span></label>
+            <label><span>HR 结论</span><span class="results-select"><select v-model="candidateFilters.hr" data-test="candidate-filter-hr"><option v-for="option in candidateHrOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><AppIcon name="chevron-down" :size="15" /></span></label>
+            <label><span>通知状态</span><span class="results-select"><select v-model="candidateFilters.notification" data-test="candidate-filter-notification"><option v-for="option in candidateNotificationOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><AppIcon name="chevron-down" :size="15" /></span></label>
             <button type="button" data-test="candidate-filter-clear" @click="clearCandidateFilters">清除筛选</button>
           </div>
 
@@ -1110,8 +1114,9 @@ onUnmounted(() => {
             <small>“已加入队列”不代表已发送；请以每位候选人的最终状态为准。</small>
           </section>
 
-          <div v-if="candidateResults.length" class="candidate-ranking-scroll">
-            <table class="candidate-ranking-table">
+          <div v-if="candidateResults.length" class="candidate-ranking-region">
+            <div class="candidate-ranking-scroll">
+              <table class="candidate-ranking-table">
               <caption class="sr-only">{{ currentJob.title }}候选排名，AI 建议、HR 结论、招聘阶段与通知状态分列展示</caption>
               <thead>
                 <tr>
@@ -1131,21 +1136,22 @@ onUnmounted(() => {
                 <tr v-for="row in displayedCandidateResults" :key="row.application.id" :data-application-id="row.application.id" :class="{ 'is-selected': isApplicationSelected(row.application.id) }">
                   <td class="candidate-select-cell"><label><span class="sr-only">选择候选人 {{ row.candidate?.name || '未命名候选人' }}</span><input type="checkbox" :checked="isApplicationSelected(row.application.id)" :aria-label="`选择候选人 ${row.candidate?.name || '未命名候选人'}`" @change="toggleApplication(row.application.id, $event.target.checked)" /></label></td>
                   <td data-label="排名"><strong :class="['candidate-rank', row.rank && row.rank <= 3 ? `is-top-${row.rank}` : '']"><AppIcon v-if="row.rank && row.rank <= 3" name="crown" :size="13" />{{ row.rank ?? '—' }}</strong></td>
-                  <td data-label="候选人"><button class="candidate-name-button" type="button" :disabled="!row.resume" :aria-label="row.resume ? `查看 ${row.candidate?.name || '候选人'} 的简历与分析报告` : `${row.candidate?.name || '候选人'} 暂无简历`" @click="openCandidateDetail(row, $event)"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong><small>{{ row.candidate?.current_title || '当前岗位未填写' }} · {{ row.candidate?.current_city || '城市未填写' }}</small></button></td>
+                  <td data-label="候选人"><button v-if="row.resume" class="candidate-name-button" type="button" :aria-label="`查看 ${row.candidate?.name || '候选人'} 的简历与分析报告`" @click="openCandidateDetail(row, $event)"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong><small v-if="candidateMeta(row)">{{ candidateMeta(row) }}</small></button><div v-else class="candidate-name-static"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong><small v-if="candidateMeta(row)">{{ candidateMeta(row) }}</small></div></td>
                   <td data-label="招聘阶段"><span class="candidate-status is-neutral">{{ row.application.stage_label || statusLabel(row.application.stage) }}</span></td>
                   <td data-label="AI 初筛建议"><span :class="['candidate-status', `is-${aiRecommendationTone(row)}`]">{{ aiRecommendationLabel(row) }}</span></td>
                   <td data-label="得分"><div class="candidate-score" :class="{ 'has-score': row.assessment }" :title="row.assessment ? `置信度 ${Math.round(Number(row.assessment.confidence || 0) * 100)}%` : '尚未评分，不作为 0 分'"><strong>{{ scoreText(row.assessment) }}</strong><small class="sr-only">{{ row.assessment ? `置信度 ${Math.round(Number(row.assessment.confidence || 0) * 100)}%` : '不作为 0 分' }}</small></div></td>
-                  <td data-label="简历状态"><div class="candidate-resume"><strong>{{ row.resume?.original_name || '暂无当前简历' }}</strong><small>{{ resumeStatusLabel(row) }}</small></div></td>
+                  <td data-label="简历状态"><div class="candidate-resume"><strong>{{ row.resume?.original_name || '暂无简历' }}</strong><small v-if="row.resume">{{ resumeStatusLabel(row) }}</small></div></td>
                   <td data-label="HR 结论"><span :class="['candidate-status', row.hrDecision?.decision === 'pass' ? 'is-success' : row.hrDecision?.decision === 'fail' ? 'is-danger' : 'is-neutral']" :title="row.hrDecision?.reason || ''">{{ hrDecisionLabel(row.hrDecision) }}</span></td>
                   <td data-label="通知状态"><div class="candidate-notification"><span :class="['candidate-status', `is-${notificationTone(row.notification)}`]">{{ notificationLabel(row.notification) }}</span><small v-if="row.notification?.error_message">{{ row.notification.error_message }}</small></div></td>
-                  <td class="candidate-action-cell"><button type="button" :disabled="!row.resume" :data-test="`view-candidate-${row.application.id}`" @click="openCandidateDetail(row, $event)">{{ row.resume ? '查看简历与报告' : '暂无简历' }}</button></td>
+                  <td class="candidate-action-cell"><button v-if="row.resume" type="button" :data-test="`view-candidate-${row.application.id}`" @click="openCandidateDetail(row, $event)">查看详情</button><span v-else class="candidate-action-empty" aria-hidden="true">—</span></td>
                 </tr>
               </tbody>
-            </table>
+              </table>
+            </div>
             <footer class="candidate-table-footer">
               <span>共 {{ candidateResults.length }} 项</span>
               <div><button type="button" :disabled="candidatePage === 1" aria-label="上一页" @click="candidatePage -= 1">‹</button><template v-for="item in candidatePaginationItems" :key="item"><span v-if="String(item).startsWith('ellipsis')">…</span><button v-else type="button" :class="{ active: candidatePage === item }" @click="candidatePage = item">{{ item }}</button></template><button type="button" :disabled="candidatePage === candidatePageCount" aria-label="下一页" @click="candidatePage += 1">›</button></div>
-              <label><span class="sr-only">每页显示数量</span><select v-model.number="candidatePageSize"><option :value="10">10 条/页</option><option :value="20">20 条/页</option><option :value="50">50 条/页</option></select></label>
+              <label class="results-select candidate-page-size"><span class="sr-only">每页显示数量</span><select v-model.number="candidatePageSize"><option :value="10">10 条/页</option><option :value="20">20 条/页</option><option :value="50">50 条/页</option></select><AppIcon name="chevron-down" :size="15" /></label>
             </footer>
           </div>
           <div v-else-if="resources.screening.loading" class="results-local-loading">正在加载候选排名…</div>
@@ -1274,21 +1280,21 @@ onUnmounted(() => {
   --results-radius-status: 999px;
   --results-border-width: 1px;
   --results-active-border-width: 2px;
-  --results-control-height: clamp(2.375rem, 1.25rem + 1.35cqi, 3.25rem);
-  --results-compact-control-height: clamp(2.125rem, 1.25rem + 1.15cqi, 3rem);
+  --results-control-height: clamp(2.75rem, 1.7rem + 1cqi, 3.25rem);
+  --results-compact-control-height: clamp(2.5rem, 1.55rem + .9cqi, 3rem);
   --results-touch-target: clamp(2.75rem, 1.5rem + 1.35cqi, 3.5rem);
   --results-row-min-height: clamp(4rem, 2.25rem + 2.1cqi, 5.25rem);
-  --results-font-meta: clamp(.625rem, .12rem + .52cqi, .9375rem);
-  --results-font-detail: clamp(.6875rem, .15rem + .62cqi, 1.0625rem);
-  --results-font-control: clamp(.75rem, .15rem + .65cqi, 1.125rem);
-  --results-font-body: clamp(.8125rem, .2rem + .65cqi, 1.125rem);
-  --results-font-title: clamp(.9375rem, .25rem + .75cqi, 1.375rem);
+  --results-font-meta: .8125rem;
+  --results-font-detail: .875rem;
+  --results-font-control: .875rem;
+  --results-font-body: .875rem;
+  --results-font-title: 1rem;
   --results-font-metric: clamp(1.625rem, 1rem + .8cqi, 2.25rem);
   --results-font-campaign-metric: clamp(1.25rem, .55rem + .75cqi, 1.875rem);
   --results-weight-regular: 400;
-  --results-weight-medium: 600;
-  --results-weight-bold: 700;
-  --results-weight-heavy: 800;
+  --results-weight-medium: 400;
+  --results-weight-bold: 600;
+  --results-weight-heavy: 600;
   --results-leading-tight: 1.3;
   --results-leading-body: 1.6;
   --results-tracking-kicker: .12em;
@@ -1311,7 +1317,7 @@ onUnmounted(() => {
   --results-stage-card-min: 8.125rem;
   --results-progress-height: clamp(.5625rem, .35rem + .35cqi, .875rem);
   --results-stage-progress-height: clamp(.6875rem, .4rem + .4cqi, 1rem);
-  --results-attention-columns: minmax(150px, 1.1fr) 90px minmax(130px, .9fr) minmax(210px, 1.45fr) 105px 72px 164px;
+  --results-attention-columns: minmax(230px, 1.25fr) 72px minmax(110px, .7fr) minmax(250px, 1.4fr) 96px 72px 160px;
   --results-status-marker-width: 4px;
   --results-node-marker-size: 6px;
   --results-skeleton-height: 76px;
@@ -1332,6 +1338,17 @@ onUnmounted(() => {
 .results-center *::before,
 .results-center *::after {
   box-sizing: border-box;
+}
+
+.results-center button,
+.results-center input,
+.results-center select,
+.results-center textarea {
+  font-family: var(--results-font-family);
+}
+
+.results-center strong {
+  font-weight: var(--results-weight-bold);
 }
 
 .results-hero {
@@ -1402,6 +1419,30 @@ onUnmounted(() => {
   font: var(--results-weight-medium) var(--results-font-control)/var(--results-leading-tight) var(--results-font-family);
 }
 
+.results-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.results-select > svg {
+  position: absolute;
+  right: var(--results-space-3);
+  z-index: 1;
+  color: var(--results-color-muted);
+  pointer-events: none;
+}
+
+.results-select select {
+  appearance: none;
+  cursor: pointer;
+}
+
+.results-select--required {
+  min-width: var(--results-filter-status-min);
+}
+
 .results-overview,
 .results-workspace {
   min-width: 0;
@@ -1428,7 +1469,7 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.results-context span {
+.results-context label > span:first-child {
   color: var(--results-color-muted);
   font-size: var(--results-font-meta);
   font-weight: var(--results-weight-heavy);
@@ -1450,6 +1491,13 @@ onUnmounted(() => {
   border: var(--results-border-width) solid var(--results-color-line);
   border-radius: var(--results-radius-control);
   font: var(--results-weight-medium) var(--results-font-control)/var(--results-leading-tight) var(--results-font-family);
+  transition: border-color var(--results-transition), box-shadow var(--results-transition), background var(--results-transition);
+}
+
+.results-context select:hover,
+.results-required select:hover {
+  border-color: #a9c6c2;
+  background: var(--results-color-surface);
 }
 
 .results-context select:focus-visible,
@@ -1612,7 +1660,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--results-space-2);
-  min-width: 145px;
+  min-width: clamp(150px, 12cqi, 190px);
+  min-height: var(--results-control-height);
   padding: var(--results-space-3) var(--results-space-4);
   color: var(--results-color-muted);
   background: transparent;
@@ -1817,16 +1866,25 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: var(--results-space-1);
+  min-height: 36px;
+  padding: 0 8px;
+  border-radius: 8px;
   white-space: nowrap;
 }
 
 .attention-actions button {
-  min-height: 24px;
-  padding: 0;
+  min-height: 36px;
+  padding: 0 8px;
   color: var(--results-color-brand-dark);
   background: transparent;
   border: 0;
+  border-radius: 8px;
   white-space: nowrap;
+}
+
+.attention-list a:hover,
+.attention-actions button:hover:not(:disabled) {
+  background: var(--results-color-brand-soft);
 }
 
 .attention-actions button:disabled,
@@ -2333,45 +2391,65 @@ onUnmounted(() => {
 
 .candidate-filter-bar {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  overflow-x: auto;
-  padding: 13px var(--results-space-5);
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px var(--results-space-5) 18px;
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
-  scrollbar-width: thin;
+  background: var(--results-color-surface);
 }
 
 .candidate-filter-bar label {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 5px;
+  display: grid;
+  flex: 1 1 150px;
+  gap: 7px;
+  max-width: 190px;
   color: var(--results-color-copy);
   font-size: var(--results-font-detail);
   font-weight: var(--results-weight-medium);
-  white-space: nowrap;
+}
+
+.candidate-filter-bar label > span:first-child {
+  color: var(--results-color-muted);
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-heavy);
 }
 
 .candidate-filter-bar select {
-  min-width: 80px;
-  height: 31px;
-  padding: 0 26px 0 9px;
+  width: 100%;
+  min-width: 0;
+  height: var(--results-compact-control-height);
+  padding: 0 34px 0 12px;
+  appearance: none;
   border: var(--results-border-width) solid var(--results-color-line);
-  border-radius: 5px;
+  border-radius: var(--results-radius-control);
   color: var(--results-color-copy);
   background: var(--results-color-surface-soft);
   font: inherit;
+  transition: border-color var(--results-transition), box-shadow var(--results-transition), background var(--results-transition);
+}
+
+.candidate-filter-bar select:hover {
+  border-color: #a9c6c2;
+  background: var(--results-color-surface);
 }
 
 .candidate-filter-bar button {
   flex: 0 0 auto;
-  min-height: 31px;
-  padding: 0 13px;
+  min-height: var(--results-compact-control-height);
+  padding: 0 15px;
   border: 1px solid var(--results-color-line);
-  border-radius: 5px;
+  border-radius: var(--results-radius-control);
   color: var(--results-color-brand-dark);
   background: var(--results-color-surface);
   font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-medium);
+  transition: border-color var(--results-transition), background var(--results-transition), color var(--results-transition);
+}
+
+.candidate-filter-bar button:hover {
+  border-color: var(--results-color-brand-line);
+  background: var(--results-color-brand-soft);
 }
 
 .notification-summary {
@@ -2402,8 +2480,13 @@ onUnmounted(() => {
   text-align: right;
 }
 
+.candidate-ranking-region {
+  min-width: 0;
+}
+
 .candidate-ranking-scroll {
   overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .candidate-table-footer {
@@ -2411,9 +2494,9 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
-  min-width: 760px;
-  min-height: 48px;
-  padding: 8px var(--results-space-5);
+  min-width: 0;
+  min-height: 56px;
+  padding: 9px var(--results-space-5);
   color: var(--results-color-muted);
   background: var(--results-color-surface);
   border-top: var(--results-border-width) solid var(--results-color-line-soft);
@@ -2433,13 +2516,13 @@ onUnmounted(() => {
 }
 
 .candidate-table-footer button {
-  min-width: 28px;
-  height: 28px;
-  padding: 0 7px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 9px;
   color: var(--results-color-copy);
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: 8px;
   font-size: var(--results-font-detail);
 }
 
@@ -2458,10 +2541,10 @@ onUnmounted(() => {
 }
 
 .candidate-table-footer select {
-  height: 30px;
-  padding: 0 25px 0 9px;
+  height: 38px;
+  padding: 0 34px 0 12px;
   border: var(--results-border-width) solid var(--results-color-line);
-  border-radius: 5px;
+  border-radius: var(--results-radius-control);
   color: var(--results-color-copy);
   background: var(--results-color-surface);
   font-size: var(--results-font-meta);
@@ -2469,7 +2552,7 @@ onUnmounted(() => {
 
 .candidate-ranking-table {
   width: 100%;
-  min-width: 0;
+  min-width: 1480px;
   table-layout: fixed;
   border-collapse: collapse;
   color: var(--results-color-copy);
@@ -2477,11 +2560,11 @@ onUnmounted(() => {
 }
 
 .candidate-ranking-table th {
-  padding: 11px 10px;
+  padding: 13px 14px;
   border-bottom: var(--results-border-width) solid var(--results-color-line);
   color: var(--results-color-muted);
   background: var(--results-color-surface-soft);
-  font-size: 10px;
+  font-size: var(--results-font-meta);
   font-weight: var(--results-weight-heavy);
   letter-spacing: .04em;
   text-align: left;
@@ -2489,7 +2572,8 @@ onUnmounted(() => {
 }
 
 .candidate-ranking-table td {
-  padding: 7px 8px;
+  min-height: 58px;
+  padding: 12px 14px;
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
   vertical-align: middle;
 }
@@ -2523,12 +2607,19 @@ onUnmounted(() => {
 .candidate-name-button {
   display: grid;
   gap: 3px;
-  max-width: 190px;
+  width: 100%;
+  max-width: none;
   padding: 0;
   border: 0;
   color: inherit;
   background: transparent;
   text-align: left;
+}
+
+.candidate-name-static {
+  display: grid;
+  gap: 3px;
+  width: 100%;
 }
 
 .candidate-name-button:not(:disabled):hover strong,
@@ -2538,16 +2629,18 @@ onUnmounted(() => {
 }
 
 .candidate-name-button strong,
+.candidate-name-static strong,
 .candidate-resume strong,
 .candidate-score strong {
   overflow: hidden;
   color: var(--results-color-ink);
-  font-size: 12px;
+  font-size: var(--results-font-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .candidate-name-button small,
+.candidate-name-static small,
 .candidate-resume small,
 .candidate-score small,
 .candidate-notification small {
@@ -2555,7 +2648,7 @@ onUnmounted(() => {
   margin-top: 3px;
   overflow: hidden;
   color: var(--results-color-muted);
-  font-size: 10px;
+  font-size: var(--results-font-meta);
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2570,11 +2663,11 @@ onUnmounted(() => {
 .candidate-status {
   display: inline-flex;
   align-items: center;
-  min-height: 25px;
-  padding: 3px 8px;
+  min-height: 30px;
+  padding: 5px 10px;
   border-radius: 8px;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-regular);
   line-height: 1.35;
   white-space: nowrap;
 }
@@ -2586,7 +2679,7 @@ onUnmounted(() => {
 .candidate-status.is-neutral { color: var(--results-color-muted); background: var(--results-color-surface-muted); }
 
 .candidate-notification {
-  max-width: 150px;
+  max-width: none;
 }
 
 .candidate-notification small {
@@ -2599,14 +2692,14 @@ onUnmounted(() => {
 }
 
 .candidate-action-cell button {
-  min-height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
+  min-height: 38px;
+  padding: 0 13px;
+  border: var(--results-border-width) solid var(--results-color-brand-line);
+  border-radius: var(--results-radius-control);
   color: var(--results-color-brand-dark);
-  background: transparent;
-  font-size: 10px;
-  font-weight: 700;
+  background: var(--results-color-brand-soft);
+  font-size: var(--results-font-meta);
+  font-weight: var(--results-weight-bold);
   white-space: nowrap;
 }
 
@@ -2670,16 +2763,16 @@ onUnmounted(() => {
 .candidate-rank.is-top-2 { color: #718096; }
 .candidate-rank.is-top-3 { color: #b46f3c; }
 
-.candidate-ranking-table th:nth-child(1) { width: 38px; }
-.candidate-ranking-table th:nth-child(2) { width: 46px; }
-.candidate-ranking-table th:nth-child(3) { width: 120px; }
-.candidate-ranking-table th:nth-child(4) { width: 90px; }
-.candidate-ranking-table th:nth-child(5) { width: 105px; }
-.candidate-ranking-table th:nth-child(6) { width: 94px; }
-.candidate-ranking-table th:nth-child(7) { width: 120px; }
-.candidate-ranking-table th:nth-child(8) { width: 92px; }
-.candidate-ranking-table th:nth-child(9) { width: 98px; }
-.candidate-ranking-table th:nth-child(10) { width: 105px; }
+.candidate-ranking-table th:nth-child(1) { width: 52px; }
+.candidate-ranking-table th:nth-child(2) { width: 64px; }
+.candidate-ranking-table th:nth-child(3) { width: 230px; }
+.candidate-ranking-table th:nth-child(4) { width: 140px; }
+.candidate-ranking-table th:nth-child(5) { width: 170px; }
+.candidate-ranking-table th:nth-child(6) { width: 125px; }
+.candidate-ranking-table th:nth-child(7) { width: 210px; }
+.candidate-ranking-table th:nth-child(8) { width: 150px; }
+.candidate-ranking-table th:nth-child(9) { width: 180px; }
+.candidate-ranking-table th:nth-child(10) { width: 160px; }
 
 .results-subpanel > header {
   min-height: 54px;
@@ -2742,6 +2835,15 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.candidate-action-cell button:hover {
+  border-color: var(--results-color-brand);
+  background: #dff4f0;
+}
+
+.candidate-action-empty {
+  color: var(--results-color-faint);
 }
 
 .results-table-name strong {
@@ -2837,7 +2939,7 @@ onUnmounted(() => {
 
 }
 
-@container results-center (max-width: 720px) {
+@container results-center (max-width: 820px) {
   .results-hero,
   .results-required,
   .results-fatal-error,
@@ -2892,6 +2994,10 @@ onUnmounted(() => {
 
   .results-kpis article:nth-child(n + 3) {
     border-top: var(--results-border-width) solid var(--results-color-line-soft);
+  }
+
+  .results-kpis small {
+    display: none;
   }
 
   .results-tabs {
@@ -2985,6 +3091,20 @@ onUnmounted(() => {
     padding-left: var(--results-space-4);
   }
 
+  .candidate-filter-bar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .candidate-filter-bar label {
+    max-width: none;
+  }
+
+  .candidate-filter-bar button {
+    grid-column: 1 / -1;
+  }
+
   .notification-summary small {
     flex-basis: 100%;
     text-align: left;
@@ -3032,7 +3152,7 @@ onUnmounted(() => {
     content: attr(data-label);
     color: var(--results-color-muted);
     font-size: 10px;
-    font-weight: 700;
+    font-weight: var(--results-weight-regular);
   }
 
   .candidate-ranking-table .candidate-select-cell {
@@ -3049,6 +3169,7 @@ onUnmounted(() => {
   }
 
   .candidate-name-button,
+  .candidate-name-static,
   .candidate-notification {
     max-width: none;
   }
@@ -3106,6 +3227,34 @@ onUnmounted(() => {
 
   .pipeline-summary__completion {
     grid-column: auto;
+  }
+}
+
+@container results-center (max-width: 520px) {
+  .candidate-filter-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .candidate-filter-bar button {
+    grid-column: 1;
+  }
+
+  .candidate-table-footer {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .candidate-table-footer > div {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+
+  .candidate-table-footer > label {
+    grid-column: 2;
+  }
+
+  .candidate-ranking-table td {
+    grid-template-columns: 88px minmax(0, 1fr);
   }
 }
 
