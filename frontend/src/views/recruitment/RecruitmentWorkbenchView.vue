@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
 import CandidateFilterPanel from '@/components/CandidateFilterPanel.vue'
@@ -60,6 +60,9 @@ const submitting = ref(false)
 const submitStage = ref('')
 const currentPlan = ref(null)
 const archivedPlan = ref(null)
+const workspacePlans = ref([])
+const workspacePlansLoading = ref(false)
+const workspacePlansError = ref('')
 const planLoading = ref(false)
 const planError = ref('')
 const planAction = ref('')
@@ -82,10 +85,12 @@ const summary = reactive({ worker: null, cli_available: false })
 const startRequest = reactive({ id: '', signature: '' })
 let documentLoadSequence = 0
 let planLoadSequence = 0
+let workspacePlansLoadSequence = 0
 let approvalLoadSequence = 0
 let planActionSequence = 0
 let planPollTimer = null
 let planPollInFlight = false
+let workspacePlansPollInFlight = false
 let componentAlive = true
 let skipPreviousJobPersistFor = ''
 let activeExecutionSnapshot = null
@@ -227,6 +232,12 @@ const checks = computed(() => [
 ])
 const firstBlockingCheck = computed(() => checks.value.find((item) => !item.ok) || null)
 const currentPlanState = computed(() => normalizePlanState(currentPlan.value))
+const workspacePlansSorted = computed(() => [...workspacePlans.value].sort((left, right) => {
+  const activeStates = ['starting', 'running', 'waiting_human', 'pausing', 'paused', 'stopping']
+  const activeDelta = Number(activeStates.includes(normalizePlanState(right))) - Number(activeStates.includes(normalizePlanState(left)))
+  if (activeDelta) return activeDelta
+  return new Date(right?.updated_at || 0).getTime() - new Date(left?.updated_at || 0).getTime()
+}))
 const startDisabledReason = computed(() => {
   if (loading.value) return '招聘作业台仍在加载，请稍候。'
   if (planLoading.value) return '正在同步服务端任务状态，请稍候。'
@@ -305,6 +316,48 @@ function normalizePlanState(plan) {
     succeeded: 'completed',
     cancelled: 'stopped',
   }[value] || value || 'stopped'
+}
+
+function workspacePlanStateLabel(plan) {
+  return {
+    starting: '正在开启',
+    running: '运行中',
+    waiting_human: '等待人工',
+    paused: '已暂停',
+    pausing: '正在暂停',
+    stopping: '正在停止',
+    stopped: '已停止',
+    failed: '运行失败',
+    completed: '本轮完成',
+  }[normalizePlanState(plan)] || '同步中'
+}
+
+function workspacePlanKindLabel(plan) {
+  return plan?.kind === 'passive_resume' ? '被动招聘' : '主动寻访'
+}
+
+function workspacePlanJobTitle(plan) {
+  if (plan?.job_title) return plan.job_title
+  return context.jobs.find((job) => String(job.id) === String(planJobId(plan)))?.title || `职位 #${planJobId(plan) || '—'}`
+}
+
+function workspacePlanUpdatedAt(plan) {
+  if (!plan?.updated_at) return '刚刚同步'
+  const parsed = new Date(plan.updated_at)
+  if (Number.isNaN(parsed.getTime())) return '刚刚同步'
+  return parsed.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+function workspacePlanTo(plan) {
+  return {
+    name: 'recruitment-task-detail',
+    params: { planId: String(plan.id) },
+    query: {
+      job: planJobId(plan) != null ? String(planJobId(plan)) : undefined,
+      run: plan?.current_run?.id ? String(plan.current_run.id) : undefined,
+      view: 'tasks',
+    },
+  }
 }
 
 function planRevisionSnapshot(plan) {
@@ -921,10 +974,18 @@ function operationDraftFromRevision(plan) {
   }
 }
 
+function upsertWorkspacePlan(plan) {
+  if (!plan?.id || plan.archived_at) return
+  const index = workspacePlans.value.findIndex((item) => String(item.id) === String(plan.id))
+  if (index === -1) workspacePlans.value = [plan, ...workspacePlans.value]
+  else workspacePlans.value = workspacePlans.value.map((item, itemIndex) => itemIndex === index ? plan : item)
+}
+
 function applyServerPlan(plan, jobId, { hydrateDraft = false } = {}) {
   if (!componentAlive || String(selectedJob.value?.id || '') !== String(jobId || '')) return false
   if (plan && planJobId(plan) != null && String(planJobId(plan)) !== String(jobId)) return false
   currentPlan.value = plan
+  if (plan) upsertWorkspacePlan(plan)
   planError.value = ''
   if (legacyEditBaseUnknown.value && !plan) captureEditBase(null)
   if (plan && hydrateDraft) {
@@ -937,6 +998,30 @@ function applyServerPlan(plan, jobId, { hydrateDraft = false } = {}) {
   }
   updatePlanVersionNotice(plan)
   return true
+}
+
+async function refreshWorkspacePlans({ silent = false, poll = false } = {}) {
+  if (!componentAlive || (poll && workspacePlansPollInFlight)) return null
+  const sequence = ++workspacePlansLoadSequence
+  if (poll) workspacePlansPollInFlight = true
+  if (!silent) workspacePlansLoading.value = true
+  try {
+    const payload = await api('recruitment/automation-plans/')
+    const plans = listItems(payload).filter((plan) => !plan.archived_at)
+    if (sequence === workspacePlansLoadSequence) {
+      workspacePlans.value = plans
+      workspacePlansError.value = ''
+    }
+    return plans
+  } catch (error) {
+    if (sequence === workspacePlansLoadSequence) {
+      workspacePlansError.value = error.message || '任务列表读取失败'
+    }
+    return null
+  } finally {
+    if (poll) workspacePlansPollInFlight = false
+    if (!silent && sequence === workspacePlansLoadSequence) workspacePlansLoading.value = false
+  }
 }
 
 async function refreshCurrentPlan({ jobId = selectedJob.value?.id, silent = false, poll = false, hydrateDraft = false } = {}) {
@@ -1043,6 +1128,7 @@ async function loadWorkbench() {
       api('recruitment/automation/summary/'),
       api('recruitment/workflows/'),
       api('recruitment/workflow-versions/'),
+      refreshWorkspacePlans(),
     ])
     if (accountResult.status === 'rejected') throw accountResult.reason
     accounts.value = listItems(accountResult.value).filter((account) => account.active && !account.archived_at)
@@ -1475,6 +1561,7 @@ onMounted(async () => {
   if (!componentAlive) return
   planPollTimer = globalThis.setInterval(() => {
     refreshCurrentPlan({ silent: true, poll: true })
+    refreshWorkspacePlans({ silent: true, poll: true })
   }, 5000)
 })
 
@@ -1483,6 +1570,7 @@ onUnmounted(() => {
   approvalLoadSequence += 1
   planActionSequence += 1
   planLoadSequence += 1
+  workspacePlansLoadSequence += 1
   documentLoadSequence += 1
   if (planPollTimer) globalThis.clearInterval(planPollTimer)
   planPollTimer = null
@@ -1538,6 +1626,45 @@ onUnmounted(() => {
       </aside>
 
       <div class="workbench-workspace">
+        <section class="workbench-task-entry" data-test="workspace-task-entry" aria-labelledby="workspace-task-entry-title">
+          <header class="workbench-task-entry__header">
+            <div>
+              <span>多任务入口</span>
+              <strong id="workspace-task-entry-title">当前招聘任务</strong>
+              <small>{{ workspacePlansSorted.length ? `${workspacePlansSorted.length} 个可查看任务` : '任务执行后会出现在这里' }}</small>
+            </div>
+            <RouterLink :to="{ name: 'recruitment-results', query: { view: 'tasks' } }">查看全部结果</RouterLink>
+          </header>
+
+          <p v-if="workspacePlansLoading && !workspacePlansSorted.length" class="workbench-task-entry__message" data-test="workspace-task-loading">
+            正在同步任务列表…
+          </p>
+          <p v-else-if="workspacePlansError && !workspacePlansSorted.length" class="workbench-task-entry__message is-error" data-test="workspace-task-error" role="status">
+            {{ workspacePlansError }}
+            <button type="button" @click="refreshWorkspacePlans()">重试</button>
+          </p>
+          <div v-else-if="workspacePlansSorted.length" class="workbench-task-entry__list">
+            <article v-for="plan in workspacePlansSorted" :key="plan.id" class="workbench-task-entry__item">
+              <div>
+                <span :class="['workbench-task-entry__state', `is-${normalizePlanState(plan)}`]">
+                  <i></i>{{ workspacePlanStateLabel(plan) }}
+                </span>
+                <strong>{{ workspacePlanJobTitle(plan) }}</strong>
+                <small>{{ workspacePlanKindLabel(plan) }} · {{ workspacePlanUpdatedAt(plan) }}</small>
+              </div>
+              <RouterLink :to="workspacePlanTo(plan)" :data-test="`workspace-task-${plan.id}`">查看任务</RouterLink>
+            </article>
+          </div>
+          <p v-else class="workbench-task-entry__message" data-test="workspace-task-empty">
+            暂无任务。完成下面的配置并执行后，可从这里随时返回任务详情。
+          </p>
+
+          <p v-if="workspacePlansError && workspacePlansSorted.length" class="workbench-task-entry__sync-warning" role="status">
+            列表刷新失败，当前展示上次同步结果。
+            <button type="button" @click="refreshWorkspacePlans()">重试</button>
+          </p>
+        </section>
+
         <header class="workbench-task-header">
           <div class="workbench-task-header__title">
             <h2 id="workbench-current-title" ref="stepHeading" tabindex="-1">{{ currentStepCopy.title }}</h2>
@@ -4186,6 +4313,162 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.workbench-task-entry {
+  display: grid;
+  gap: var(--wb-space-2);
+  width: min(100%, var(--wb-form-max-width));
+  margin-bottom: var(--wb-space-4);
+  padding: var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-panel);
+  background: #f8fbfb;
+}
+
+.workbench-task-entry__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+}
+
+.workbench-task-entry__header > div {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: var(--wb-space-2);
+}
+
+.workbench-task-entry__header span {
+  color: var(--wb-color-primary-dark);
+  font-size: 10px;
+  font-weight: var(--wb-font-weight-heavy);
+  letter-spacing: var(--wb-letter-spacing-kicker);
+  text-transform: uppercase;
+}
+
+.workbench-task-entry__header strong {
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-control);
+}
+
+.workbench-task-entry__header small {
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+}
+
+.workbench-task-entry a,
+.workbench-task-entry button {
+  border: 0;
+  color: var(--wb-color-primary-dark);
+  background: transparent;
+  font: inherit;
+  font-size: var(--wb-font-size-small);
+  font-weight: var(--wb-font-weight-semibold);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.workbench-task-entry a:hover,
+.workbench-task-entry button:hover {
+  color: var(--wb-color-ink);
+  text-decoration: underline;
+}
+
+.workbench-task-entry a:focus-visible,
+.workbench-task-entry button:focus-visible {
+  border-radius: var(--wb-radius-control);
+  outline: 2px solid var(--wb-color-primary);
+  outline-offset: 2px;
+}
+
+.workbench-task-entry__list {
+  display: flex;
+  gap: var(--wb-space-2);
+  padding-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.workbench-task-entry__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 min(300px, 76vw);
+  gap: var(--wb-space-3);
+  min-width: 0;
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-line);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface);
+}
+
+.workbench-task-entry__item > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workbench-task-entry__item > div > strong {
+  overflow: hidden;
+  color: var(--wb-color-ink);
+  font-size: var(--wb-font-size-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-task-entry__item > div > small {
+  overflow: hidden;
+  color: var(--wb-color-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-task-entry__state {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  color: var(--wb-color-muted);
+  font-size: 10px;
+  font-weight: var(--wb-font-weight-semibold);
+}
+
+.workbench-task-entry__state i {
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.workbench-task-entry__state.is-starting,
+.workbench-task-entry__state.is-running {
+  color: var(--wb-color-primary-dark);
+}
+
+.workbench-task-entry__state.is-waiting_human,
+.workbench-task-entry__state.is-pausing,
+.workbench-task-entry__state.is-stopping {
+  color: var(--wb-color-warning);
+}
+
+.workbench-task-entry__state.is-failed {
+  color: var(--wb-color-danger);
+}
+
+.workbench-task-entry__message,
+.workbench-task-entry__sync-warning {
+  margin: 0;
+  color: var(--wb-color-muted);
+  font-size: var(--wb-font-size-small);
+  line-height: var(--wb-line-height-compact);
+}
+
+.workbench-task-entry__message.is-error,
+.workbench-task-entry__sync-warning {
+  color: var(--wb-color-warning-ink);
+}
+
 .workbench-task-header {
   display: grid;
   gap: var(--wb-space-1);
@@ -4397,6 +4680,17 @@ onUnmounted(() => {
     min-height: var(--wb-mobile-step-min-height);
     max-height: var(--wb-mobile-step-min-height);
     overflow: hidden;
+  }
+
+  .workbench-task-entry__header,
+  .workbench-task-entry__header > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--wb-space-1);
+  }
+
+  .workbench-task-entry__item {
+    flex-basis: min(260px, 84vw);
   }
 
   .workbench-task-header__title {

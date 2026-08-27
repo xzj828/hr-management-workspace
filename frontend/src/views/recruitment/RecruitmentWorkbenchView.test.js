@@ -29,6 +29,7 @@ function planFixture({
   state = 'running',
   id = 301,
   job = 51,
+  jobTitle = 'Python 后端工程师',
   kind = 'active_resume_search',
   controlVersion = 4,
   runId = 'run-77',
@@ -46,6 +47,7 @@ function planFixture({
   revision = 2,
   revisionId = 401,
   controlGeneration = 6,
+  updatedAt = '2026-08-27T09:30:00+08:00',
 } = {}) {
   const runStatus = { completed: 'succeeded', stopped: 'cancelled' }[state] || state
   const currentRevision = {
@@ -59,6 +61,7 @@ function planFixture({
   return {
     id,
     job,
+    job_title: jobTitle,
     kind,
     desired_state: state === 'stopping' ? 'stopped' : state,
     effective_state: state,
@@ -66,11 +69,13 @@ function planFixture({
     control_generation: controlGeneration,
     current_revision: currentRevision,
     current_run: runId ? { id: runId, status: runStatus } : null,
+    updated_at: updatedAt,
   }
 }
 
 function baseApi(path) {
   if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [readyAccount] })
+  if (path === 'recruitment/automation-plans/') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation/summary/') return Promise.resolve({
     worker: { hostname: 'WIN-HR', status: 'online' },
     cli_available: true,
@@ -171,6 +176,48 @@ describe('RecruitmentWorkbenchView', () => {
     vi.useRealTimers()
     localStorage.clear()
     sessionStorage.clear()
+  })
+
+  it('shows the always-visible multi-task entry on a fresh workbench', async () => {
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/automation-plans/') {
+        return Promise.resolve({
+          results: [
+            planFixture(),
+            planFixture({
+              id: 302,
+              job: 52,
+              jobTitle: '产品经理',
+              state: 'waiting_human',
+              kind: 'passive_resume',
+              runId: 'run-88',
+              updatedAt: '2026-08-27T10:00:00+08:00',
+            }),
+          ],
+        })
+      }
+      return baseApi(path)
+    })
+    ;({ wrapper } = await mountView({ new: '1' }))
+
+    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('当前招聘任务')
+    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('2 个可查看任务')
+    expect(wrapper.get('[data-test="workspace-task-301"]').attributes('href')).toContain('/recruitment/tasks/301')
+    expect(wrapper.get('[data-test="workspace-task-302"]').attributes('href')).toContain('/recruitment/tasks/302')
+    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('产品经理')
+    expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
+  })
+
+  it('keeps the new-task wizard usable when the multi-task list fails to load', async () => {
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/automation-plans/') return Promise.reject(new Error('任务服务暂不可用'))
+      return baseApi(path)
+    })
+    ;({ wrapper } = await mountView({ new: '1' }))
+
+    expect(wrapper.get('[data-test="workspace-task-error"]').text()).toContain('任务服务暂不可用')
+    expect(wrapper.find('[data-test="complete-context-step"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('查看全部结果')
   })
 
   it('presents four guarded pages and keeps execution controls exclusively on the review step', async () => {
@@ -409,7 +456,6 @@ describe('RecruitmentWorkbenchView', () => {
     expect(router.currentRoute.value.query.step).toBe('review')
     expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(true)
   })
-
   it('does not auto-start when a completed review step is restored by a refresh or deep link', async () => {
     sessionStorage.setItem('ximing-hr:recruitment-workbench-draft:v1:9:51', JSON.stringify({
       version: 1,
