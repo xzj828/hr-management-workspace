@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { api } from '@/api'
+import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import RecruitmentResultsView from './RecruitmentResultsView.vue'
@@ -14,8 +14,14 @@ const loadError = ref('')
 const actionError = ref('')
 const busy = ref('')
 const archiveRequested = ref(false)
+const pendingResumeApprovals = ref([])
+const approvalInboxLoading = ref(false)
+const approvalInboxError = ref('')
+const approvalActionId = ref('')
+const approvalNotice = ref('')
 let pollTimer = null
 let loadSequence = 0
+let approvalLoadSequence = 0
 let componentAlive = true
 
 const planId = computed(() => String(route.params.planId || ''))
@@ -69,6 +75,10 @@ const runLabel = computed(() => plan.value?.current_run?.id
   ? `运行 #${String(plan.value.current_run.id).slice(0, 8)}`
   : '暂无运行编号')
 const kindLabel = computed(() => plan.value?.kind === 'passive_resume' ? '被动咨询与简历获取' : '主动搜索并拉取简历')
+const approvalInboxVisible = computed(() => (
+  plan.value?.kind === 'passive_resume'
+  && ['starting', 'running', 'waiting_human'].includes(state.value)
+))
 const resultsTo = computed(() => ({
   name: 'recruitment-results',
   query: {
@@ -82,6 +92,75 @@ const resultsTo = computed(() => ({
 function requestId() {
   return globalThis.crypto?.randomUUID?.()
     || `00000000-0000-4000-8000-${Date.now().toString().padStart(12, '0').slice(-12)}`
+}
+
+function approvalCandidate(approval) {
+  return approval?.payload?.items?.[0] || {}
+}
+
+function approvalExpiry(value) {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  return parsed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+async function loadPendingResumeApprovals(currentPlan = plan.value) {
+  const sequence = ++approvalLoadSequence
+  const revisionId = currentPlan?.current_revision?.id
+  const generation = Number(currentPlan?.control_generation || 0)
+  if (!componentAlive || !approvalInboxVisible.value || !revisionId || generation < 1) {
+    pendingResumeApprovals.value = []
+    approvalInboxError.value = ''
+    approvalInboxLoading.value = false
+    return []
+  }
+  approvalInboxLoading.value = true
+  try {
+    const query = new URLSearchParams({
+      status: 'draft',
+      action: 'request_resume',
+      job: String(currentPlan.job),
+      automation_plan_revision: String(revisionId),
+      automation_generation: String(generation),
+    })
+    const payload = await api(`recruitment/automation-approvals/?${query.toString()}`)
+    const approvals = listItems(payload)
+    if (componentAlive && sequence === approvalLoadSequence && String(plan.value?.id) === String(currentPlan.id)) {
+      pendingResumeApprovals.value = approvals
+      approvalInboxError.value = ''
+    }
+    return approvals
+  } catch (error) {
+    if (sequence === approvalLoadSequence) approvalInboxError.value = error.message || '待确认消息读取失败'
+    return []
+  } finally {
+    if (sequence === approvalLoadSequence) approvalInboxLoading.value = false
+  }
+}
+
+async function approveResumeRequest(approval) {
+  if (!approval?.id || approvalActionId.value || busy.value) return
+  approvalActionId.value = String(approval.id)
+  approvalInboxError.value = ''
+  approvalNotice.value = ''
+  try {
+    const approved = await api(`recruitment/automation-approvals/${encodeURIComponent(approval.id)}/approve/`, {
+      method: 'POST',
+      body: '{}',
+    })
+    const executableStep = approved?.batch?.steps?.some((step) => step.status === 'pending')
+    if (!approved?.batch?.id || !executableStep) {
+      throw new Error('服务端尚未创建可执行发送步骤，请勿停止任务并刷新后重试')
+    }
+    const candidate = approvalCandidate(approval)
+    pendingResumeApprovals.value = pendingResumeApprovals.value.filter((item) => String(item.id) !== String(approval.id))
+    approvalNotice.value = `${candidate.name || '候选人'}的发送批次已创建；请保持任务运行，Worker 将先发送话术，再点击“求简历”。`
+  } catch (error) {
+    await loadPendingResumeApprovals()
+    approvalInboxError.value = error.message || '确认发送失败，请刷新后重试'
+  } finally {
+    approvalActionId.value = ''
+  }
 }
 
 function sameQueryValue(left, right) {
@@ -135,6 +214,7 @@ async function loadPlan({ silent = false } = {}) {
     plan.value = value
     loadError.value = ''
     syncRouteContext(value)
+    await loadPendingResumeApprovals(value)
   } catch (error) {
     if (sequence === loadSequence) loadError.value = error.message || '任务详情读取失败'
   } finally {
@@ -156,6 +236,7 @@ async function controlPlan(action) {
     })
     plan.value = updated
     syncRouteContext(updated)
+    await loadPendingResumeApprovals(updated)
     return true
   } catch (error) {
     if (error.status === 409) await loadPlan({ silent: true })
@@ -197,6 +278,7 @@ async function restartPlan() {
     })
     plan.value = updated
     syncRouteContext(updated)
+    await loadPendingResumeApprovals(updated)
   } catch (error) {
     if (error.status === 409) await loadPlan({ silent: true })
     actionError.value = error.message || '任务重新开启失败，请刷新后重试'
@@ -214,6 +296,7 @@ async function archivePlan() {
     plan.value = updated
     archiveRequested.value = false
     syncRouteContext(updated)
+    await loadPendingResumeApprovals(updated)
   } catch (error) {
     if (error.status === 409) await loadPlan({ silent: true })
     actionError.value = error.message || '任务删除失败，请刷新后重试'
@@ -230,6 +313,7 @@ async function restorePlan() {
     const updated = await api(`recruitment/automation-plans/${plan.value.id}/restore/?archived=1`, { method: 'POST' })
     plan.value = updated
     syncRouteContext(updated)
+    await loadPendingResumeApprovals(updated)
   } catch (error) {
     actionError.value = error.message || '任务恢复失败，请刷新后重试'
   } finally {
@@ -247,6 +331,7 @@ onMounted(async () => {
 onUnmounted(() => {
   componentAlive = false
   loadSequence += 1
+  approvalLoadSequence += 1
   if (pollTimer) globalThis.clearInterval(pollTimer)
   pollTimer = null
 })
@@ -294,6 +379,25 @@ onUnmounted(() => {
       <section :class="['task-detail-card', 'task-status-card', `is-${state}`]">
         <div><span>当前状态</span><strong>{{ stateLabel }}</strong><p>{{ stateHint }}</p></div>
         <dl><div><dt>控制版本</dt><dd>V{{ plan.control_version }}</dd></div><div><dt>运行代际</dt><dd>{{ plan.control_generation }}</dd></div><div><dt>最近更新</dt><dd>{{ new Date(plan.updated_at).toLocaleString('zh-CN', { hour12: false }) }}</dd></div></dl>
+      </section>
+
+      <section v-if="approvalInboxVisible" class="task-detail-card task-approval-inbox" data-test="resume-approval-inbox" aria-live="polite">
+        <header>
+          <span><AppIcon name="workflow" :size="18" /></span>
+          <div><strong>新消息待确认</strong><small>确认后才会给候选人发话术，并点击 BOSS“求简历”。</small></div>
+          <em v-if="pendingResumeApprovals.length">{{ pendingResumeApprovals.length }} 条</em>
+        </header>
+        <p v-if="approvalInboxLoading && !pendingResumeApprovals.length">正在检查新消息…</p>
+        <p v-else-if="!pendingResumeApprovals.length && !approvalInboxError">当前没有待确认的新消息，系统会按设置的间隔继续检查。</p>
+        <article v-for="approval in pendingResumeApprovals" :key="approval.id" :data-test="`resume-approval-${approval.id}`">
+          <div><strong>{{ approvalCandidate(approval).name || '候选人' }}</strong><small>{{ approvalCandidate(approval).job_title || plan.job_title }}<template v-if="approvalExpiry(approval.expires_at)"> · {{ approvalExpiry(approval.expires_at) }} 前确认</template></small></div>
+          <blockquote>{{ approval.payload?.message }}</blockquote>
+          <button type="button" :disabled="Boolean(approvalActionId) || Boolean(busy)" :data-test="`approve-resume-${approval.id}`" @click="approveResumeRequest(approval)">
+            {{ approvalActionId === String(approval.id) ? '正在确认…' : '确认发送并求简历' }}
+          </button>
+        </article>
+        <p v-if="approvalInboxError" class="task-action-error" role="alert">{{ approvalInboxError }}</p>
+        <p v-if="approvalNotice" class="task-approval-notice" role="status">{{ approvalNotice }}</p>
       </section>
 
       <p v-if="actionError || loadError" class="task-action-error" role="alert"><AppIcon name="alert-circle" :size="15" />{{ actionError || loadError }}</p>
@@ -386,6 +490,18 @@ onUnmounted(() => {
 .task-status-card dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--task-space-3); margin: 0; }
 .task-status-card dl div { display: grid; gap: var(--task-space-1); min-width: 0; }
 .task-status-card dd { margin: 0; overflow: hidden; color: var(--task-ink); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.task-approval-inbox { display: grid; gap: var(--task-space-3); padding: var(--task-space-4) var(--task-space-5); border-left: 4px solid var(--task-warning); }
+.task-approval-inbox > header { display: flex; align-items: center; gap: var(--task-space-3); }
+.task-approval-inbox > header > span { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 10px; color: #9a5b08; background: var(--task-warning-soft); }
+.task-approval-inbox > header > div, .task-approval-inbox article > div { display: grid; gap: 2px; min-width: 0; }
+.task-approval-inbox > header strong, .task-approval-inbox article strong { color: var(--task-ink); font-size: 13px; }
+.task-approval-inbox > header small, .task-approval-inbox article small, .task-approval-inbox > p { margin: 0; color: var(--task-muted); font-size: 12px; line-height: 1.5; }
+.task-approval-inbox > header em { margin-left: auto; padding: 3px 8px; border-radius: 999px; color: #9a5b08; background: var(--task-warning-soft); font-size: 11px; font-style: normal; font-weight: 800; }
+.task-approval-inbox article { display: grid; grid-template-columns: minmax(150px, .55fr) minmax(240px, 1.25fr) auto; align-items: center; gap: var(--task-space-4); padding-top: var(--task-space-3); border-top: 1px solid var(--task-line); }
+.task-approval-inbox blockquote { margin: 0; color: var(--task-slate); font-size: 12px; line-height: 1.55; }
+.task-approval-inbox article button { min-height: 36px; padding: 0 12px; border: 1px solid var(--task-brand); border-radius: var(--task-radius-control); color: white; background: var(--task-brand); font: 700 12px/1.3 var(--task-font-family); cursor: pointer; }
+.task-approval-inbox article button:disabled { cursor: wait; opacity: .55; }
+.task-approval-notice { color: var(--task-brand-dark) !important; }
 .task-action-error { display: flex; align-items: center; gap: var(--task-space-2); margin: 0; padding: var(--task-space-3) var(--task-space-4); color: #b42332; background: var(--task-danger-soft); border: 1px solid #f3c9cf; border-radius: var(--task-radius-control); font-size: 12px; }
 .task-detail-loading { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--task-space-3); padding: var(--task-space-5); }
 .task-detail-loading span { height: 76px; border-radius: var(--task-radius-control); background: #f1f5f9; animation: task-pulse 1.2s ease-in-out infinite; }
@@ -410,6 +526,8 @@ onUnmounted(() => {
   .task-detail-loading { grid-template-columns: 1fr; }
   .task-detail-loading p { grid-column: auto; }
   .task-detail-error { align-items: flex-start; flex-wrap: wrap; }
+  .task-approval-inbox article { grid-template-columns: 1fr; }
+  .task-approval-inbox article button { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

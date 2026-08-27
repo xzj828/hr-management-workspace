@@ -62,8 +62,10 @@ a { color: inherit; text-decoration: none; }
 .top-navigation::-webkit-scrollbar { display: none; }
 .top-navigation__link { position: relative; min-width: max-content; display: inline-flex; align-items: center; gap: 6px; color: #425066; font-size: 13px; font-weight: 600; white-space: nowrap; transition: color 150ms ease; }
 .top-navigation__link:hover { color: var(--teal-dark); }
-.top-navigation__link.router-link-exact-active { color: var(--teal-dark); }
-.top-navigation__link.router-link-exact-active::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--teal); }
+.top-navigation__link.router-link-exact-active,
+.top-navigation__link.top-navigation__link--active { color: var(--teal-dark); }
+.top-navigation__link.router-link-exact-active::after,
+.top-navigation__link.top-navigation__link--active::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--teal); }
 .topbar__actions { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; background: #fff; }
 .recruitment-job-context { position: relative; min-width: 0; color: var(--slate); }
 .recruitment-job-context--global { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-left: 1px solid var(--line); }

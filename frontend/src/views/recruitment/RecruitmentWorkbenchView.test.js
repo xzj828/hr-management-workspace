@@ -75,7 +75,6 @@ function planFixture({
 
 function baseApi(path) {
   if (path === 'recruitment/boss-accounts/') return Promise.resolve({ results: [readyAccount] })
-  if (path === 'recruitment/automation-plans/') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation/summary/') return Promise.resolve({
     worker: { hostname: 'WIN-HR', status: 'online' },
     cli_available: true,
@@ -178,49 +177,16 @@ describe('RecruitmentWorkbenchView', () => {
     sessionStorage.clear()
   })
 
-  it('shows the always-visible multi-task entry on a fresh workbench', async () => {
-    apiMock.mockImplementation((path) => {
-      if (path === 'recruitment/automation-plans/') {
-        return Promise.resolve({
-          results: [
-            planFixture(),
-            planFixture({
-              id: 302,
-              job: 52,
-              jobTitle: '产品经理',
-              state: 'waiting_human',
-              kind: 'passive_resume',
-              runId: 'run-88',
-              updatedAt: '2026-08-27T10:00:00+08:00',
-            }),
-          ],
-        })
-      }
-      return baseApi(path)
-    })
+  it('keeps executed task cards out of the workbench', async () => {
     ;({ wrapper } = await mountView({ new: '1' }))
 
-    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('当前招聘任务')
-    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('2 个可查看任务')
-    expect(wrapper.get('[data-test="workspace-task-301"]').attributes('href')).toContain('/recruitment/tasks/301')
-    expect(wrapper.get('[data-test="workspace-task-302"]').attributes('href')).toContain('/recruitment/tasks/302')
-    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('产品经理')
+    expect(wrapper.find('[data-test="workspace-task-entry"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="resume-approval-inbox"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
   })
 
-  it('keeps the new-task wizard usable when the multi-task list fails to load', async () => {
-    apiMock.mockImplementation((path) => {
-      if (path === 'recruitment/automation-plans/') return Promise.reject(new Error('任务服务暂不可用'))
-      return baseApi(path)
-    })
-    ;({ wrapper } = await mountView({ new: '1' }))
-
-    expect(wrapper.get('[data-test="workspace-task-error"]').text()).toContain('任务服务暂不可用')
-    expect(wrapper.find('[data-test="complete-context-step"]').exists()).toBe(true)
-    expect(wrapper.get('[data-test="workspace-task-entry"]').text()).toContain('查看全部结果')
-  })
-
-  it('presents four guarded pages and keeps execution controls exclusively on the review step', async () => {
+  it('presents four guarded configuration pages and leaves execution controls to the result task page', async () => {
     let router
     apiMock.mockImplementation((path, options) => {
       if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') return Promise.resolve(planFixture())
@@ -262,23 +228,12 @@ describe('RecruitmentWorkbenchView', () => {
     const writesBeforeReview = apiMock.mock.calls.filter(([, options]) => options?.method === 'POST').length
     await completePlanAndReview(wrapper)
     expect(wrapper.get('[data-test="wizard-step-review"]').attributes('aria-current')).toBe('step')
-    expect(router.currentRoute.value.query).toMatchObject({ job: '51', step: 'review' })
+    expect(router.currentRoute.value.name).toBe('recruitment-task-detail')
     expect(wrapper.find('.workbench-review').exists()).toBe(true)
-    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="workspace-task-entry"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="precheck-job"]').exists()).toBe(true)
     expect(apiMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(writesBeforeReview + 1)
-
-    await wrapper.get('[data-test="previous-step"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-test="workbench-step-plan"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
-    await wrapper.get('[data-test="previous-step"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(true)
-    await wrapper.get('[data-test="previous-step"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-test="workbench-step-context"]').exists()).toBe(true)
   })
 
   it('resets the persistent work area for every newly selected step', async () => {
@@ -697,9 +652,18 @@ describe('RecruitmentWorkbenchView', () => {
     expect(router.currentRoute.value.name).toBe('recruitment-task-detail')
     expect(router.currentRoute.value.params.planId).toBe('301')
     expect(router.currentRoute.value.query).toMatchObject({ job: '51', run: 'run-77', view: 'tasks' })
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
-    expect(wrapper.get('[data-test="operation-results"]').attributes('href')).toContain('run=run-77')
-    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
+    expect(sessionStorage.getItem('ximing-hr:recruitment-workbench-draft:v1:9:51')).toBeNull()
+    expect(sessionStorage.getItem('ximing-hr:recruitment-workbench-reset:v1:9')).not.toBeNull()
+
+    wrapper.unmount()
+    wrapper = null
+    ;({ wrapper, router } = await mountView({ job: '51' }))
+    expect(sessionStorage.getItem('ximing-hr:recruitment-workbench-reset:v1:9')).toBeNull()
+    expect(router.currentRoute.value.query).toMatchObject({ new: '1', step: 'context' })
+    expect(router.currentRoute.value.query.job).toBeUndefined()
+    expect(useRecruitmentContextStore().selectedJobId).toBe('')
+    expect(wrapper.get('[data-test="workbench-job"]').element.value).toBe('')
   })
 
   it('opens a blank first step for a fresh task instead of restoring the last job', async () => {
@@ -735,7 +699,7 @@ describe('RecruitmentWorkbenchView', () => {
 
     resolveStart(planFixture({ runId: 'run-once' }))
     await flushPromises()
-    expect(wrapper.get('[data-test="operation-control"]').text()).toContain('run-once')
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
   })
 
   it('freezes the atomic start snapshot and rejects a job route change while it is pending', async () => {
@@ -778,7 +742,7 @@ describe('RecruitmentWorkbenchView', () => {
 
     resolveStart(planFixture({ runId: 'run-snapshot' }))
     await flushPromises()
-    expect(wrapper.get('[data-test="operation-control"]').text()).toContain('run-snapshot')
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
   })
 
   it('blocks execution with an explicit repair path when the isolated browser is stopped', async () => {
@@ -819,7 +783,7 @@ describe('RecruitmentWorkbenchView', () => {
     const startCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')
     expect(JSON.parse(startCall[1].body)).toMatchObject({ workflow_version: 91 })
     expect(apiMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
-    expect(wrapper.get('[data-test="operation-control"]').text()).toContain('run-custom')
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
   })
 
   it('restores a managed standard revision as editable config without reusing its old workflow graph', async () => {
@@ -836,18 +800,13 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
 
-    ;({ wrapper } = await mountView({ job: '51' }))
-    await wrapper.get('[data-test="previous-step"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[data-test="workflow-choice"]').element.value).toBe('standard')
-    expect(wrapper.text()).not.toContain('当前任务使用的高级流程')
-    await wrapper.get('[data-test="wizard-step-review"]').trigger('click')
-    await flushPromises()
-    await wrapper.get('[data-test="modify-operation"]').trigger('click')
-    await flushPromises()
+    ;({ wrapper } = await mountView({ job: '51', editPlan: '301' }))
+    expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(true)
     await wrapper.get('[data-test="core-requirements"]').setValue('修改后的托管标准')
     await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
+    expect(wrapper.get('[data-test="workflow-choice"]').element.value).toBe('standard')
+    expect(wrapper.text()).not.toContain('当前任务使用的高级流程')
     await completePlanAndReview(wrapper)
 
     const startBody = JSON.parse(apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')[1].body)
@@ -869,8 +828,8 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
 
-    ;({ wrapper } = await mountView({ job: '51' }))
-    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    ;({ wrapper } = await mountView({ job: '51', editPlan: '301' }))
+    await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-test="workflow-choice"]').element.value).toBe('custom:91')
     expect(wrapper.text()).toContain('当前任务使用的高级流程')
@@ -899,8 +858,8 @@ describe('RecruitmentWorkbenchView', () => {
       return baseApi(path)
     })
 
-    ;({ wrapper } = await mountView({ job: '51' }))
-    await wrapper.get('[data-test="previous-step"]').trigger('click')
+    ;({ wrapper } = await mountView({ job: '51', editPlan: '301' }))
+    await wrapper.get('[data-test="complete-standard-step"]').trigger('click')
     await flushPromises()
     const choice = wrapper.get('[data-test="workflow-choice"]')
     const values = choice.findAll('option').map((option) => option.attributes('value'))
@@ -957,7 +916,7 @@ describe('RecruitmentWorkbenchView', () => {
       bonus: ['更新后的加分项'],
     })
     expect(requestIds[1]).not.toBe(requestIds[0])
-    expect(wrapper.get('[data-test="operation-control"]').text()).toContain('run-new-draft')
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
   })
 
   it('reuses an in-memory idempotency key when the same atomic command is retried', async () => {
@@ -985,211 +944,7 @@ describe('RecruitmentWorkbenchView', () => {
 
     expect(requestIds).toHaveLength(2)
     expect(requestIds[1]).toBe(requestIds[0])
-    expect(wrapper.get('[data-test="operation-control"]').text()).toContain('run-recovered')
-  })
-
-  it('loads a running plan from the server and stops it with optimistic concurrency', async () => {
-    const running = planFixture()
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [running] })
-      if (path === 'recruitment/automation-plans/301/stop/' && options?.method === 'POST') {
-        return Promise.resolve(planFixture({ state: 'stopping', controlVersion: 5 }))
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
-    expect(wrapper.find('[data-test="start-execution"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="stop-and-modify-operation"]').exists()).toBe(true)
-
-    await wrapper.get('[data-test="stop-operation"]').trigger('click')
-    await flushPromises()
-
-    const stopCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/301/stop/')
-    expect(JSON.parse(stopCall[1].body)).toMatchObject({
-      request_id: expect.any(String),
-      expected_control_version: 4,
-    })
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('正在停止')
-    expect(wrapper.text()).toContain('安全收尾')
-  })
-
-  it('surfaces a recovered passive resume approval and confirms the exact message before execution', async () => {
-    const passive = planFixture({
-      kind: 'passive_resume',
-      config: { interval_minutes: 2, reply_message: '您好，方便发送一份简历吗？', core: [], bonus: [] },
-      revisionId: 451,
-      controlGeneration: 8,
-    })
-    const approval = {
-      id: 'approval-1',
-      action: 'request_resume',
-      status: 'draft',
-      automation_plan_revision: 451,
-      automation_generation: 8,
-      expires_at: '2026-08-27T10:30:00+08:00',
-      payload: {
-        message: '您好，方便发送一份简历吗？',
-        items: [{ name: '陈翔', job_title: 'Python 后端工程师' }],
-      },
-    }
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [passive] })
-      if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [approval] })
-      if (path === 'recruitment/automation-approvals/approval-1/approve/' && options?.method === 'POST') {
-        return Promise.resolve({
-          ...approval,
-          status: 'approved',
-          batch: { id: 'batch-1', total_items: 1, steps: [{ id: 1, status: 'pending' }] },
-        })
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-
-    expect(wrapper.get('[data-test="resume-approval-inbox"]').text()).toContain('陈翔')
-    expect(wrapper.get('[data-test="resume-approval-inbox"]').text()).toContain('您好，方便发送一份简历吗？')
-    expect(apiMock.mock.calls.find(([path]) => path.startsWith('recruitment/automation-approvals/?'))[0]).toContain('automation_plan_revision=451')
-    expect(apiMock.mock.calls.find(([path]) => path.startsWith('recruitment/automation-approvals/?'))[0]).toContain('automation_generation=8')
-
-    await wrapper.get('[data-test="approve-resume-approval-1"]').trigger('click')
-    await flushPromises()
-
-    expect(apiMock).toHaveBeenCalledWith('recruitment/automation-approvals/approval-1/approve/', {
-      method: 'POST',
-      body: '{}',
-    })
-    expect(wrapper.text()).toContain('发送批次已创建')
-    expect(wrapper.text()).toContain('Worker 将先发送话术，再点击“求简历”')
-    expect(wrapper.find('[data-test="resume-approval-approval-1"]').exists()).toBe(false)
-  })
-
-  it('does not claim a resume request was queued when approval returns no communication batch', async () => {
-    const passive = planFixture({
-      kind: 'passive_resume',
-      revisionId: 451,
-      controlGeneration: 8,
-    })
-    const approval = {
-      id: 'approval-without-batch',
-      action: 'request_resume',
-      status: 'draft',
-      automation_plan_revision: 451,
-      automation_generation: 8,
-      payload: { message: '您好，请发送简历', items: [{ name: '耿柔', job_title: '前置部署工程师' }] },
-    }
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [passive] })
-      if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [approval] })
-      if (path === 'recruitment/automation-approvals/approval-without-batch/approve/' && options?.method === 'POST') {
-        return Promise.resolve({ ...approval, status: 'approved' })
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-    await wrapper.get('[data-test="approve-resume-approval-without-batch"]').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('服务端尚未创建可执行发送步骤')
-    expect(wrapper.text()).not.toContain('发送批次已创建')
-  })
-
-  it('stops before editing and preserves the current per-job draft on step two', async () => {
-    sessionStorage.setItem('ximing-hr:recruitment-workbench-draft:v1:9:51', JSON.stringify({
-      version: 1,
-      jobId: '51',
-      selectedAccountId: '7',
-      step: 'plan',
-      completed: { context: true, standard: true },
-      documentCategory: 'persona',
-      draft: {
-        schemeKind: 'active_resume_search',
-        workflowChoice: 'standard',
-        coreText: 'HR 尚未提交的修改',
-        bonusText: '本地加分项',
-        interval: 2,
-        source: 'search',
-        keyword: 'Python',
-        targetResumeCount: 4,
-        maxScanCount: 20,
-      },
-    }))
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [planFixture()] })
-      if (path === 'recruitment/automation-plans/301/stop/' && options?.method === 'POST') {
-        return Promise.resolve(planFixture({ state: 'stopping', controlVersion: 5 }))
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51', step: 'plan' }))
-    await completePlanAndReview(wrapper)
-    await wrapper.get('[data-test="stop-and-modify-operation"]').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.find('[data-test="workbench-step-standard"]').exists()).toBe(true)
-    expect(wrapper.get('[data-test="core-requirements"]').element.value).toBe('HR 尚未提交的修改')
-    expect(wrapper.get('[data-test="bonus-requirements"]').element.value).toBe('本地加分项')
-    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/automation-plans/301/stop/')).toHaveLength(1)
-  })
-
-  it('resumes a paused plan and refreshes a 409 conflict to the latest server state', async () => {
-    let planReads = 0
-    const conflict = Object.assign(new Error('version conflict'), { status: 409 })
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') {
-        planReads += 1
-        return Promise.resolve({ results: [planFixture({ state: planReads === 1 ? 'running' : 'paused', controlVersion: 5 })] })
-      }
-      if (path === 'recruitment/automation-plans/301/stop/' && options?.method === 'POST') return Promise.reject(conflict)
-      if (path === 'recruitment/automation-plans/301/resume/' && options?.method === 'POST') {
-        return Promise.resolve(planFixture({ state: 'running', controlVersion: 6 }))
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-    await wrapper.get('[data-test="stop-operation"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('已暂停')
-    expect(wrapper.text()).toContain('已为你刷新')
-
-    await wrapper.get('[data-test="resume-operation"]').trigger('click')
-    await flushPromises()
-    const resumeCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/301/resume/')
-    expect(JSON.parse(resumeCall[1].body).expected_control_version).toBe(5)
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
-  })
-
-  it('restarts a terminal plan as a new revision with its latest control version', async () => {
-    const stopped = planFixture({
-      state: 'stopped',
-      kind: 'passive_resume',
-      config: { interval_minutes: 5, reply_message: '请发送简历', core: [], bonus: [] },
-    })
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [stopped] })
-      if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') {
-        return Promise.resolve(planFixture({ kind: 'passive_resume', controlVersion: 5 }))
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('已停止')
-    await wrapper.get('[data-test="restart-operation"]').trigger('click')
-    await flushPromises()
-
-    const startCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')
-    expect(JSON.parse(startCall[1].body)).toMatchObject({
-      kind: 'passive_resume',
-      expected_control_version: 4,
-      config: { interval_minutes: 5 },
-    })
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
   })
 
   it('keeps the restored edit baseline when polling discovers a newer server revision', async () => {
@@ -1243,122 +998,10 @@ describe('RecruitmentWorkbenchView', () => {
 
     await wrapper.get('[data-test="rebase-edit-draft"]').trigger('click')
     expect(wrapper.find('[data-test="plan-version-notice"]').exists()).toBe(false)
-    await wrapper.get('[data-test="restart-operation"]').trigger('click')
+    await wrapper.get('[data-test="start-execution"]').trigger('click')
     await flushPromises()
     expect(startBodies[1].expected_control_version).toBe(5)
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
-  })
-
-  it('invalidates a pending stop-and-modify response when the workbench unmounts', async () => {
-    let router
-    let resolveStop
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [planFixture()] })
-      if (path === 'recruitment/automation-plans/301/stop/' && options?.method === 'POST') {
-        return new Promise((resolve) => { resolveStop = resolve })
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper, router } = await mountView({ job: '51', step: 'plan' }))
-    await completePlanAndReview(wrapper)
-    const push = vi.spyOn(router, 'push')
-    await wrapper.get('[data-test="stop-and-modify-operation"]').trigger('click')
-    await flushPromises()
-    push.mockClear()
-    wrapper.unmount()
-    wrapper = null
-
-    resolveStop(planFixture({ state: 'stopping', controlVersion: 5 }))
-    await flushPromises()
-    expect(push).not.toHaveBeenCalled()
-    push.mockRestore()
-  })
-
-  it('disables terminal restart when status polling failed and reenables it after refresh', async () => {
-    vi.useFakeTimers()
-    let planReads = 0
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') {
-        planReads += 1
-        if (planReads === 2) return Promise.reject(new Error('status offline'))
-        return Promise.resolve({ results: [planFixture({ state: 'stopped', controlVersion: 4 })] })
-      }
-      if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') {
-        return Promise.resolve(planFixture())
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-    vi.advanceTimersByTime(5000)
-    await flushPromises()
-    expect(wrapper.get('[data-test="restart-operation"]').attributes()).toHaveProperty('disabled')
-    expect(wrapper.text()).toContain('任务状态同步失败，请等待自动刷新后再试')
-    await wrapper.get('[data-test="restart-operation"]').trigger('click')
-    expect(apiMock.mock.calls.filter(([path]) => path === 'recruitment/automation-plans/start/')).toHaveLength(0)
-
-    vi.advanceTimersByTime(5000)
-    await flushPromises()
-    expect(wrapper.get('[data-test="restart-operation"]').attributes()).not.toHaveProperty('disabled')
-  })
-
-  it('does not let an older poll overwrite a newer stop response', async () => {
-    vi.useFakeTimers()
-    let planReads = 0
-    let resolveStalePoll
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') {
-        planReads += 1
-        if (planReads === 2) return new Promise((resolve) => { resolveStalePoll = resolve })
-        return Promise.resolve({ results: [planFixture()] })
-      }
-      if (path === 'recruitment/automation-plans/301/stop/' && options?.method === 'POST') {
-        return Promise.resolve(planFixture({ state: 'stopping', controlVersion: 5 }))
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-    vi.advanceTimersByTime(5000)
-    await flushPromises()
-    await wrapper.get('[data-test="stop-operation"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('正在停止')
-
-    resolveStalePoll({ results: [planFixture({ state: 'running', controlVersion: 4 })] })
-    await flushPromises()
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('正在停止')
-  })
-
-  it('does not let an older terminal poll overwrite a newer restart response', async () => {
-    vi.useFakeTimers()
-    let planReads = 0
-    let resolveStalePoll
-    const stopped = planFixture({ state: 'stopped' })
-    apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/automation-plans/?job=51') {
-        planReads += 1
-        if (planReads === 2) return new Promise((resolve) => { resolveStalePoll = resolve })
-        return Promise.resolve({ results: [stopped] })
-      }
-      if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') {
-        return Promise.resolve(planFixture({ state: 'running', controlVersion: 5, runId: 'run-restarted' }))
-      }
-      return baseApi(path)
-    })
-
-    ;({ wrapper } = await mountView({ job: '51' }))
-    vi.advanceTimersByTime(5000)
-    await flushPromises()
-    await wrapper.get('[data-test="restart-operation"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
-
-    resolveStalePoll({ results: [stopped] })
-    await flushPromises()
-    expect(wrapper.get('[data-test="operation-state"]').text()).toBe('运行中')
-    expect(wrapper.get('[data-test="operation-control"]').text()).toContain('run-restarted')
+    expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
   })
 
   it('polls every five seconds without overlapping an unfinished status request', async () => {

@@ -4,22 +4,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMock = vi.hoisted(() => vi.fn())
 
-vi.mock('@/api', () => ({ api: apiMock }))
+vi.mock('@/api', () => ({
+  api: apiMock,
+  listItems: (payload) => Array.isArray(payload) ? payload : payload?.results || [],
+}))
 
 import RecruitmentTaskDetailView from './RecruitmentTaskDetailView.vue'
 
-function planFixture({ state = 'running', archivedAt = null, controlVersion = 4, runId = 'run-77' } = {}) {
+function planFixture({ state = 'running', archivedAt = null, controlVersion = 4, runId = 'run-77', kind = 'active_resume_search', revisionId = 401, controlGeneration = 6 } = {}) {
   return {
     id: 301,
     job: 51,
     job_title: 'Python 后端工程师',
-    kind: 'active_resume_search',
+    kind,
     desired_state: state === 'stopping' ? 'stopped' : state,
     effective_state: state,
     control_version: controlVersion,
-    control_generation: 6,
+    control_generation: controlGeneration,
     current_revision: {
-      id: 401,
+      id: revisionId,
       revision: 2,
       kind: 'active_resume_search',
       workflow_version: 91,
@@ -107,6 +110,37 @@ describe('RecruitmentTaskDetailView', () => {
     expect(apiMock).toHaveBeenCalledWith('recruitment/automation-plans/301/stop/', expect.objectContaining({ method: 'POST' }))
     expect(router.currentRoute.value.name).toBe('recruitment-workbench')
     expect(router.currentRoute.value.query).toMatchObject({ job: '51', editPlan: '301', step: 'standard' })
+  })
+
+  it('maintains passive resume approvals on the result task page', async () => {
+    const passive = planFixture({ kind: 'passive_resume', revisionId: 451, controlGeneration: 8 })
+    const approval = {
+      id: 'approval-1',
+      expires_at: '2026-08-27T10:30:00+08:00',
+      payload: {
+        message: '您好，方便发送一份简历吗？',
+        items: [{ name: '陈翔', job_title: 'Python 后端工程师' }],
+      },
+    }
+    ;({ wrapper } = await mountView((path, options) => {
+      if (path === 'recruitment/automation-plans/301/') return Promise.resolve(passive)
+      if (path.startsWith('recruitment/automation-approvals/?')) return Promise.resolve({ results: [approval] })
+      if (path === 'recruitment/automation-approvals/approval-1/approve/' && options?.method === 'POST') {
+        return Promise.resolve({ ...approval, batch: { id: 'batch-1', steps: [{ status: 'pending' }] } })
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`))
+    }))
+
+    expect(wrapper.get('[data-test="resume-approval-inbox"]').text()).toContain('陈翔')
+    expect(wrapper.get('[data-test="resume-approval-inbox"]').text()).toContain('您好，方便发送一份简历吗？')
+    const approvalQuery = apiMock.mock.calls.find(([path]) => path.startsWith('recruitment/automation-approvals/?'))[0]
+    expect(approvalQuery).toContain('automation_plan_revision=451')
+    expect(approvalQuery).toContain('automation_generation=8')
+
+    await wrapper.get('[data-test="approve-resume-approval-1"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('发送批次已创建')
+    expect(wrapper.find('[data-test="resume-approval-approval-1"]').exists()).toBe(false)
   })
 
   it('deletes only a terminal task visibility record and can restore it', async () => {

@@ -26,6 +26,8 @@ const collapsed = ref(false)
 const modelSettingsOpen = ref(false)
 
 const currentModule = computed(() => moduleForRoute(route))
+const isResultsWorkspace = computed(() => ['recruitment-results', 'recruitment-task-detail'].includes(String(route.name)))
+const activeTopNavigationName = computed(() => route.name === 'recruitment-task-detail' ? 'recruitment-results' : route.name)
 const topNavigation = computed(() => navigationForModule(currentModule.value).filter((item) => (
   item.name !== 'recruitment-admin' || auth.canManage
 )))
@@ -79,7 +81,7 @@ function closeAccountModelSettings() {
 </script>
 
 <template>
-  <div class="shell" :class="{ 'shell--collapsed': collapsed, 'shell--results': route.name === 'recruitment-results' }">
+  <div class="shell" :class="{ 'shell--collapsed': collapsed, 'shell--results': isResultsWorkspace }">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand__mark">XM</div>
@@ -114,13 +116,14 @@ function closeAccountModelSettings() {
             :key="item.name"
             :to="topNavigationRoute(item)"
             class="top-navigation__link"
+            :class="{ 'top-navigation__link--active': item.name === activeTopNavigationName }"
           ><AppIcon :name="item.icon" :size="18" /><span>{{ item.label }}</span></router-link>
         </nav>
         <div class="topbar__actions">
           <RecruitmentJobContext
             v-if="currentModule === 'recruitment' && route.meta.recruitmentScope === 'job' && !route.meta.inlineJobContext"
           />
-          <ModelSwitcher v-if="currentModule === 'recruitment'" :compact="route.name === 'recruitment-results'" />
+          <ModelSwitcher v-if="currentModule === 'recruitment'" :compact="isResultsWorkspace" />
           <UserAccountMenu :user="auth.user" @model-settings="modelSettingsOpen = true" @logout="signOut" />
         </div>
       </header>
@@ -128,7 +131,7 @@ function closeAccountModelSettings() {
         class="page-container"
         :class="{
           'page-container--workbench': route.name === 'recruitment-workbench',
-          'page-container--results': route.name === 'recruitment-results',
+          'page-container--results': isResultsWorkspace,
         }"
       >
         <router-view />

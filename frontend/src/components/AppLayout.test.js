@@ -83,6 +83,30 @@ describe('AppLayout navigation hierarchy', () => {
     expect(links).toContainEqual({ name: 'recruitment-admin' })
   })
 
+  it('treats a recruitment task detail as a result-center child page', () => {
+    routerState.route = {
+      name: 'recruitment-task-detail',
+      meta: { module: 'recruitment', recruitmentScope: 'job', inlineJobContext: true, resultCenterChild: true },
+      query: { job: '12', run: 'run-1', view: 'tasks' },
+      params: { planId: '301' },
+    }
+    const wrapper = mount(AppLayout, {
+      global: {
+        stubs: {
+          RouterLink: { props: ['to'], template: '<a><slot /></a>' },
+          RouterView: true,
+          RecruitmentJobContext: true,
+          ModelSwitcher: ModelSwitcherStub,
+        },
+      },
+    })
+
+    expect(wrapper.get('.shell').classes()).toContain('shell--results')
+    expect(wrapper.get('.page-container').classes()).toContain('page-container--results')
+    const resultLink = wrapper.findAll('.top-navigation__link').find((link) => link.text().includes('结果中心'))
+    expect(resultLink.classes()).toContain('top-navigation__link--active')
+  })
+
   it('hides management navigation from viewer roles', () => {
     useAuthStore().user = { id: 8, username: 'viewer', role: 'viewer' }
     const wrapper = mount(AppLayout, {
