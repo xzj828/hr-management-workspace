@@ -160,6 +160,25 @@ def enqueue_resume_score(*, structured_resume, standard, requested_by, request_i
 
 
 @transaction.atomic
+def enqueue_resume_report(*, assessment, requested_by, request_id=None) -> tuple[AiProcessingTask, bool]:
+    locked_user, snapshot = _lock_user_and_capture_snapshot(requested_by)
+    request_id = request_id or uuid.uuid4()
+    key = f"resume-report:{request_id}:{assessment.pk}"
+    return AiProcessingTask.objects.get_or_create(
+        idempotency_key=key,
+        defaults={
+            "kind": AiProcessingTask.Kind.RESUME_REPORT,
+            "requested_by": locked_user,
+            "job": assessment.standard.job,
+            "resume": assessment.structured_resume.resume,
+            "standard": assessment.standard,
+            "assessment": assessment,
+            **_snapshot_defaults(snapshot),
+        },
+    )
+
+
+@transaction.atomic
 def _bind_waiting_tasks_for_user(user_id) -> int:
     locked_user = get_user_model().objects.select_for_update().get(pk=user_id)
     snapshot = _capture_current_snapshot_locked(locked_user)
@@ -301,10 +320,17 @@ def _execute_resume_score(task):
     return process_resume_score_task(task)
 
 
+def _execute_resume_report(task):
+    from recruitment.services.resume_intelligence import process_resume_report_task
+
+    return process_resume_report_task(task)
+
+
 TASK_EXECUTORS = {
     AiProcessingTask.Kind.JOB_STANDARD: _execute_job_standard,
     AiProcessingTask.Kind.RESUME_STRUCTURE: _execute_resume_structure,
     AiProcessingTask.Kind.RESUME_SCORE: _execute_resume_score,
+    AiProcessingTask.Kind.RESUME_REPORT: _execute_resume_report,
 }
 
 

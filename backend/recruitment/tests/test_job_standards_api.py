@@ -16,6 +16,7 @@ from recruitment.services.job_standards import (
     create_standard_draft,
     normalize_priority_scoring_weights,
     publish_standard,
+    resolve_workbench_standard,
     update_standard_draft,
     validate_criteria,
 )
@@ -194,6 +195,41 @@ class JobStandardServiceTests(TestCase):
         )
         self.assertEqual(weights, [60, 40])
         self.assertEqual(sum(weights), 100)
+
+    def test_workbench_merges_uploaded_standard_and_manual_text(self):
+        document_standard = JobStandardVersion.objects.create(
+            job=self.job,
+            version=1,
+            status=JobStandardVersion.Status.PUBLISHED,
+            criteria=valid_criteria(self.block_id),
+            created_by=self.user,
+            published_by=self.user,
+        )
+        document_standard.source_document_versions.add(self.version)
+
+        merged = resolve_workbench_standard(
+            job=self.job,
+            core=["需要独立负责需求分析"],
+            bonus=["有数据分析经验"],
+            actor=self.user,
+        )
+
+        names = [item["name"] for item in merged.criteria["dimensions"]]
+        self.assertIn("相关经验", names)
+        self.assertIn("需要独立负责需求分析", names)
+        self.assertIn("有数据分析经验", names)
+        self.assertEqual(sum(item["weight"] for item in merged.criteria["dimensions"]), 100)
+        self.assertEqual(merged.criteria["scoring_policy"], "evidence-level-v1")
+        self.assertEqual(
+            set(merged.source_document_versions.values_list("id", flat=True)), {self.version.id},
+        )
+        repeated = resolve_workbench_standard(
+            job=self.job,
+            core=["需要独立负责需求分析"],
+            bonus=["有数据分析经验"],
+            actor=self.user,
+        )
+        self.assertEqual(repeated.pk, merged.pk)
 
 
 class JobStandardApiTests(APITestCase):

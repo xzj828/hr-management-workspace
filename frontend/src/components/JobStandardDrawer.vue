@@ -9,7 +9,7 @@ const props = defineProps({
   documents: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['close', 'saved', 'published', 'retry'])
-const form = reactive({ summary: '', dimensions: [], hard_requirements: [], required: [], preferred: [], risks: [], unresolved_questions: [] })
+const form = reactive({ summary: '', dimensions: [], hard_requirements: [], required: [], preferred: [], risks: [], verification_questions: [], excluded_sensitive_criteria: [], background_only_fields: [], unresolved_questions: [] })
 const saving = ref(false)
 const error = ref('')
 const confirmPublish = ref(false)
@@ -22,16 +22,19 @@ function hydrate() {
   const criteria = props.standard?.criteria || {}
   form.summary = criteria.summary || ''
   form.dimensions = (criteria.dimensions || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])] }))
-  form.hard_requirements = (criteria.hard_requirements || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])], rule: item.rule ? { ...item.rule } : { field: 'total_experience_months', operator: 'gte', value: '' } }))
+  form.hard_requirements = (criteria.priority_requirements || criteria.hard_requirements || []).map((item) => ({ ...item, evidence_block_ids: [...(item.evidence_block_ids || [])], rule: item.rule ? { ...item.rule } : { field: 'total_experience_months', operator: 'gte', value: '' } }))
   form.required = [...(criteria.required || [])]
   form.preferred = [...(criteria.preferred || [])]
   form.risks = [...(criteria.risks || [])]
+  form.verification_questions = [...(criteria.verification_questions || [])]
+  form.excluded_sensitive_criteria = [...(criteria.excluded_sensitive_criteria || [])]
+  form.background_only_fields = [...(criteria.background_only_fields || [])]
   form.unresolved_questions = [...(props.standard?.unresolved_questions || [])]
 }
 watch(() => props.standard, hydrate, { immediate: true, deep: true })
 
 function addDimension() {
-  form.dimensions.push({ key: `dimension_${Date.now()}`, name: '新评分维度', weight: 0, description: '', evidence_block_ids: [] })
+  form.dimensions.push({ key: `dimension_${Date.now()}`, name: '新评分维度', category: 'core_business', weight: 0, description: '', result_anchor: '', requires_quantified_result: false, source: 'manual', evidence_block_ids: [] })
 }
 function removeDimension(index) { form.dimensions.splice(index, 1) }
 function addHardRequirement() { form.hard_requirements.push({ key: `hard_${Date.now()}`, text: '', evidence_block_ids: [], rule: { field: 'total_experience_months', operator: 'gte', value: '' } }) }
@@ -47,9 +50,13 @@ function normalizeRule(rule) {
 function payload() {
   return {
     criteria: {
-      summary: form.summary.trim(), dimensions: form.dimensions.map((item) => ({ ...item, weight: Number(item.weight || 0) })),
-      hard_requirements: form.hard_requirements.map((item) => ({ ...item, text: item.text.trim(), rule: normalizeRule(item.rule) })),
+      summary: form.summary.trim(), passing_score: 60, scoring_policy: 'evidence-level-v1', dimensions: form.dimensions.map((item) => ({ ...item, weight: Number(item.weight || 0) })),
+      priority_requirements: form.hard_requirements.map((item) => ({ ...item, text: item.text.trim(), rule: normalizeRule(item.rule) })),
+      hard_requirements: [],
       required: form.required, preferred: form.preferred, risks: form.risks,
+      verification_questions: form.verification_questions,
+      excluded_sensitive_criteria: form.excluded_sensitive_criteria,
+      background_only_fields: form.background_only_fields,
     },
     unresolved_questions: form.unresolved_questions,
   }
@@ -86,10 +93,10 @@ async function publish() {
         <p v-if="error" class="recruitment-error-strip">{{ error }}</p>
         <section v-if="!standard" class="standard-empty"><AppIcon name="document" :size="26" /><h3>尚未生成评分标准</h3><p>先上传岗位画像或招聘需求，再由模型整理成可确认的评分维度。</p></section>
         <template v-else>
-          <div class="standard-status-line"><span :class="['standard-state', `standard-state--${standard.status}`]">{{ standard.status_label }}</span><span>{{ documents.length }} 份来源文档</span><span>{{ standard.model_name || '待模型生成' }}</span></div>
+          <div class="standard-status-line"><span :class="['standard-state', `standard-state--${standard.status}`]">{{ standard.status_label }}</span><span>{{ documents.length }} 份来源文档</span><span>60 分及格 · 证据等级评分</span><span>{{ standard.model_name || '待模型生成' }}</span></div>
           <label class="standard-field standard-field--summary"><span>岗位目标摘要</span><textarea v-model="form.summary" rows="3" :disabled="!isDraft" placeholder="说明这个岗位真正要解决的问题" /></label>
           <section class="hard-requirements">
-            <header><div><span class="panel-kicker">PRIORITY SCORING</span><h3>重点评分项</h3><p>重点项默认按普通维度平均权重的 2 倍权重评分；不满足只影响得分，不淘汰候选人。</p></div><button v-if="isDraft" class="secondary-button" data-test="add-hard-requirement" @click="addHardRequirement">添加重点项</button></header>
+            <header><div><span class="panel-kicker">PRIORITY REVIEW</span><h3>重点核实项</h3><p>重点项不重复计分；缺失或不满足进入人工复核，不自动淘汰候选人。</p></div><button v-if="isDraft" class="secondary-button" data-test="add-hard-requirement" @click="addHardRequirement">添加重点项</button></header>
             <article v-for="(item, index) in form.hard_requirements" :key="item.key"><span>{{ String(index + 1).padStart(2, '0') }}</span><label><small>重点项标识</small><input v-model.trim="item.key" :disabled="!isDraft" placeholder="例如 degree" /></label><label><small>重点项要求</small><input v-model.trim="item.text" :disabled="!isDraft" placeholder="例如：学历不低于本科" /></label><button v-if="isDraft" :data-test="`remove-hard-requirement-${index}`" aria-label="删除重点项" @click="removeHardRequirement(index)">×</button><div class="hard-rule"><label><small>结构化判定字段</small><select v-model="item.rule.field" :disabled="!isDraft" @change="item.rule.operator = ruleOperators(item.rule.field)[0].value; item.rule.value = ''"><option value="total_experience_months">工作经验（月）</option><option value="highest_degree">最高学历</option><option value="skills">技能</option><option value="city">所在城市</option></select></label><label><small>条件</small><select v-model="item.rule.operator" :disabled="!isDraft"><option v-for="operator in ruleOperators(item.rule.field)" :key="operator.value" :value="operator.value">{{ operator.label }}</option></select></label><label><small>阈值（多个用逗号）</small><input v-model="item.rule.value" :disabled="!isDraft" placeholder="例如 36 / 本科 / Java,Vue" /></label></div></article>
           </section>
           <section class="standard-dimensions">
@@ -99,11 +106,13 @@ async function publish() {
               <label><span>维度名称</span><input v-model="dimension.name" :disabled="!isDraft" /></label>
               <label class="standard-dimension__weight"><span>权重</span><input v-model.number="dimension.weight" :data-test="`dimension-weight-${index}`" type="number" min="0" max="100" :disabled="!isDraft" /></label>
               <label class="standard-dimension__description"><span>判断说明</span><textarea v-model="dimension.description" rows="2" :disabled="!isDraft" /></label>
+              <label class="standard-dimension__description"><span>满级结果锚点</span><textarea v-model="dimension.result_anchor" rows="2" :disabled="!isDraft" placeholder="达到 L4 所需的业务结果；仅确有必要时要求量化" /></label>
               <button v-if="isDraft" class="standard-dimension__remove" :data-test="`remove-dimension-${index}`" aria-label="删除评分维度" @click="removeDimension(index)">×</button>
             </article>
             <button v-if="isDraft" class="standard-add" data-test="add-dimension" @click="addDimension"><span>＋</span>添加评分维度</button>
           </section>
           <section v-if="form.unresolved_questions.length" class="standard-questions"><span class="panel-kicker">NEEDS HR INPUT</span><h3>待确认问题</h3><p v-for="question in form.unresolved_questions" :key="question">{{ question }}</p></section>
+          <section v-if="form.excluded_sensitive_criteria.length" class="standard-questions"><span class="panel-kicker">EXCLUDED</span><h3>已排除的敏感评分项</h3><p>{{ form.excluded_sensitive_criteria.join('、') }}</p></section>
         </template>
       </div>
 

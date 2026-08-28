@@ -267,7 +267,8 @@ class AutomationPlanApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 201, response.data)
         standard = JobStandardVersion.objects.get(job=job, status=JobStandardVersion.Status.PUBLISHED)
-        self.assertEqual(standard.prompt_version, "workbench-input-v1")
+        self.assertEqual(standard.prompt_version, "workbench-merged-v1")
+        self.assertEqual(standard.criteria["scoring_policy"], "evidence-level-v1")
         self.assertEqual(
             [item["weight"] for item in standard.criteria["dimensions"]],
             [40, 40, 20],

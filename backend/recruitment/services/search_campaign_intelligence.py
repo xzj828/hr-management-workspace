@@ -36,7 +36,11 @@ def _set_item_from_assessment(item, assessment):
     item.assessment = assessment
     item.status = (
         SearchCampaignItem.Status.QUALIFIED
-        if assessment.recommendation == ResumeAssessment.Recommendation.ADVANCE
+        if (
+            assessment.total_score >= (assessment.passing_score_snapshot or 0)
+            and (assessment.system_recommendation or assessment.recommendation)
+            == ResumeAssessment.Recommendation.ADVANCE
+        )
         else SearchCampaignItem.Status.NOT_QUALIFIED
     )
     item.error_code = ""

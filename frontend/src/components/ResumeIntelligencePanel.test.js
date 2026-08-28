@@ -72,6 +72,30 @@ describe('ResumeIntelligencePanel', () => {
     expect(wrapper.get('[data-test="retry-structure"]').exists()).toBe(true)
   })
 
+  it('uses the persisted evidence-policy report and retries only a failed report', async () => {
+    const evidenceAssessment = {
+      ...assessment,
+      scoring_policy_version: 'evidence-level-v1',
+      passing_score_snapshot: '60.00',
+      standard_version: 3,
+      system_recommendation_label: '建议人工复核',
+      report_status: 'succeeded',
+      analysis_report: {
+        overview: '这是持久化的匹配概述。',
+        strengths: '这是持久化的主要优势。',
+        gaps_and_interview_focus: '这是持久化的差距与核实重点。',
+      },
+      dimension_scores: [{ ...assessment.dimension_scores[0], evidence_level: 'L3', status: 'supported', score: '35.00', max_score: '50.00' }],
+    }
+    const wrapper = mount(ResumeIntelligencePanel, { props: { resume, structure, assessment: evidenceAssessment, tasks: [] } })
+    expect(wrapper.text()).toContain('这是持久化的匹配概述')
+    expect(wrapper.text()).toContain('L3 · 35.00/50.00')
+
+    await wrapper.setProps({ assessment: { ...evidenceAssessment, report_status: 'failed', analysis_report: null } })
+    await wrapper.get('[data-test="retry-report"]').trigger('click')
+    expect(wrapper.emitted('retry-report')).toHaveLength(1)
+  })
+
   it('keeps the original resume behind an explicit click while details are loading', async () => {
     const wrapper = mount(ResumeIntelligencePanel, {
       props: { resume, structure, assessment, tasks: [], loading: true },

@@ -1376,6 +1376,14 @@ class ResumeAssessment(models.Model):
         validators=[MinValueValidator(0), MaxValueValidator(1)],
     )
     recommendation = models.CharField(max_length=32, choices=Recommendation.choices)
+    scoring_policy_version = models.CharField(max_length=40, default="legacy-model-v1")
+    passing_score_snapshot = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+    )
+    passed_score_line = models.BooleanField(null=True, blank=True)
+    system_recommendation = models.CharField(
+        max_length=32, choices=Recommendation.choices, blank=True, default="",
+    )
     model_name = models.CharField(max_length=120)
     prompt_version = models.CharField(max_length=40, default="resume-score-v1")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1388,6 +1396,53 @@ class ResumeAssessment(models.Model):
                 name="unique_resume_assessment_version",
             )
         ]
+
+
+class ResumeAssessmentReport(models.Model):
+    class Status(models.TextChoices):
+        SUCCEEDED = "succeeded", "已生成"
+        FAILED = "failed", "生成失败"
+
+    assessment = models.ForeignKey(
+        ResumeAssessment, on_delete=models.PROTECT, related_name="reports",
+    )
+    version = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=16, choices=Status.choices)
+    content = models.JSONField(default=dict, blank=True)
+    evidence = models.JSONField(default=list, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    model_name = models.CharField(max_length=120)
+    prompt_version = models.CharField(max_length=40, default="resume-report-v1")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["assessment", "version"],
+                name="unique_resume_assessment_report_version",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(
+                "assessment_id", "version", "status", "content", "evidence",
+                "error_code", "error_message", "model_name", "prompt_version",
+            ).first()
+            if original and any(
+                getattr(self, field) != original[field]
+                for field in (
+                    "assessment_id", "version", "status", "content", "evidence",
+                    "error_code", "error_message", "model_name", "prompt_version",
+                )
+            ):
+                raise ValidationError("分析报告为只追加版本，不能修改")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("分析报告为审计记录，不能删除")
 
 
 class ScreeningDecisionBatch(models.Model):
@@ -1516,6 +1571,7 @@ class AiProcessingTask(models.Model):
         JOB_STANDARD = "job_standard", "岗位标准"
         RESUME_STRUCTURE = "resume_structure", "简历结构化"
         RESUME_SCORE = "resume_score", "简历评分"
+        RESUME_REPORT = "resume_report", "简历分析报告"
 
     class Status(models.TextChoices):
         WAITING_CONFIG = "waiting_config", "等待模型配置"
@@ -1558,6 +1614,13 @@ class AiProcessingTask(models.Model):
         null=True,
         blank=True,
         related_name="ai_tasks",
+    )
+    assessment = models.ForeignKey(
+        ResumeAssessment,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="report_tasks",
     )
     idempotency_key = models.CharField(max_length=160, unique=True)
     model_api_url_snapshot = models.URLField(max_length=500, blank=True, default="")

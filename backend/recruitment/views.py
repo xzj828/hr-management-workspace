@@ -104,6 +104,7 @@ from .services.lifecycle import LifecycleConflict, archive_object, restore_objec
 from .services.job_documents import create_document, create_document_version, set_current_version
 from .services.ai_tasks import (
     enqueue_job_standard,
+    enqueue_resume_report,
     enqueue_resume_score,
     enqueue_resume_structure,
     retry_task as retry_ai_task,
@@ -212,6 +213,16 @@ def screening_results_view(request):
                 "confidence": format(assessment.confidence, ".3f"),
                 "recommendation": assessment.recommendation,
                 "recommendation_label": assessment.get_recommendation_display(),
+                "scoring_policy_version": assessment.scoring_policy_version,
+                "passing_score": (
+                    format(assessment.passing_score_snapshot, ".2f")
+                    if assessment.passing_score_snapshot is not None else None
+                ),
+                "passed_score_line": assessment.passed_score_line,
+                "system_recommendation": assessment.system_recommendation or assessment.recommendation,
+                "system_recommendation_label": dict(ResumeAssessment.Recommendation.choices).get(
+                    assessment.system_recommendation or assessment.recommendation, ""
+                ),
                 "auto_rejected": assessment.auto_rejected,
                 "hard_failure_count": len(assessment.hard_failures) if isinstance(assessment.hard_failures, list) else 0,
                 "created_at": assessment.created_at,
@@ -1741,7 +1752,7 @@ class ResumeAssessmentViewSet(viewsets.ReadOnlyModelViewSet):
         "structured_resume__resume__candidate",
         "structured_resume__resume__application__job",
         "standard",
-    )
+    ).prefetch_related("reports")
     serializer_class = ResumeAssessmentSerializer
     permission_classes = [RecruitmentWritePermission]
 
@@ -1830,6 +1841,25 @@ class ResumeAssessmentViewSet(viewsets.ReadOnlyModelViewSet):
         task, created = enqueue_resume_score(
             structured_resume=assessment.structured_resume,
             standard=current_standard,
+            requested_by=request.user,
+            request_id=request_id,
+        )
+        return Response(
+            AiProcessingTaskSerializer(task).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="retry-report")
+    def retry_report(self, request, pk=None):
+        assessment = self.get_object()
+        if assessment.scoring_policy_version != "evidence-level-v1":
+            raise ValidationError({"assessment": "旧版模型评分不支持独立重试分析报告"})
+        try:
+            request_id = uuid.UUID(str(request.data.get("request_id")))
+        except (TypeError, ValueError, AttributeError):
+            raise ValidationError({"request_id": "请输入有效的请求标识"})
+        task, created = enqueue_resume_report(
+            assessment=assessment,
             requested_by=request.user,
             request_id=request_id,
         )

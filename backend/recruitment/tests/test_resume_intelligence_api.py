@@ -18,6 +18,7 @@ from recruitment.models import (
     RecruitmentJob,
     Resume,
     ResumeAssessment,
+    ResumeAssessmentReport,
     StructuredResumeVersion,
 )
 from recruitment.services.resume_intelligence import (
@@ -291,6 +292,40 @@ def assessment_payload(block_id):
     }
 
 
+def evidence_scoring_criteria():
+    return {
+        **scoring_criteria(),
+        "passing_score": 60,
+        "scoring_policy": "evidence-level-v1",
+        "priority_requirements": [],
+    }
+
+
+def evidence_assessment_payload(block_id):
+    report_sentence = "候选人原文明确提供五年后端经验，可支持相关经验维度的判断；技术栈深度仍需在面试中结合实际项目继续核实。"
+    return {
+        "dimension_evaluations": [
+            {
+                "criterion_key": "experience", "status": "supported", "evidence_level": "L4",
+                "reason": "原文提供明确年限", "evidence_references": [{"block_id": block_id, "quote": "五年后端经验"}],
+            },
+            {
+                "criterion_key": "skills", "status": "information_missing", "evidence_level": "L0",
+                "reason": "没有技术项目细节", "evidence_references": [],
+            },
+        ],
+        "priority_results": [],
+        "analysis_report": {
+            "overview": report_sentence,
+            "strengths": report_sentence,
+            "gaps_and_interview_focus": report_sentence,
+            "evidence_references": [{"block_id": block_id, "quote": "五年后端经验"}],
+        },
+        "gaps": ["Python 项目深度未说明"],
+        "verification_questions": ["请说明最有代表性的后端项目"],
+    }
+
+
 class ResumeAssessmentServiceTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="assessment-owner")
@@ -346,6 +381,46 @@ class ResumeAssessmentServiceTests(TestCase):
         )
         self.assertEqual(normalized["total_score"], 48)
         self.assertEqual(normalized["recommendation"], "review")
+
+    def test_evidence_policy_uses_levels_and_backend_recommendation(self):
+        JobStandardVersion.objects.filter(pk=self.standard.pk).update(criteria=evidence_scoring_criteria())
+        self.standard.refresh_from_db()
+        normalized = validate_assessment_payload(
+            payload=evidence_assessment_payload(self.block_id),
+            standard=self.standard,
+            structured=self.structured,
+        )
+        self.assertEqual(normalized["total_score"], 60)
+        self.assertTrue(normalized["passed_score_line"])
+        self.assertEqual(normalized["system_recommendation"], "advance")
+        self.assertEqual(normalized["dimension_scores"][0]["evidence_level"], "L4")
+
+    def test_evidence_policy_rejects_model_scores_and_false_quotes(self):
+        JobStandardVersion.objects.filter(pk=self.standard.pk).update(criteria=evidence_scoring_criteria())
+        self.standard.refresh_from_db()
+        payload = evidence_assessment_payload(self.block_id)
+        payload["dimension_evaluations"][0]["score"] = 60
+        with self.assertRaisesRegex(ValueError, "不得返回分数"):
+            validate_assessment_payload(payload=payload, standard=self.standard, structured=self.structured)
+        payload = evidence_assessment_payload(self.block_id)
+        payload["dimension_evaluations"][0]["evidence_references"][0]["quote"] = "不存在的成果"
+        with self.assertRaisesRegex(ValueError, "真实出现在"):
+            validate_assessment_payload(payload=payload, standard=self.standard, structured=self.structured)
+
+    def test_invalid_report_does_not_discard_valid_evidence_score(self):
+        JobStandardVersion.objects.filter(pk=self.standard.pk).update(criteria=evidence_scoring_criteria())
+        self.standard.refresh_from_db()
+        payload = evidence_assessment_payload(self.block_id)
+        payload.pop("analysis_report")
+        assessment = create_assessment(
+            structured=self.structured,
+            standard=self.standard,
+            gateway=FakeGateway(payload),
+            request_id=uuid.uuid4(),
+        )
+        report = ResumeAssessmentReport.objects.get(assessment=assessment)
+        self.assertEqual(assessment.total_score, 60)
+        self.assertEqual(report.status, "failed")
 
     def test_nonzero_score_without_resume_evidence_is_rejected(self):
         payload = assessment_payload(self.block_id)
@@ -569,3 +644,47 @@ class ResumeAssessmentApiTests(APITestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["status"], "pending")
+
+    def test_failed_persisted_report_can_be_retried_without_rescoring(self):
+        standard = JobStandardVersion.objects.create(
+            job=self.job,
+            version=1,
+            status="published",
+            criteria=evidence_scoring_criteria(),
+            created_by=self.user,
+            published_by=self.user,
+        )
+        assessment = ResumeAssessment.objects.create(
+            structured_resume=self.structured,
+            standard=standard,
+            version=1,
+            request_id=uuid.uuid4(),
+            total_score=60,
+            dimension_scores=[],
+            evidence=[],
+            confidence="0.500",
+            recommendation="advance",
+            scoring_policy_version="evidence-level-v1",
+            passing_score_snapshot=60,
+            passed_score_line=True,
+            system_recommendation="advance",
+            model_name="example-chat",
+        )
+        ResumeAssessmentReport.objects.create(
+            assessment=assessment,
+            version=1,
+            status="failed",
+            error_code="report_invalid",
+            model_name="example-chat",
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/resume-assessments/{assessment.id}/retry-report/",
+            {"request_id": str(uuid.uuid4())},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["kind"], "resume_report")
+        self.assertEqual(response.data["assessment"], assessment.id)
+        self.assertEqual(ResumeAssessment.objects.count(), 1)

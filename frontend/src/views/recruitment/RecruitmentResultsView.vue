@@ -222,8 +222,9 @@ const hasLegacyContext = computed(() => Object.values(legacyContext.value).some(
 
 function matchesLegacyCandidateFilter(row, filter) {
   if (filter === 'pending_parse') return Boolean(row.resume && !row.structure)
-  if (filter === 'pending_hr_review') return row.assessment?.recommendation === 'review'
-  if (filter === 'recommended_advance') return row.assessment?.recommendation === 'advance'
+  const recommendation = row.assessment?.system_recommendation || row.assessment?.recommendation
+  if (filter === 'pending_hr_review') return recommendation === 'review'
+  if (filter === 'recommended_advance') return recommendation === 'advance'
   return true
 }
 
@@ -232,7 +233,7 @@ function matchesCandidateFilter(row) {
   if (candidateFilters.ai !== 'all') {
     if (candidateFilters.ai === 'unscored') {
       if (row.aiState === 'scored' && row.assessment) return false
-    } else if (row.assessment?.recommendation !== candidateFilters.ai) return false
+    } else if ((row.assessment?.system_recommendation || row.assessment?.recommendation) !== candidateFilters.ai) return false
   }
   if (candidateFilters.resume !== 'all') {
     const resumeState = !row.resume ? 'missing' : row.structure ? 'ready' : 'processing'
@@ -515,7 +516,8 @@ function detailText(detail) {
 
 function scoreText(assessment) {
   if (!assessment) return '尚未评分'
-  return `${Number(assessment.total_score || 0).toFixed(0)} 分`
+  const digits = assessment.scoring_policy_version === 'evidence-level-v1' ? 1 : 0
+  return `${Number(assessment.total_score || 0).toFixed(digits)} 分`
 }
 
 function aiRecommendationLabel(row) {
@@ -525,14 +527,16 @@ function aiRecommendationLabel(row) {
       standard_missing: '待发布岗位标准', unscored: 'AI 尚未评分',
     }[row.aiState] || 'AI 尚未评分'
   }
+  const recommendation = row.assessment.system_recommendation || row.assessment.recommendation
   return {
-    advance: 'AI 建议通过', review: 'AI 建议人工复核', hold: 'AI 建议未通过',
-  }[row.assessment.recommendation] || 'AI 建议人工复核'
+    advance: 'AI 建议进一步沟通', review: 'AI 建议人工复核', hold: 'AI 暂不建议推进',
+  }[recommendation] || 'AI 建议人工复核'
 }
 
 function aiRecommendationTone(row) {
   if (row.aiState !== 'scored' || !row.assessment) return 'neutral'
-  return { advance: 'success', review: 'warning', hold: 'danger' }[row.assessment.recommendation] || 'warning'
+  const recommendation = row.assessment.system_recommendation || row.assessment.recommendation
+  return { advance: 'success', review: 'warning', hold: 'danger' }[recommendation] || 'warning'
 }
 
 function hrDecisionLabel(decision) {
@@ -662,6 +666,8 @@ async function runResumeAction(row, action) {
   try {
     if (action === 'retry-structure') {
       await api(`recruitment/resumes/${row.resume.id}/retry-structure/`, { method: 'POST', body: JSON.stringify({ request_id: createRequestId() }) })
+    } else if (action === 'retry-report' && detailAssessment.value) {
+      await api(`recruitment/resume-assessments/${detailAssessment.value.id}/retry-report/`, { method: 'POST', body: JSON.stringify({ request_id: createRequestId() }) })
     } else if (action === 'rescore' && row.assessment) {
       await api(`recruitment/resume-assessments/${row.assessment.id}/rescore/`, { method: 'POST', body: JSON.stringify({ request_id: createRequestId() }) })
     } else {
@@ -1421,6 +1427,7 @@ onUnmounted(() => {
         :context-error="detailError"
         @close="closeCandidateDetail"
         @retry-structure="runResumeAction(selectedDetailRow, 'retry-structure')"
+        @retry-report="runResumeAction(selectedDetailRow, 'retry-report')"
         @score="runResumeAction(selectedDetailRow, 'score')"
         @rescore="runResumeAction(selectedDetailRow, 'rescore')"
         @purge="openResumePurge(selectedDetailRow)"

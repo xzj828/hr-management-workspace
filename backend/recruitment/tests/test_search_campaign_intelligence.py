@@ -43,7 +43,7 @@ class SearchCampaignIntelligenceTests(TestCase):
             published_at=timezone.now(),
         )
 
-    def make_item(self, campaign, sequence, *, recommendation=None):
+    def make_item(self, campaign, sequence, *, recommendation=None, total_score="80.00", passing_score=None):
         candidate = Candidate.objects.create(name=f"候选人{sequence}", identity_key=f"campaign-ai-{sequence}-{campaign.pk}")
         application = JobApplication.objects.create(candidate=candidate, job=self.job)
         resume = Resume.objects.create(
@@ -81,9 +81,12 @@ class SearchCampaignIntelligenceTests(TestCase):
             assessment = ResumeAssessment.objects.create(
                 structured_resume=structure,
                 standard=self.standard,
-                total_score=Decimal("80.00"),
+                total_score=Decimal(total_score),
                 confidence=Decimal("0.800"),
                 recommendation=recommendation,
+                passing_score_snapshot=Decimal(passing_score) if passing_score is not None else None,
+                passed_score_line=(Decimal(total_score) >= Decimal(passing_score)) if passing_score is not None else None,
+                system_recommendation=recommendation if passing_score is not None else "",
                 model_name="test-model",
             )
             return item, assessment
@@ -135,6 +138,23 @@ class SearchCampaignIntelligenceTests(TestCase):
         self.assertEqual(campaign.status, SearchCampaign.Status.SUCCEEDED)
         self.assertEqual(campaign.stop_reason, SearchCampaign.StopReason.SCAN_LIMIT)
         self.assertEqual(campaign.scanned_count, 2)
+        self.assertEqual(campaign.qualified_resume_count, 0)
+
+    def test_advance_below_frozen_passing_score_is_not_qualified(self):
+        campaign = self.make_campaign(target=1, maximum=1)
+        item, _ = self.make_item(
+            campaign,
+            1,
+            recommendation=ResumeAssessment.Recommendation.ADVANCE,
+            total_score="59.99",
+            passing_score="60.00",
+        )
+
+        reconcile_search_campaign(campaign.pk)
+
+        campaign.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(item.status, SearchCampaignItem.Status.NOT_QUALIFIED)
         self.assertEqual(campaign.qualified_resume_count, 0)
 
     def test_pauses_when_next_ai_task_waits_for_model_configuration(self):

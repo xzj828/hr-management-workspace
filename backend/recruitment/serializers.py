@@ -364,6 +364,36 @@ class ResumeAssessmentSerializer(serializers.ModelSerializer):
     resume_name = serializers.CharField(source="structured_resume.resume.original_name", read_only=True)
     standard_version = serializers.IntegerField(source="standard.version", read_only=True)
     recommendation_label = serializers.CharField(source="get_recommendation_display", read_only=True)
+    system_recommendation_label = serializers.SerializerMethodField()
+    report_status = serializers.SerializerMethodField()
+    analysis_report = serializers.SerializerMethodField()
+    analysis_report_evidence = serializers.SerializerMethodField()
+    report_error_code = serializers.SerializerMethodField()
+
+    def _latest_report(self, obj):
+        if not hasattr(obj, "_latest_serialized_report"):
+            obj._latest_serialized_report = obj.reports.order_by("-version", "-id").first()
+        return obj._latest_serialized_report
+
+    def get_system_recommendation_label(self, obj):
+        value = obj.system_recommendation or obj.recommendation
+        return dict(ResumeAssessment.Recommendation.choices).get(value, "")
+
+    def get_report_status(self, obj):
+        report = self._latest_report(obj)
+        return report.status if report else ("not_available" if obj.scoring_policy_version.startswith("legacy") else "failed")
+
+    def get_analysis_report(self, obj):
+        report = self._latest_report(obj)
+        return report.content if report and report.status == "succeeded" else None
+
+    def get_analysis_report_evidence(self, obj):
+        report = self._latest_report(obj)
+        return report.evidence if report else []
+
+    def get_report_error_code(self, obj):
+        report = self._latest_report(obj)
+        return report.error_code if report else ""
 
     class Meta:
         model = ResumeAssessment
@@ -372,6 +402,9 @@ class ResumeAssessmentSerializer(serializers.ModelSerializer):
             "version", "request_id", "total_score", "dimension_scores", "evidence", "gaps",
             "hard_failures", "auto_rejected",
             "verification_questions", "confidence", "recommendation", "recommendation_label",
+            "scoring_policy_version", "passing_score_snapshot", "passed_score_line",
+            "system_recommendation", "system_recommendation_label", "report_status",
+            "analysis_report", "analysis_report_evidence", "report_error_code",
             "model_name", "prompt_version", "created_at",
         ]
         read_only_fields = fields
@@ -417,7 +450,7 @@ class AiProcessingTaskSerializer(serializers.ModelSerializer):
         model = AiProcessingTask
         fields = [
             "id", "kind", "kind_label", "status", "status_label", "job", "document_version",
-            "resume", "standard", "progress", "attempt_count", "max_attempts", "available_at",
+            "resume", "standard", "assessment", "progress", "attempt_count", "max_attempts", "available_at",
             "error_code", "error_message", "result_ref", "created_at", "updated_at",
         ]
         read_only_fields = fields

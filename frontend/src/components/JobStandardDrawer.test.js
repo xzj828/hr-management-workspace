@@ -37,8 +37,8 @@ describe('JobStandardDrawer', () => {
     await wrapper.get('[data-test="add-dimension"]').trigger('click')
     expect(wrapper.find('[data-test="dimension-weight-1"]').exists()).toBe(true)
     await wrapper.get('[data-test="add-hard-requirement"]').trigger('click')
-    expect(wrapper.text()).toContain('重点评分项')
-    expect(wrapper.text()).toContain('2 倍权重')
+    expect(wrapper.text()).toContain('重点核实项')
+    expect(wrapper.text()).toContain('不重复计分')
     expect(wrapper.text()).not.toContain('明确不满足时自动淘汰')
   })
 
@@ -77,14 +77,15 @@ describe('JobStandardDrawer', () => {
     }
     const wrapper = mount(JobStandardDrawer, { props: { job: { id: 1, title: '后端工程师' }, standard, documents: [] } })
 
-    expect(wrapper.text()).toContain('重点评分项')
-    expect(wrapper.text()).toContain('2 倍权重')
-    expect(wrapper.text()).toContain('不淘汰候选人')
+    expect(wrapper.text()).toContain('重点核实项')
+    expect(wrapper.text()).toContain('不重复计分')
+    expect(wrapper.text()).toContain('不自动淘汰候选人')
     await wrapper.get('[data-test="save-standard"]').trigger('click')
     await flushPromises()
     const payload = JSON.parse(apiMock.mock.calls.find(([path]) => path === 'recruitment/job-standards/7/')[1].body)
     expect(payload.criteria.auto_reject_on_hard_fail).toBeUndefined()
-    expect(payload.criteria.hard_requirements[0].rule).toEqual({ field: 'highest_degree', operator: 'gte', value: '本科' })
+    expect(payload.criteria.priority_requirements[0].rule).toEqual({ field: 'highest_degree', operator: 'gte', value: '本科' })
+    expect(payload.criteria.hard_requirements).toEqual([])
 
     await wrapper.get('[data-test="publish-standard"]').trigger('click')
     expect(wrapper.get('[data-test="publish-confirm"]').text()).toContain('AI 建议不会自动改变候选人阶段')

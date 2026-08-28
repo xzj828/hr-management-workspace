@@ -52,6 +52,7 @@
 | JobStandardVersion | job, version, criteria, hard requirements, status | 同职位仅一个 published；发布后不可变 |
 | StructuredResumeVersion | resume, version, data, evidence, warnings | PDF/PNG 共用结构；原始未知字段保持 null |
 | ResumeAssessment | structure, standard, version, score, hard failures, evidence, recommendation | 请求 UUID 唯一；重评新增版本 |
+| ResumeAssessmentReport | assessment, version, status, content, evidence, model | 报告重试追加版本，不改变冻结评分 |
 | ScreeningDecisionBatch | request_id, job, decision, reason, created_by | UUID 幂等；同一请求的业务载荷不可变化 |
 | ApplicationScreeningDecision | batch, application, resume, assessment, decision, version, decided_by | 只追加；application+version、batch+application 唯一；不修改招聘阶段 |
 | AiProcessingTask | kind, lease/status, resume/job/standard, error/result, private model snapshot/bound_at | DB 租约；岗位标准、结构化、评分三类任务；连接快照字段永不序列化 |
@@ -174,6 +175,7 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 | 评分 GET | `/api/recruitment/resume-assessments[/<id>/]` | job, resume；返回维度证据与版本 |
 | POST | `/api/recruitment/resume-assessments/score/` | job + resume_ids + request_id；批量幂等评分 |
 | POST | `/api/recruitment/resume-assessments/<id>/rescore/` | 新 request_id 创建重评任务 |
+| POST | `/api/recruitment/resume-assessments/<id>/retry-report/` | 仅重试新版持久化报告，不重新评分 |
 | GET | `/api/recruitment/screening-results/` | `job` 必填；返回当前排名、AI 建议、HR 结论与通知状态的统一读模型 |
 | POST | `/api/recruitment/screening-decisions/bulk/` | UUID request_id + 同岗位 application_ids + pass/fail + reason；只追加人工结论 |
 | POST | `/api/recruitment/rejection-notices/prepare/` | decision_batch_id + UUID request_id + 中性 message；冻结未通过通知审批快照 |

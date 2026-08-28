@@ -56,6 +56,7 @@
 | W19 | 已保存简历原文件清理 | W9、W13、P3、P4 | [x] 2026-08-27 完成；在结果中心简历详情提供危险确认操作，物理删除原始 PDF/PNG 并移出当前结果，同时保留轻量元数据、历史评分、HR 结论和审计链；文件清理、冲突/越权/幂等和前端成功/失败状态已通过自动验收 | `services/resumes.py`, `ResumeViewSet`, `ResumeIntelligencePanel.vue`, `RecruitmentResultsView.vue` |
 | W20 | 工作台招聘标准统一 | W14、W18、P4、P5 | [x] 2026-08-27 完成；Word/Excel 或手工要求均可作为主动寻访标准，Plan 原子启动时生成/确认不可变版本并贯穿 Revision、Run、Campaign，取消另行上传评分标准的重复入口 | `services/job_standards.py`, `services/automation_plans.py`, `services/workflow_nodes.py`, `RecruitmentWorkbenchView.vue` |
 | W21 | 标准主动寻访开始授权 | W14、W18、W20、P5 | [~] 2026-08-27 实施中；点击开始即授权当前 Revision/Generation 内冻结的搜索条件和最大在线简历查看额度，后台保留不可变审批、额度和身份安全门，不再要求重复人工确认 | `services/automation_plans.py`, `services/workflow_nodes.py`, `RecruitmentWorkbenchView.vue` |
+| W22 | 证据等级 AI 简历评分 | W18、W20、P4、P5 | [x] 2026-08-28 完成；上传画像与手动文本合并为标准，AI 只判定证据等级并提供逐字引用，后端执行 60 分策略和系统建议，正式报告独立版本化 | `services/job_standards.py`, `services/resume_intelligence.py`, `ResumeAssessmentReport`, `ResumeIntelligencePanel.vue` |
 
 ## 未完成或边界功能
 

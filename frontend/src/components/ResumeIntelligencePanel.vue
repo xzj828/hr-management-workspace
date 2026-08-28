@@ -12,7 +12,7 @@ const props = defineProps({
   contextError: { type: String, default: '' },
   loading: { type: Boolean, default: false },
 })
-const emit = defineEmits(['close', 'retry-structure', 'score', 'rescore', 'purge'])
+const emit = defineEmits(['close', 'retry-structure', 'retry-report', 'score', 'rescore', 'purge'])
 
 const panel = ref(null)
 const closeButton = ref(null)
@@ -28,12 +28,14 @@ const candidateInitial = computed(() => candidateName.value.replace(/\*/g, '').t
 const targetRole = computed(() => basics.value.target_role || props.resume.job_title || '目标岗位待确认')
 const currentTitle = computed(() => basics.value.current_title || basics.value.current_role || '当前职位待确认')
 const profileMeta = computed(() => {
-  const values = [basics.value.gender, basics.value.education || basics.value.degree]
+  const values = [basics.value.education || basics.value.degree]
   const months = Number(props.structure?.data?.total_experience_months)
   if (Number.isFinite(months) && months > 0) values.push(`${Math.max(1, Math.round(months / 12))}年`)
   return values.filter(Boolean).join(' · ')
 })
-const recommendation = computed(() => props.assessment?.recommendation_label || (isBusy.value || props.loading ? 'AI 分析中' : '等待 AI 分析'))
+const recommendation = computed(() => props.assessment?.system_recommendation_label || props.assessment?.recommendation_label || (isBusy.value || props.loading ? 'AI 分析中' : '等待 AI 分析'))
+const isEvidencePolicy = computed(() => props.assessment?.scoring_policy_version === 'evidence-level-v1')
+const scoreLabel = computed(() => props.assessment ? Number(props.assessment.total_score || 0).toFixed(isEvidencePolicy.value ? 1 : 0) : '—')
 
 function normalizedSkill(skill) {
   if (typeof skill === 'string') return skill.trim()
@@ -55,6 +57,11 @@ const keywords = computed(() => {
 
 const analysisParagraphs = computed(() => {
   if (!props.assessment) return []
+  const persisted = props.assessment.analysis_report
+  if (persisted?.overview && persisted?.strengths && persisted?.gaps_and_interview_focus) {
+    return [persisted.overview, persisted.strengths, persisted.gaps_and_interview_focus]
+  }
+  if (isEvidencePolicy.value) return []
   const summary = String(props.structure?.data?.summary || '').trim()
   const dimensions = (props.assessment.dimension_scores || [])
     .map((item) => String(item.reason || '').trim())
@@ -143,6 +150,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <strong>{{ targetRole }}</strong>
         </section>
 
+        <section v-if="assessment" class="score-summary" aria-label="系统评分结果">
+          <div><span>后端总分</span><strong>{{ scoreLabel }}</strong><small v-if="assessment.passing_score_snapshot">及格线 {{ Number(assessment.passing_score_snapshot).toFixed(0) }}</small></div>
+          <div><span>系统判定</span><strong>{{ recommendation }}</strong><small>标准 V{{ assessment.standard_version }} · {{ assessment.scoring_policy_version }}</small></div>
+        </section>
+
         <div v-if="contextError" class="report-state report-state--error" role="status" data-test="intelligence-context-error">
           <AppIcon name="alert-circle" :size="18" /><p>{{ contextError }}</p>
         </div>
@@ -159,10 +171,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
         <section class="analysis-report" data-test="ai-analysis-report">
           <h3>AI 分析报告</h3>
-          <div v-if="assessment" class="analysis-report__copy">
+          <div v-if="assessment && analysisParagraphs.length" class="analysis-report__copy">
             <p v-for="paragraph in analysisParagraphs" :key="paragraph">{{ paragraph }}</p>
           </div>
           <div v-else-if="isBusy || loading" class="analysis-report__empty"><p>分析完成后，约 200 字的 AI 报告会直接显示在这里。</p></div>
+          <div v-else-if="assessment?.report_status === 'failed'" class="analysis-report__empty">
+            <p>评分和证据明细已保存，但分析报告生成失败，可以单独重试且不会改变分数。</p>
+            <button type="button" data-test="retry-report" @click="emit('retry-report')">重试分析报告</button>
+          </div>
           <div v-else-if="latestTask?.status === 'failed'" class="analysis-report__empty"><p>本次分析未完成。问题处理后重新解析，报告会直接显示在此卡片中。</p></div>
           <div v-else-if="!structure" class="analysis-report__empty">
             <p>完成简历结构化后，AI 会基于岗位标准生成分析报告。</p>
@@ -172,6 +188,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p>结构化信息已就绪，可以生成 AI 分析报告。</p>
             <button :disabled="scoreTask && isBusy" type="button" @click="emit('score')">生成分析报告</button>
           </div>
+        </section>
+
+        <section v-if="isEvidencePolicy && assessment?.dimension_scores?.length" class="dimension-section">
+          <h3>评分证据明细</h3>
+          <article v-for="item in assessment.dimension_scores" :key="item.criterion_key">
+            <div><strong>{{ item.criterion_name || item.criterion_key }}</strong><span>{{ item.evidence_level }} · {{ item.score }}/{{ item.max_score }}</span></div>
+            <p>{{ item.reason }}</p>
+            <small v-if="item.status === 'information_missing'">简历未提供相关信息，本项不推断。</small>
+            <small v-else-if="item.status === 'contradicted'">原文明确不满足，本项为 L0。</small>
+            <small v-else>证据等级由原文场景、本人行动和结果完整度共同确定。</small>
+          </article>
         </section>
 
         <section v-if="keywords.length" class="keyword-section">
@@ -216,6 +243,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .target-role { display: grid; gap: 5px; padding: 20px 0 18px; }
 .target-role span { color: #758292; font-size: 12px; }
 .target-role strong { color: #26364a; font-size: 16px; }
+.score-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0 0 18px; }
+.score-summary > div { display: grid; gap: 4px; padding: 12px 14px; background: #f5f8f7; border: 1px solid #e0e8e6; border-radius: 10px; }
+.score-summary span, .score-summary small { color: #74818e; font-size: 11px; }
+.score-summary strong { color: #23384a; font-size: 15px; }
 .report-state { display: flex; align-items: center; gap: 10px; margin: -3px 0 17px; padding: 10px 12px; color: #246b64; background: #eff8f6; border-radius: 9px; }
 .report-state p { margin: 0; font-size: 12px; line-height: 1.5; }
 .report-state button { margin-left: auto; padding: 6px 10px; color: #176f67; background: #fff; border: 1px solid #bcded9; border-radius: 7px; font-weight: 750; cursor: pointer; }
@@ -229,6 +260,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .analysis-report__empty p { max-width: 390px; margin: 0; font-size: 12px; line-height: 1.7; }
 .analysis-report__empty button { min-height: 34px; padding: 0 15px; color: #fff; background: #178e82; border: 0; border-radius: 8px; font-weight: 750; cursor: pointer; }
 .keyword-section { margin-top: 24px; }
+.dimension-section { display: grid; gap: 10px; margin-top: 24px; }
+.dimension-section h3 { margin: 0; color: #405065; font-size: 14px; }
+.dimension-section article { display: grid; gap: 5px; padding: 11px 13px; border: 1px solid #e1e7e8; border-radius: 9px; }
+.dimension-section article > div { display: flex; justify-content: space-between; gap: 12px; }
+.dimension-section article strong { color: #334457; font-size: 12px; }
+.dimension-section article span { color: #147d73; font-size: 12px; font-weight: 750; }
+.dimension-section p, .dimension-section small { margin: 0; color: #687785; font-size: 11px; line-height: 1.6; }
 .keyword-section > div { display: flex; flex-wrap: wrap; gap: 8px 9px; }
 .keyword-section span { display: inline-flex; align-items: center; min-height: 30px; padding: 0 14px; color: #36736e; background: #e9f4f2; border-radius: 999px; font-size: 12px; white-space: nowrap; }
 .original-resume-button { width: 196px; min-height: 44px; display: block; margin: 38px auto 0; color: #fff; background: #178e82; border: 0; border-radius: 10px; box-shadow: 0 8px 18px rgba(23, 142, 130, .16); font-size: 14px; font-weight: 800; cursor: pointer; transition: 150ms ease; }
@@ -246,6 +284,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   .candidate-summary__recommendation { grid-column: 2; min-width: 0; }
   .candidate-summary__identity > div { align-items: flex-start; flex-direction: column; gap: 3px; }
   .analysis-report__copy p { font-size: 12px; }
+  .score-summary { grid-template-columns: 1fr; }
   .keyword-section span { min-height: 28px; padding: 0 11px; font-size: 11px; }
   .original-resume-button { width: 100%; margin-top: 28px; }
 }
