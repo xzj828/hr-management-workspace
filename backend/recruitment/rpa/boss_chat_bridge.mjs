@@ -514,11 +514,13 @@ async function sendText(page, request) {
         enabled: control instanceof HTMLElement
           && !/disabled|forbid|ban/i.test(className)
           && control.getAttribute("disabled") === null,
+        x: control instanceof HTMLElement ? control.getBoundingClientRect().x + control.getBoundingClientRect().width / 2 : 0,
+        y: control instanceof HTMLElement ? control.getBoundingClientRect().y + control.getBoundingClientRect().height / 2 : 0,
       };
     });
   });
   const controlIndex = uniqueVisibleEnabledControlIndex(controls);
-  const submitted = controlIndex >= 0 && await page.evaluate(({ index, externalId, jobTitle }) => {
+  const clickTarget = controlIndex >= 0 && await page.evaluate(({ index, externalId, jobTitle }) => {
     const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
     const visible = (element) => {
       if (!(element instanceof HTMLElement)) return false;
@@ -537,15 +539,19 @@ async function sendText(page, request) {
     const control = container?.querySelector(".submit-content .submit");
     const className = `${String(container?.className ?? "")} ${String(control?.className ?? "")}`;
     if (!visible(container) || !visible(input) || !visible(control)
-        || /disabled|forbid|ban/i.test(className) || control.getAttribute("disabled") !== null) return false;
-    control.click();
-    return true;
+        || /disabled|forbid|ban/i.test(className) || control.getAttribute("disabled") !== null) return null;
+    const rect = control.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
   }, {
     index: controlIndex,
     externalId: String(request.external_id ?? ""),
     jobTitle: normalizeJob(request.job_title),
   });
-  if (!submitted) throw new Error("点击前无法唯一定位 BOSS 消息发送控件");
+  if (!clickTarget) throw new Error("点击前无法唯一定位 BOSS 消息发送控件");
+  // Dispatch the click through the browser input domain. Calling the site's
+  // Vue handler from Runtime.callFunctionOn can keep that protocol command
+  // pending even after the UI handled the click, producing a false timeout.
+  await page.mouse.click(clickTarget.x, clickTarget.y);
   const receipt = await waitForOutgoing(page, {
     ...request,
     message,
@@ -573,22 +579,38 @@ async function requestResume(page, request) {
   });
   const availability = modalAlreadyOpen ? { found: true, available: true } : await page.evaluate(() => {
     const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
     const items = Array.from(document.querySelectorAll(
       ".operate-exchange-left .operate-icon-item, .operate-icon-item",
     ));
-    const matches = items.filter((item) => norm(item.querySelector(".operate-btn")?.textContent)
-      .includes("求简历"));
+    const matches = items.filter((item) => visible(item)
+      && norm(item.querySelector(".operate-btn")?.textContent).includes("求简历"));
     if (matches.length !== 1) return { found: false, available: false };
     const target = matches[0];
     const button = target.querySelector(".operate-btn");
     const className = `${String(target.className ?? "")} ${String(button?.className ?? "")}`;
     const disabled = /disabled|forbid|ban/i.test(className)
       || button?.getAttribute("disabled") !== null;
-    if (!disabled) (button instanceof HTMLElement ? button : target).click();
-    return { found: true, available: !disabled };
+    const control = button instanceof HTMLElement ? button : target;
+    const rect = control.getBoundingClientRect();
+    return {
+      found: true,
+      available: !disabled,
+      x: rect.x + rect.width / 2,
+      y: rect.y + rect.height / 2,
+    };
   });
   if (!availability.found) throw new Error("未找到 BOSS“求简历”按钮");
   if (!availability.available) throw new Error("当前 BOSS“求简历”按钮不可用");
+  if (!modalAlreadyOpen) {
+    await verifySelected(page, request);
+    await page.mouse.click(availability.x, availability.y);
+  }
   await page.waitForFunction(
     `() => {
       const visible = (element) => {
@@ -639,7 +661,8 @@ async function requestResume(page, request) {
     window.__ximingResumeObserver.observe(document.body, { childList: true, subtree: true });
   });
   await new Promise((resolve) => setTimeout(resolve, 350));
-  const confirmed = await page.evaluate(() => {
+  await verifySelected(page, request);
+  const confirmTarget = await page.evaluate(() => {
     const visible = (element) => {
       if (!(element instanceof HTMLElement)) return false;
       const style = window.getComputedStyle(element);
@@ -649,19 +672,20 @@ async function requestResume(page, request) {
     const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
     const tips = Array.from(document.querySelectorAll(".exchange-tooltip"))
       .filter((tip) => visible(tip) && norm(tip.textContent).includes("索取简历"));
-    if (tips.length !== 1) return false;
+    if (tips.length !== 1) return null;
     const primary = tips[0].querySelector(
       ".btn-box .boss-btn-primary.boss-btn, .btn-box .boss-btn-primary",
     );
-    if (!(primary instanceof HTMLElement) || !norm(primary.textContent).includes("确定")) return false;
+    if (!(primary instanceof HTMLElement) || !norm(primary.textContent).includes("确定")) return null;
     primary.scrollIntoView({ block: "center", inline: "nearest" });
-    primary.click();
-    return true;
+    const rect = primary.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
   });
-  if (!confirmed) {
+  if (!confirmTarget) {
     page.off("response", onResponse);
     throw new Error("点击前无法唯一定位 BOSS 求简历确认按钮");
   }
+  await page.mouse.click(confirmTarget.x, confirmTarget.y);
   let outgoingReceipt = null;
   try {
     outgoingReceipt = await waitForOutgoing(page, {
