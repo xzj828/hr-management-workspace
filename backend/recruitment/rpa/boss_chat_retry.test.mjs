@@ -5,6 +5,7 @@ import {
   conversationEmptyScopeStableMs,
   isTransientConversationOpenError,
   uniqueVisibleIdentityMatchIndex,
+  uniqueVisibleEnabledControlIndex,
   uniqueVisibleLeafMatchIndex,
 } from "./boss_chat_retry.mjs";
 
@@ -63,4 +64,16 @@ test("only treats frozen-scope conversation lookup races as retryable opens", ()
   assert.equal(isTransientConversationOpenError(new Error("所选职位范围内无法唯一定位批准的 BOSS 会话")), true);
   assert.equal(isTransientConversationOpenError(new Error("点击前无法唯一定位批准的 BOSS 会话")), true);
   assert.equal(isTransientConversationOpenError(new Error("打开后的 BOSS 会话身份与批准目标不一致")), false);
+});
+
+test("chooses one visible enabled send control and rejects ambiguous controls", () => {
+  assert.equal(uniqueVisibleEnabledControlIndex([
+    { visible: false, enabled: true },
+    { visible: true, enabled: true },
+    { visible: true, enabled: false },
+  ]), 1);
+  assert.equal(uniqueVisibleEnabledControlIndex([
+    { visible: true, enabled: true },
+    { visible: true, enabled: true },
+  ]), -1);
 });

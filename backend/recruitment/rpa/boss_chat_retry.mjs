@@ -34,3 +34,10 @@ export function uniqueVisibleIdentityMatchIndex(items, expectedExternalId, expec
       && String(item?.jobTitle ?? "").replace(/\s+/g, " ").trim() === jobTitle);
   return matches.length === 1 ? matches[0].index : -1;
 }
+
+export function uniqueVisibleEnabledControlIndex(items) {
+  const matches = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item?.visible === true && item?.enabled === true);
+  return matches.length === 1 ? matches[0].index : -1;
+}
