@@ -37,6 +37,17 @@ class ConversationDecision:
     attention: object | None = None
 
 
+def _has_prior_greeting(*, application, state):
+    return (
+        state.messages.filter(direction=ConversationMessage.Direction.HR).exists()
+        or ConversationAction.objects.filter(
+            application=application,
+            action=ConversationAction.Action.GREET,
+            status=ConversationAction.Status.SUCCEEDED,
+        ).exists()
+    )
+
+
 def _sent_at(value):
     parsed = parse_datetime(str(value or ""))
     if parsed is None:
@@ -303,6 +314,25 @@ def process_pending_messages(
         return ConversationDecision(MessageIntent.IGNORE, message=latest)
     intent = classify_candidate_message(latest.content, has_resume_attachment=has_resume)
     attention = None
+    if intent == MessageIntent.REQUEST_RESUME and _has_prior_greeting(application=application, state=state):
+        attention, _ = ensure_attention(
+            attention_type="other",
+            title=f"{application.candidate.name} 有新消息，曾打过招呼，请人工处理",
+            idempotency_key=f"greeted-unread-message:{latest.pk}",
+            account=account,
+            job=application.job,
+            application=application,
+            workflow_run=workflow_run,
+            automation_plan_revision=automation_plan_revision,
+            automation_generation=automation_generation,
+            detail={
+                "message_id": latest.pk,
+                "message": latest.content,
+                "reason": "prior_greeting",
+            },
+            priority=30,
+        )
+        intent = MessageIntent.IGNORE
     if intent == MessageIntent.OBSERVING and create_attentions:
         attention, _ = ensure_attention(
             attention_type="observing_candidate",
