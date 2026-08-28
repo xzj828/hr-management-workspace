@@ -13,3 +13,10 @@ export function uniqueVisibleLeafMatchIndex(items, expected) {
       && String(item?.text ?? "").replace(/\s+/g, "").trim() === label);
   return matches.length === 1 ? matches[0].index : -1;
 }
+
+export function uniqueVisibleEnabledControlIndex(items) {
+  const matches = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item?.visible === true && item?.enabled === true);
+  return matches.length === 1 ? matches[0].index : -1;
+}

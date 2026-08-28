@@ -3,7 +3,11 @@ import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
-import { isTransientDocumentError, uniqueVisibleLeafMatchIndex } from "./boss_chat_retry.mjs";
+import {
+  isTransientDocumentError,
+  uniqueVisibleEnabledControlIndex,
+  uniqueVisibleLeafMatchIndex,
+} from "./boss_chat_retry.mjs";
 
 const CHAT_URL = "https://www.zhipin.com/web/chat/index";
 const MIN_PORT = 53470;
@@ -488,7 +492,60 @@ async function sendText(page, request) {
   await page.keyboard.up("Control");
   await page.keyboard.press("Backspace");
   await editor.type(message, { delay: 35 });
-  await page.keyboard.press("Enter");
+  // BOSS no longer consistently treats Enter as a submit action. Freeze the
+  // approved identity again after typing, then require exactly one visible,
+  // enabled send control and repeat the identity check in the same browser
+  // evaluation immediately before the external click.
+  await verifySelected(page, request);
+  const controls = await page.evaluate(() => {
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden"
+        && rect.width > 0 && rect.height > 0;
+    };
+    return Array.from(document.querySelectorAll(".conversation-editor")).map((container) => {
+      const input = container.querySelector("#boss-chat-editor-input");
+      const control = container.querySelector(".submit-content .submit");
+      const className = `${String(container.className ?? "")} ${String(control?.className ?? "")}`;
+      return {
+        visible: visible(container) && visible(input) && visible(control),
+        enabled: control instanceof HTMLElement
+          && !/disabled|forbid|ban/i.test(className)
+          && control.getAttribute("disabled") === null,
+      };
+    });
+  });
+  const controlIndex = uniqueVisibleEnabledControlIndex(controls);
+  const submitted = controlIndex >= 0 && await page.evaluate(({ index, externalId, jobTitle }) => {
+    const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden"
+        && rect.width > 0 && rect.height > 0;
+    };
+    const selectedItems = Array.from(document.querySelectorAll(".geek-item.selected")).filter(visible);
+    if (selectedItems.length !== 1
+        || norm(selectedItems[0].getAttribute("data-id")) !== externalId
+        || norm(selectedItems[0].querySelector(".source-job")?.textContent) !== jobTitle) return false;
+    const containers = Array.from(document.querySelectorAll(".conversation-editor"));
+    const container = containers[index];
+    const input = container?.querySelector("#boss-chat-editor-input");
+    const control = container?.querySelector(".submit-content .submit");
+    const className = `${String(container?.className ?? "")} ${String(control?.className ?? "")}`;
+    if (!visible(container) || !visible(input) || !visible(control)
+        || /disabled|forbid|ban/i.test(className) || control.getAttribute("disabled") !== null) return false;
+    control.click();
+    return true;
+  }, {
+    index: controlIndex,
+    externalId: String(request.external_id ?? ""),
+    jobTitle: normalizeJob(request.job_title),
+  });
+  if (!submitted) throw new Error("点击前无法唯一定位 BOSS 消息发送控件");
   const receipt = await waitForOutgoing(page, {
     ...request,
     message,
