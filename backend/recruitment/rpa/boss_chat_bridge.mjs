@@ -3,14 +3,7 @@ import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
-import {
-  conversationEmptyScopeStableMs,
-  isTransientConversationOpenError,
-  isTransientDocumentError,
-  uniqueVisibleIdentityMatchIndex,
-  uniqueVisibleEnabledControlIndex,
-  uniqueVisibleLeafMatchIndex,
-} from "./boss_chat_retry.mjs";
+import { isTransientDocumentError } from "./boss_chat_retry.mjs";
 
 const CHAT_URL = "https://www.zhipin.com/web/chat/index";
 const MIN_PORT = 53470;
@@ -91,10 +84,6 @@ async function chatPage(browser) {
 
 async function selectScope(page, jobTitle, unread) {
   const expectedJob = requireText(normalizeJob(jobTitle), "BOSS 沟通职位筛选值", 120);
-  await page.evaluate(() => {
-    window.__ximingJobScopeEmpty = null;
-    window.__ximingConversationEmptyScope = null;
-  });
   const currentJob = await page.$eval(
     ".chat-top-job .chat-select-job",
     (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim().split(/\s+_\s+/, 1)[0].trim(),
@@ -138,12 +127,7 @@ async function selectScope(page, jobTitle, unread) {
     await page.waitForFunction(
       `(expected) => {
         const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
-        const rows = Array.from(document.querySelectorAll('.geek-item')).filter((row) => {
-          const style = window.getComputedStyle(row);
-          const rect = row.getBoundingClientRect();
-          return style.display !== 'none' && style.visibility !== 'hidden'
-            && rect.width > 0 && rect.height > 0;
-        });
+        const rows = Array.from(document.querySelectorAll('.geek-item'));
         if (rows.length) {
           window.__ximingJobScopeEmpty = null;
           return rows.every((row) => norm(row.querySelector('.source-job')?.textContent) === expected);
@@ -174,48 +158,20 @@ async function selectScope(page, jobTitle, unread) {
   let filterApplied = false;
   for (let attempt = 0; attempt < 5 && !filterApplied; attempt += 1) {
     try {
-      const candidates = await page.evaluate((expected) => {
-        const visible = (element) => {
-          const style = window.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return style.display !== "none" && style.visibility !== "hidden"
-            && rect.width > 0 && rect.height > 0;
-        };
-        const normalized = (value) => (value ?? "").replace(/\s+/g, "").trim();
+      filterApplied = await page.evaluate((expected) => {
         const items = Array.from(document.querySelectorAll(".chat-message-filter-left span"));
-        return items.map((item) => ({
-          text: normalized(item.textContent),
-          visible: visible(item),
-          hasMatchingDescendant: Array.from(item.querySelectorAll("span"))
-            .some((child) => normalized(child.textContent) === expected && visible(child)),
-        }));
+        const matches = items.filter((item) => (item.textContent ?? "")
+          .replace(/\s+/g, "").includes(expected));
+        if (matches.length !== 1) return false;
+        const tab = matches[0];
+        const selected = /(active|selected|current|checked)/.test(String(tab.className ?? ""))
+          || tab.getAttribute("aria-selected") === "true"
+          || Boolean(tab.closest(".active, .selected, .current, .checked"));
+        if (!selected) {
+          tab.click();
+        }
+        return true;
       }, filterLabel);
-      const matchIndex = uniqueVisibleLeafMatchIndex(candidates, filterLabel);
-      if (matchIndex < 0) {
-        filterApplied = false;
-      } else {
-        filterApplied = await page.evaluate(({ expected, index }) => {
-          const visible = (element) => {
-            const style = window.getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return style.display !== "none" && style.visibility !== "hidden"
-              && rect.width > 0 && rect.height > 0;
-          };
-          const normalized = (value) => (value ?? "").replace(/\s+/g, "").trim();
-          const items = Array.from(document.querySelectorAll(".chat-message-filter-left span"));
-          const tab = items[index];
-          if (!tab || !visible(tab) || normalized(tab.textContent) !== expected) return false;
-          if (Array.from(tab.querySelectorAll("span"))
-            .some((child) => normalized(child.textContent) === expected && visible(child))) return false;
-          const selected = /(active|selected|current|checked)/.test(String(tab.className ?? ""))
-            || tab.getAttribute("aria-selected") === "true"
-            || Boolean(tab.closest(".active, .selected, .current, .checked"));
-          if (!selected) {
-            tab.click();
-          }
-          return true;
-        }, { expected: filterLabel, index: matchIndex });
-      }
     } catch (error) {
       if (!isTransientDocumentError(error) || attempt === 4) throw error;
     }
@@ -227,28 +183,19 @@ async function selectScope(page, jobTitle, unread) {
     `(scope) => {
       const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
       const tabs = Array.from(document.querySelectorAll('.chat-message-filter-left span'));
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden'
-          && rect.width > 0 && rect.height > 0;
-      };
-      const exact = (element) => norm(element.textContent).replace(/\\s+/g, '') === scope.filter;
-      const matchingTabs = tabs.filter((item) => visible(item) && exact(item)
-        && !Array.from(item.querySelectorAll('span')).some((child) => visible(child) && exact(child)));
-      const tab = matchingTabs.length === 1 ? matchingTabs[0] : null;
+      const tab = tabs.find((item) => norm(item.textContent).replace(/\s+/g, '').includes(scope.filter));
       const selected = tab && (
         /(active|selected|current|checked)/.test(String(tab.className ?? ''))
         || tab.getAttribute('aria-selected') === 'true'
         || Boolean(tab.closest('.active, .selected, .current, .checked'))
       );
       if (!selected) return false;
-      const rows = Array.from(document.querySelectorAll('.geek-item')).filter((row) => visible(row));
+      const rows = Array.from(document.querySelectorAll('.geek-item'));
       if (!rows.length) {
         const key = scope.job + ':' + scope.filter;
         const now = Date.now();
         const previous = window.__ximingConversationEmptyScope;
-        if (previous?.key === key && now - previous.since >= scope.emptyStableMs) return true;
+        if (previous?.key === key && now - previous.since >= 1000) return true;
         window.__ximingConversationEmptyScope = { key, since: now };
         return false;
       }
@@ -260,12 +207,7 @@ async function selectScope(page, jobTitle, unread) {
       });
     }`,
     { timeout: 18_000 },
-    {
-      job: expectedJob,
-      filter: filterLabel,
-      unread: Boolean(unread),
-      emptyStableMs: conversationEmptyScopeStableMs(Boolean(unread)),
-    },
+    { job: expectedJob, filter: filterLabel, unread: Boolean(unread) },
   );
   return expectedJob;
 }
@@ -273,13 +215,7 @@ async function selectScope(page, jobTitle, unread) {
 async function conversationRows(page) {
   return page.$$eval(".geek-item", (items) => {
     const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
-    const visible = (element) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden"
-        && rect.width > 0 && rect.height > 0;
-    };
-    return items.filter((element) => visible(element)).map((element, index) => {
+    return items.map((element, index) => {
       const badge = norm(element.querySelector(".badge-count")?.textContent);
       const digits = badge.replace(/\D/g, "");
       return {
@@ -359,15 +295,8 @@ async function currentMessages(page) {
 async function selectedConversation(page) {
   return page.evaluate(() => {
     const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
-    const visible = (element) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden"
-        && rect.width > 0 && rect.height > 0;
-    };
-    const matches = Array.from(document.querySelectorAll(".geek-item.selected")).filter(visible);
-    if (matches.length !== 1) return null;
-    const selected = matches[0];
+    const selected = document.querySelector(".geek-item.selected");
+    if (!selected) return null;
     return {
       external_id: norm(selected.getAttribute("data-id")),
       name: norm(selected.querySelector(".geek-name")?.textContent),
@@ -402,51 +331,22 @@ async function openConversation(page, request) {
     // The BOSS SPA can replace the list DOM immediately after a scope change.
     // Re-query by the frozen identity inside one page evaluation instead of
     // retaining an ElementHandle that may become stale before `.click()` runs.
-    const candidates = await page.evaluate(() => {
+    const clicked = await page.evaluate(({ externalId: expectedId, jobTitle }) => {
       const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return style.display !== "none" && style.visibility !== "hidden"
-          && rect.width > 0 && rect.height > 0;
-      };
-      return Array.from(document.querySelectorAll(".geek-item")).map((element) => ({
-        externalId: norm(element.getAttribute("data-id")),
-        jobTitle: norm(element.querySelector(".source-job")?.textContent),
-        visible: visible(element),
-      }));
-    });
-    const matchIndex = uniqueVisibleIdentityMatchIndex(candidates, externalId, expectedJob);
-    const clicked = matchIndex >= 0 && await page.evaluate(({ externalId: expectedId, jobTitle, index }) => {
-      const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return style.display !== "none" && style.visibility !== "hidden"
-          && rect.width > 0 && rect.height > 0;
-      };
-      const items = Array.from(document.querySelectorAll(".geek-item"));
-      const target = items[index];
-      if (!target || !visible(target)
-          || norm(target.getAttribute("data-id")) !== expectedId
-          || norm(target.querySelector(".source-job")?.textContent) !== jobTitle) return false;
-      target.click();
+      const matches = Array.from(document.querySelectorAll(".geek-item")).filter((element) => (
+        norm(element.getAttribute("data-id")) === expectedId
+        && norm(element.querySelector(".source-job")?.textContent) === jobTitle
+      ));
+      if (matches.length !== 1) return false;
+      matches[0].click();
       return true;
-    }, { externalId, jobTitle: expectedJob, index: matchIndex });
+    }, { externalId, jobTitle: expectedJob });
     if (!clicked) throw new Error("点击前无法唯一定位批准的 BOSS 会话");
   }
   await page.waitForFunction(
     `(target) => {
       const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden'
-          && rect.width > 0 && rect.height > 0;
-      };
-      const selectedItems = Array.from(document.querySelectorAll('.geek-item.selected')).filter(visible);
-      if (selectedItems.length !== 1) return false;
-      const selected = selectedItems[0];
+      const selected = document.querySelector('.geek-item.selected');
       return norm(selected?.getAttribute('data-id')) === target.externalId
         && norm(selected?.querySelector('.geek-name')?.textContent) === target.name
         && norm(selected?.querySelector('.source-job')?.textContent) === target.jobTitle
@@ -464,9 +364,6 @@ async function openConversation(page, request) {
     })`,
     { timeout: 15_000 },
   );
-  await page.evaluate(() => {
-    window.__ximingMessageListStable = null;
-  });
   await page.waitForFunction(
     `(externalId) => {
       const lists = Array.from(document.querySelectorAll('.chat-message-list')).filter((element) => {
@@ -488,22 +385,6 @@ async function openConversation(page, request) {
     externalId,
   );
   return { ...target, selected: true, messages: await currentMessages(page) };
-}
-
-async function openConversationWithRetry(page, browser, request) {
-  let currentPage = page;
-  let lastError;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      return await openConversation(currentPage, request);
-    } catch (error) {
-      lastError = error;
-      if (!isTransientConversationOpenError(error) || attempt === 2) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
-      currentPage = await chatPage(browser);
-    }
-  }
-  throw lastError;
 }
 
 async function verifySelected(page, request) {
@@ -529,16 +410,7 @@ async function waitForOutgoing(page, request) {
   await page.waitForFunction(
     `(expected) => {
       const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
-      const visible = (element) => {
-        if (!(element instanceof HTMLElement)) return false;
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden'
-          && rect.width > 0 && rect.height > 0;
-      };
-      const selectedItems = Array.from(document.querySelectorAll('.geek-item.selected')).filter(visible);
-      if (selectedItems.length !== 1) return false;
-      const selected = selectedItems[0];
+      const selected = document.querySelector('.geek-item.selected');
       if (norm(selected?.getAttribute('data-id')) !== expected.externalId) return false;
       if (norm(selected?.querySelector('.source-job')?.textContent) !== expected.jobTitle) return false;
       const lists = Array.from(document.querySelectorAll('.chat-message-list')).filter((element) => {
@@ -574,56 +446,7 @@ async function sendText(page, request) {
   await page.keyboard.up("Control");
   await page.keyboard.press("Backspace");
   await editor.type(message, { delay: 35 });
-  await verifySelected(page, request);
-  const controls = await page.evaluate(() => {
-    const visible = (element) => {
-      if (!(element instanceof HTMLElement)) return false;
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden"
-        && rect.width > 0 && rect.height > 0;
-    };
-    return Array.from(document.querySelectorAll(".conversation-editor")).map((container) => {
-      const input = container.querySelector("#boss-chat-editor-input");
-      const control = container.querySelector(".submit-content .submit");
-      const className = `${String(container.className ?? "")} ${String(control?.className ?? "")}`;
-      return {
-        visible: visible(container) && visible(input) && visible(control),
-        enabled: control instanceof HTMLElement
-          && !/disabled|forbid|ban/i.test(className)
-          && control.getAttribute("disabled") === null,
-      };
-    });
-  });
-  const controlIndex = uniqueVisibleEnabledControlIndex(controls);
-  const submitted = controlIndex >= 0 && await page.evaluate(({ index, externalId, jobTitle }) => {
-    const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
-    const visible = (element) => {
-      if (!(element instanceof HTMLElement)) return false;
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden"
-        && rect.width > 0 && rect.height > 0;
-    };
-    const selectedItems = Array.from(document.querySelectorAll(".geek-item.selected")).filter(visible);
-    if (selectedItems.length !== 1
-        || norm(selectedItems[0].getAttribute("data-id")) !== externalId
-        || norm(selectedItems[0].querySelector(".source-job")?.textContent) !== jobTitle) return false;
-    const containers = Array.from(document.querySelectorAll(".conversation-editor"));
-    const container = containers[index];
-    const input = container?.querySelector("#boss-chat-editor-input");
-    const control = container?.querySelector(".submit-content .submit");
-    const className = `${String(container?.className ?? "")} ${String(control?.className ?? "")}`;
-    if (!visible(container) || !visible(input) || !visible(control)
-        || /disabled|forbid|ban/i.test(className) || control.getAttribute("disabled") !== null) return false;
-    control.click();
-    return true;
-  }, {
-    index: controlIndex,
-    externalId: String(request.external_id ?? ""),
-    jobTitle: normalizeJob(request.job_title),
-  });
-  if (!submitted) throw new Error("点击前无法唯一定位 BOSS 消息发送控件");
+  await page.keyboard.press("Enter");
   const receipt = await waitForOutgoing(page, {
     ...request,
     message,
@@ -1159,7 +982,7 @@ async function execute(page, browser, request, packageRoot) {
       return { rows: await listConversations(page, browser, request) };
     }
     case "open":
-      return { conversation: await openConversationWithRetry(page, browser, request) };
+      return { conversation: await openConversation(page, request) };
     case "selected":
       return { conversation: await verifySelected(page, request) };
     case "wait_outgoing":

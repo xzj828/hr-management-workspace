@@ -1413,15 +1413,11 @@ def complete_task_view(request, task_id):
             return Response({"detail": "消息同步结果无效"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             eligible_count = int(result.get("eligible_count", 0) or 0)
-            list_retry_count = int(result.get("list_retry_count", 0) or 0)
-            message_retry_count = int(result.get("message_retry_count", 0) or 0)
         except (TypeError, ValueError):
-            return Response({"detail": "消息同步计数字段无效"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "消息同步 eligible_count 无效"}, status=status.HTTP_400_BAD_REQUEST)
         sync_metrics = {
             "discovered_count": len(rows),
             "eligible_count": max(0, min(eligible_count, len(rows))),
-            "list_retry_count": max(0, min(list_retry_count, 100)),
-            "message_retry_count": max(0, min(message_retry_count, 100)),
             "opened_count": sum(
                 1 for row in rows
                 if isinstance(row, dict)

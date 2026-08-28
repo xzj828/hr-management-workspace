@@ -1304,6 +1304,8 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"])
     def archive(self, request, pk=None):
         run = self.get_object()
+        if run.automation_plan_revision_id is None:
+            raise ValidationError({"detail": "只有招聘作业台创建的任务可以删除"})
         if run.status not in {
             WorkflowRun.Status.SUCCEEDED,
             WorkflowRun.Status.FAILED,
@@ -1321,6 +1323,8 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"])
     def restore(self, request, pk=None):
         run = self.get_object()
+        if run.automation_plan_revision_id is None:
+            raise ValidationError({"detail": "只有招聘作业台创建的任务可以恢复"})
         if run.archived_at is not None:
             run.archived_at = None
             run.save(update_fields=["archived_at", "updated_at"])
@@ -1346,7 +1350,8 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
         }
         eligible_ids = [
             run.pk for run in runs
-            if run.status in terminal_statuses
+            if run.automation_plan_revision_id is not None
+            and run.status in terminal_statuses
             and run.archived_at is None
         ]
         now = timezone.now()

@@ -723,8 +723,6 @@ class WorkerApiTests(APITestCase):
                 "status": "succeeded",
                 "result": {
                     "eligible_count": 1,
-                    "list_retry_count": 1,
-                    "message_retry_count": 1,
                     "conversations": [{
                         "name": "读取失败候选人",
                         "external_id": "conversation-read-failed",
@@ -743,8 +741,6 @@ class WorkerApiTests(APITestCase):
         self.assertEqual(self.task.status, RpaTask.Status.FAILED)
         self.assertEqual(self.task.error_code, "conversation_message_read_failed")
         self.assertEqual(self.task.result["sync"]["message_failed_count"], 1)
-        self.assertEqual(self.task.result["sync"]["list_retry_count"], 1)
-        self.assertEqual(self.task.result["sync"]["message_retry_count"], 1)
         self.assertFalse(JobApplication.objects.filter(job=job).exists())
 
     def test_sync_rejects_non_numeric_eligible_count(self):
@@ -762,35 +758,6 @@ class WorkerApiTests(APITestCase):
                 "worker_key": "local-worker",
                 "status": "succeeded",
                 "result": {"eligible_count": "invalid", "conversations": []},
-            },
-            format="json",
-            **self.token_header,
-        )
-
-        self.assertEqual(response.status_code, 400, response.data)
-        self.task.refresh_from_db()
-        self.assertEqual(self.task.status, RpaTask.Status.LEASED)
-
-    def test_sync_rejects_non_numeric_retry_counts(self):
-        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
-        self.task.save(update_fields=["action"])
-        self.heartbeat()
-        lease = self.client.post(
-            "/api/recruitment/worker/tasks/lease/",
-            {"worker_key": "local-worker"}, format="json", **self.token_header,
-        )
-
-        response = self.client.post(
-            f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
-            {
-                "worker_key": "local-worker",
-                "status": "succeeded",
-                "result": {
-                    "eligible_count": 0,
-                    "list_retry_count": "invalid",
-                    "message_retry_count": 0,
-                    "conversations": [],
-                },
             },
             format="json",
             **self.token_header,

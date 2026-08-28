@@ -121,20 +121,6 @@ class AutomationPlanApiTests(APITestCase):
             format="json",
         )
 
-    def _legacy_terminal_run(self, *, status=WorkflowRun.Status.CANCELLED):
-        started = self._start()
-        self.assertEqual(started.status_code, 201, started.data)
-        managed_run = WorkflowRun.objects.get(pk=started.data["current_run"]["id"])
-        return WorkflowRun.objects.create(
-            version=managed_run.version,
-            boss_account=self.account,
-            job=self.job,
-            actor=self.user,
-            mode=WorkflowRun.Mode.FORMAL,
-            status=status,
-            idempotency_key=f"legacy-terminal-{uuid.uuid4()}",
-        )
-
     def test_first_start_defaults_version_zero_and_returns_nested_current_state(self):
         response = self._start()
 
@@ -259,45 +245,6 @@ class AutomationPlanApiTests(APITestCase):
         self.assertEqual(response.data["archived_ids"], [first_run_id])
         self.assertIsNotNone(WorkflowRun.objects.get(pk=first_run_id).archived_at)
         self.assertIsNone(WorkflowRun.objects.get(pk=second_run_id).archived_at)
-
-    def test_bulk_archive_clears_terminal_legacy_run_without_plan_revision(self):
-        legacy_run = self._legacy_terminal_run()
-
-        response = self.client.post(
-            "/api/recruitment/workflow-runs/bulk-archive/",
-            {"run_ids": [str(legacy_run.pk)]},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data["archived_count"], 1)
-        self.assertEqual(response.data["skipped_count"], 0)
-        legacy_run.refresh_from_db()
-        self.assertIsNotNone(legacy_run.archived_at)
-
-    def test_archive_allows_terminal_legacy_run_without_plan_revision(self):
-        legacy_run = self._legacy_terminal_run(status=WorkflowRun.Status.FAILED)
-
-        response = self.client.post(
-            f"/api/recruitment/workflow-runs/{legacy_run.pk}/archive/"
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        legacy_run.refresh_from_db()
-        self.assertIsNotNone(legacy_run.archived_at)
-
-    def test_restore_allows_archived_legacy_run_without_plan_revision(self):
-        legacy_run = self._legacy_terminal_run(status=WorkflowRun.Status.SUCCEEDED)
-        legacy_run.archived_at = timezone.now()
-        legacy_run.save(update_fields=["archived_at", "updated_at"])
-
-        response = self.client.post(
-            f"/api/recruitment/workflow-runs/{legacy_run.pk}/restore/"
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        legacy_run.refresh_from_db()
-        self.assertIsNone(legacy_run.archived_at)
 
     def test_active_start_compiles_and_freezes_workbench_manual_standard(self):
         job = RecruitmentJob.objects.create(

@@ -4,9 +4,7 @@ from django.test import TestCase
 from recruitment.models import (
     BossAccount,
     Candidate,
-    ConversationAction,
     ConversationMessage,
-    HumanAttention,
     JobApplication,
     RecruitmentJob,
 )
@@ -109,50 +107,3 @@ class ConversationIngestionTests(TestCase):
         decision = process_pending_messages(application=self.application, account=self.account)
 
         self.assertEqual(decision.intent, MessageIntent.RESUME_RECEIVED)
-
-    def test_unread_reply_after_synced_hr_greeting_creates_manual_attention(self):
-        ingest_conversation(
-            application=self.application,
-            account=self.account,
-            messages=[
-                {"external_id": "h1", "direction": "hr", "content": "您好，想和您聊聊", "sent_at": "2026-08-25T09:00:00+08:00"},
-                {"external_id": "m1", "direction": "candidate", "content": "你好", "sent_at": "2026-08-25T09:01:00+08:00"},
-            ],
-        )
-
-        decision = process_pending_messages(
-            application=self.application,
-            account=self.account,
-            actor=self.user,
-            schedule_actions=True,
-        )
-
-        self.assertEqual(decision.intent, MessageIntent.IGNORE)
-        attention = self.application.human_attentions.get()
-        self.assertEqual(attention.attention_type, HumanAttention.Type.OTHER)
-        self.assertEqual(attention.detail["message_id"], decision.message.pk)
-        self.assertFalse(self.application.conversation_actions.exists())
-
-    def test_unread_reply_after_verified_greet_action_creates_manual_attention(self):
-        ConversationAction.objects.create(
-            application=self.application,
-            boss_account=self.account,
-            action=ConversationAction.Action.GREET,
-            status=ConversationAction.Status.SUCCEEDED,
-            message_snapshot="您好，想和您聊聊",
-            target_snapshot={},
-            idempotency_key="verified-greeting",
-            created_by=self.user,
-        )
-        ingest_conversation(
-            application=self.application,
-            account=self.account,
-            messages=[
-                {"external_id": "m1", "direction": "candidate", "content": "你好", "sent_at": "2026-08-25T09:01:00+08:00"},
-            ],
-        )
-
-        decision = process_pending_messages(application=self.application, account=self.account)
-
-        self.assertEqual(decision.intent, MessageIntent.IGNORE)
-        self.assertEqual(self.application.human_attentions.get().attention_type, HumanAttention.Type.OTHER)
