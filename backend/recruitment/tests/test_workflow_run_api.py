@@ -10,6 +10,7 @@ from recruitment.models import (
     Candidate,
     ConversationAction,
     ExecutionBatch,
+    JobStandardVersion,
     JobApplication,
     RecruitmentAuditLog,
     RecruitmentJob,
@@ -98,6 +99,15 @@ class WorkflowRunApiTests(APITestCase):
             external_id=f"search-{RecruitmentJob.objects.count()}",
             title="数据工程师",
             owner=self.user,
+        )
+        JobStandardVersion.objects.create(
+            job=job,
+            version=1,
+            status=JobStandardVersion.Status.PUBLISHED,
+            criteria={"dimensions": [{"key": "fit", "name": "匹配", "weight": 100, "description": "匹配"}]},
+            created_by=self.user,
+            published_by=self.user,
+            published_at=timezone.now(),
         )
         template = WorkflowTemplate.objects.create(name="主动寻访审批", created_by=self.user)
         version = create_version(

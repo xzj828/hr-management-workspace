@@ -95,3 +95,26 @@ Status: in progress
 5. 用户已授权对当前目标职位的单个真实未读候选人完成端到端验收。验收必须保存审批、批次、步骤、任务、消息回执和求简历结果；附件到达后继续验证下载与归档。不得扩展到其他候选人。
 
 运行时根因修正：只读对照证明受管 Edge 在没有 Python Playwright 接入时持续稳定，而 `connect_over_cdp` 读取会话后会立即关闭浏览器并触发 `TargetClosed`。因此上述“项目 CDP 适配层”最终实现改为复用已安装 `@joohw/boss-cli` 0.6.6 自带 `puppeteer-core` 的本地 Node bridge；bridge 完成职位/未读筛选、stable ID 打开、DOM 消息回执和附件下载，退出时只断开自身连接，不关闭受管浏览器。真实发送继续调用固定 CLI 的 `send` 和 `action request-attachment-resume`，并以 bridge 回执作为继续求简历的前置条件。
+
+## 文本/附件同步解耦与真实链路验收（2026-08-27）
+
+Status: completed and deployed; real BOSS chain verified
+
+最新真实运行中，初始化同步返回 0 条后意图节点空成功；随后周期轮询确实尝试打开 1 条未读会话，但行级 `sync_error` 被服务端静默跳过，任务仍显示成功。前端又只统计 `succeeded`、漏计 `skipped`，把终态 Run 显示为“判断意图 3/13”。现存结果没有保留行级错误，因此无法再区分打开会话与附件二次 bridge 中哪一步失败。
+
+确认后的修复契约：
+
+1. 未读列表只负责发现 stable ID；实际打开在同一冻结岗位的全部会话范围按 stable ID、展示名和职位重新唯一复核，避免打开后变已读导致定位漂移。
+2. 消息读取与附件核验分别产生受控结果。文本读取成功不得因附件失败而丢弃；附件状态未知时保留文本证据但禁止自动求简历，有限只读重试仍失败则转人工。
+3. Worker 完成回写持久化脱敏计数和错误码；存在 eligible 会话却全部读取失败时不得上报无告警的“成功 0 条”。
+4. 被动 Plan 读模型投影最近轮询状态；任务详情区分初始化 Run 与持续监听，步骤统计包含 `skipped`。
+5. 用户授权以当前“前置部署工程师”任务和冻结话术执行一次真实端到端验收。验收必须从会话发现开始，并在数据库中核对 Candidate/Application/Message、意图、自动批准 Approval、ExecutionBatch/Step、RpaTask 及 BOSS 可验证回执；任何身份、附件或外部结果不确定立即失败关闭，不扩展到其他候选人。
+
+完成结果：
+
+- 未读发现与实际打开已解耦；会话行点击、附件按钮和求简历确认都在当前 DOM 中重新按冻结身份定位，不再持有会被 BOSS SPA 替换的旧 `ElementHandle`。
+- 消息读取与附件核验独立回写。真实会话成功同步 1 个 Application、15 条 Message；无附件时明确返回 ready/0，附件未知时仍保留文本但禁止外发。
+- 标准被动计划在 HR 点击开始时自动批准当前 revision/generation 的求简历动作，不再要求二次确认。真实代次 generation 12 / revision 18 中 Approval、ExecutionBatch、Step、ConversationAction 与 `request_resume` RpaTask 均为 succeeded，且 BOSS 返回 `/wapi/zpchat/exchange/test` 原生成功回执；流程已进入 `wait_resume`，等待候选人实际发回简历。
+- 求简历强回执接受平台非遥测成功响应、明确成功提示，或同一 stable ID/岗位聊天区新增的精确默认求简历话术；任一证据都必须在身份复核后产生。结果不确定仍转人工且不得自动重试。
+- UI 步骤计数包含 `skipped`，任务详情新增最近轮询时间、发现/处理/消息失败/附件失败的持续监听状态，不再把空分支显示成“卡在判断意图”。
+- 验收证据：后端相关测试 124/124、前端组件测试 31/31、生产构建通过；最终部署迁移无变更，Web/RPA/AI 服务健康。数据库快照位于 `backups/db-before-passive-live-20260827-181913.sqlite3`。

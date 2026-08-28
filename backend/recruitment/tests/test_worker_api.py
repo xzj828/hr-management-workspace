@@ -644,6 +644,129 @@ class WorkerApiTests(APITestCase):
             self.task.refresh_from_db()
             self.assertEqual(self.task.result["sync"]["attachments_archived"], 1)
 
+    def test_attachment_unknown_preserves_message_but_blocks_resume_request(self):
+        AccountProfile.objects.create(user=self.hr, role=AccountProfile.Role.HR)
+        self.account.authorized_users.add(self.hr)
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="attachment-unknown-job",
+            title="前置部署工程师",
+            owner=self.hr,
+        )
+        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+            {
+                "worker_key": "local-worker",
+                "status": "succeeded",
+                "result": {
+                    "eligible_count": 1,
+                    "conversations": [{
+                        "name": "附件待核验候选人",
+                        "external_id": "conversation-attachment-unknown",
+                        "job_title": job.title,
+                        "attachment_sync_state": "unknown",
+                        "attachment_error_code": "conversation_attachment_read_failed",
+                        "messages": [{
+                            "direction": "candidate",
+                            "content": "您好，我想了解这个岗位",
+                            "sent_at": "2026-08-27T09:00:00+08:00",
+                        }],
+                        "attachments": [],
+                    }],
+                },
+            },
+            format="json",
+            **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        message = ConversationMessage.objects.get()
+        self.assertIsNone(message.processed_at)
+        self.assertEqual(message.raw_payload["attachment_sync_state"], "unknown")
+        self.assertFalse(
+            AutomationApproval.objects.filter(action=AutomationApproval.Action.REQUEST_RESUME).exists()
+        )
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, RpaTask.Status.SUCCEEDED)
+        self.assertEqual(self.task.error_code, "conversation_attachment_read_incomplete")
+        self.assertEqual(self.task.result["sync"]["attachment_failed_count"], 1)
+
+    def test_all_eligible_message_reads_failed_is_not_reported_as_success_zero(self):
+        job = RecruitmentJob.objects.create(
+            boss_account=self.account,
+            external_id="message-read-failed-job",
+            title="前置部署工程师",
+            owner=self.hr,
+        )
+        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
+        self.task.request_payload = {"job": job.pk, "job_title": job.title}
+        self.task.save(update_fields=["action", "request_payload"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+            {
+                "worker_key": "local-worker",
+                "status": "succeeded",
+                "result": {
+                    "eligible_count": 1,
+                    "conversations": [{
+                        "name": "读取失败候选人",
+                        "external_id": "conversation-read-failed",
+                        "job_title": job.title,
+                        "sync_error": "会话消息读取失败",
+                        "sync_error_code": "conversation_message_read_failed",
+                    }],
+                },
+            },
+            format="json",
+            **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, RpaTask.Status.FAILED)
+        self.assertEqual(self.task.error_code, "conversation_message_read_failed")
+        self.assertEqual(self.task.result["sync"]["message_failed_count"], 1)
+        self.assertFalse(JobApplication.objects.filter(job=job).exists())
+
+    def test_sync_rejects_non_numeric_eligible_count(self):
+        self.task.action = RpaTask.Action.SYNC_CONVERSATIONS
+        self.task.save(update_fields=["action"])
+        self.heartbeat()
+        lease = self.client.post(
+            "/api/recruitment/worker/tasks/lease/",
+            {"worker_key": "local-worker"}, format="json", **self.token_header,
+        )
+
+        response = self.client.post(
+            f"/api/recruitment/worker/tasks/{lease.data['task']['id']}/complete/",
+            {
+                "worker_key": "local-worker",
+                "status": "succeeded",
+                "result": {"eligible_count": "invalid", "conversations": []},
+            },
+            format="json",
+            **self.token_header,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, RpaTask.Status.LEASED)
+
     def test_search_campaign_completion_returns_applications_for_next_workflow_node(self):
         job = RecruitmentJob.objects.create(
             boss_account=self.account, external_id="search-pull-job", title="数据工程师", owner=self.hr,
@@ -722,8 +845,10 @@ class WorkerApiTests(APITestCase):
             self.task.refresh_from_db()
             self.assertEqual(self.task.result["application_ids"], [resume.application_id])
             campaign.refresh_from_db()
-            self.assertEqual(campaign.status, SearchCampaign.Status.SUCCEEDED)
+            self.assertEqual(campaign.status, SearchCampaign.Status.ANALYZING)
             self.assertEqual(campaign.pulled_resume_count, 1)
+            self.assertEqual(campaign.scanned_count, 0)
+            self.assertEqual(campaign.items.get().resume, resume)
             attempts = AutomationEvidence.objects.get(task=self.task, kind="resume_preview_attempts")
             self.assertEqual(attempts.metadata["attempts"][0]["outcome"], "preview_succeeded")
             serialized_evidence = json.dumps(attempts.metadata, ensure_ascii=False)

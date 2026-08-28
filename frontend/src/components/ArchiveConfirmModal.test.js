@@ -38,4 +38,17 @@ describe('ArchiveConfirmModal', () => {
     expect(wrapper.get('button[aria-label="关闭"]').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
+
+  it('scopes the readable regular-weight typography to business-result dialogs', () => {
+    const wrapper = mount(ArchiveConfirmModal, {
+      props: {
+        title: '一键清除任务结果', name: '前置部署工程师 · 5 个任务',
+        description: '将当前岗位中已经结束的任务结果从当前列表归档。',
+        businessResultsTypography: true,
+      },
+      global: { stubs: { teleport: true } },
+    })
+
+    expect(wrapper.get('[role="dialog"]').classes()).toContain('modal-panel--business-results')
+  })
 })

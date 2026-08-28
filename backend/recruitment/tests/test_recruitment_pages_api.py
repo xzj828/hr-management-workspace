@@ -1,4 +1,5 @@
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import override_settings
@@ -6,7 +7,15 @@ from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
 from recruitment.demo_data import load_demo_data
-from recruitment.models import BossAccount, Candidate, JobApplication, RecruitmentJob, Resume
+from recruitment.models import (
+    AiProcessingTask,
+    BossAccount,
+    Candidate,
+    JobApplication,
+    RecruitmentAuditLog,
+    RecruitmentJob,
+    Resume,
+)
 
 
 class RecruitmentPagesApiTests(APITestCase):
@@ -88,6 +97,116 @@ class RecruitmentPagesApiTests(APITestCase):
         self.assertFalse(detail.data["file_available"])
         missing = self.client.get(f"/api/recruitment/resumes/{resume.pk}/file/")
         self.assertEqual(missing.status_code, 404)
+
+    def test_hr_can_purge_resume_file_and_repeat_safely(self):
+        resume = Resume.objects.filter(is_demo=True).first()
+        stored_name = resume.file.name
+        released_bytes = resume.file_size
+        queued_task = AiProcessingTask.objects.create(
+            kind=AiProcessingTask.Kind.RESUME_STRUCTURE,
+            status=AiProcessingTask.Status.PENDING,
+            requested_by=self.hr,
+            resume=resume,
+            idempotency_key=f"purge-pending:{resume.pk}",
+        )
+        self.assertTrue(resume.file.storage.exists(stored_name))
+
+        response = self.client.post(f"/api/recruitment/resumes/{resume.pk}/purge/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["released_bytes"], released_bytes)
+        resume.refresh_from_db()
+        queued_task.refresh_from_db()
+        self.assertEqual(resume.file.name, "")
+        self.assertEqual(resume.file_size, 0)
+        self.assertIsNotNone(resume.archived_at)
+        self.assertFalse(resume.file.storage.exists(stored_name))
+        self.assertEqual(queued_task.status, AiProcessingTask.Status.FAILED)
+        self.assertEqual(queued_task.error_code, "source_file_deleted")
+        self.assertTrue(
+            RecruitmentAuditLog.objects.filter(action="resume_file_purged", target_id=str(resume.pk)).exists()
+        )
+        preview = self.client.get(f"/api/recruitment/resumes/{resume.pk}/file/")
+        self.assertEqual(preview.status_code, 404)
+        screening = self.client.get(f"/api/recruitment/screening-results/?job={resume.application.job_id}")
+        result = next(item for item in screening.data["results"] if item["application"]["id"] == resume.application_id)
+        self.assertIsNone(result["resume"])
+
+        repeated = self.client.post(f"/api/recruitment/resumes/{resume.pk}/purge/", {}, format="json")
+        self.assertEqual(repeated.status_code, 200, repeated.data)
+        self.assertEqual(repeated.data["released_bytes"], 0)
+
+    def test_resume_purge_rejects_in_flight_ai_task_without_deleting_file(self):
+        resume = Resume.objects.filter(is_demo=True).first()
+        stored_name = resume.file.name
+        AiProcessingTask.objects.create(
+            kind=AiProcessingTask.Kind.RESUME_STRUCTURE,
+            status=AiProcessingTask.Status.MODEL,
+            requested_by=self.hr,
+            resume=resume,
+            idempotency_key=f"purge-active:{resume.pk}",
+        )
+
+        response = self.client.post(f"/api/recruitment/resumes/{resume.pk}/purge/", {}, format="json")
+
+        self.assertEqual(response.status_code, 409, response.data)
+        resume.refresh_from_db()
+        self.assertIsNone(resume.archived_at)
+        self.assertEqual(resume.file.name, stored_name)
+        self.assertTrue(resume.file.storage.exists(stored_name))
+
+    def test_other_hr_cannot_purge_resume(self):
+        resume = Resume.objects.filter(is_demo=True).first()
+        other = User.objects.create_user(username="resume-purge-other")
+        AccountProfile.objects.create(user=other, role=AccountProfile.Role.HR)
+        self.client.force_login(other)
+
+        response = self.client.post(f"/api/recruitment/resumes/{resume.pk}/purge/", {}, format="json")
+
+        self.assertEqual(response.status_code, 404)
+        resume.refresh_from_db()
+        self.assertIsNone(resume.archived_at)
+
+    def test_resume_purge_storage_failure_preserves_database_state(self):
+        resume = Resume.objects.filter(is_demo=True).first()
+        stored_name = resume.file.name
+        with patch.object(resume.file.storage, "delete", side_effect=OSError("locked")):
+            response = self.client.post(f"/api/recruitment/resumes/{resume.pk}/purge/", {}, format="json")
+
+        self.assertEqual(response.status_code, 503, response.data)
+        resume.refresh_from_db()
+        self.assertIsNone(resume.archived_at)
+        self.assertEqual(resume.file.name, stored_name)
+        self.assertTrue(resume.file.storage.exists(stored_name))
+
+    def test_hr_can_bulk_purge_resumes_and_keep_processing_files(self):
+        resumes = list(Resume.objects.filter(is_demo=True).order_by("id")[:2])
+        blocked = resumes[1]
+        blocked_name = blocked.file.name
+        AiProcessingTask.objects.create(
+            kind=AiProcessingTask.Kind.RESUME_STRUCTURE,
+            status=AiProcessingTask.Status.MODEL,
+            requested_by=self.hr,
+            resume=blocked,
+            idempotency_key=f"bulk-purge-active:{blocked.pk}",
+        )
+
+        response = self.client.post(
+            "/api/recruitment/resumes/bulk-purge/",
+            {"resume_ids": [resume.pk for resume in resumes]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["purged_count"], 1)
+        self.assertEqual(response.data["failed_count"], 1)
+        self.assertEqual(response.data["failures"][0]["code"], "resume_processing")
+        resumes[0].refresh_from_db()
+        blocked.refresh_from_db()
+        self.assertIsNotNone(resumes[0].archived_at)
+        self.assertIsNone(blocked.archived_at)
+        self.assertEqual(blocked.file.name, blocked_name)
+        self.assertTrue(blocked.file.storage.exists(blocked_name))
 
     def test_demo_data_endpoint_reports_loads_and_clears(self):
         status_response = self.client.get("/api/recruitment/demo-data/")

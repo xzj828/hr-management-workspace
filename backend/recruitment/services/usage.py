@@ -27,7 +27,7 @@ def consume(*, account, metric, amount=1):
         metric=metric,
     )
     limit = getattr(account, LIMIT_FIELDS[metric])
-    if usage.used + amount > limit:
+    if limit > 0 and usage.used + amount > limit:
         raise ValidationError("该 BOSS 账号今日自动化用量已达上限")
     usage.used += amount
     usage.save(update_fields=["used"])

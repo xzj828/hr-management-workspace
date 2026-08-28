@@ -10,6 +10,7 @@ import RecruitmentResultsView from './RecruitmentResultsView.vue'
 const route = useRoute()
 const router = useRouter()
 const plan = ref(null)
+const task = ref(null)
 const loading = ref(true)
 const loadError = ref('')
 const actionError = ref('')
@@ -26,10 +27,17 @@ let approvalLoadSequence = 0
 let componentAlive = true
 
 const planId = computed(() => String(route.params.planId || ''))
+const isCurrentTask = computed(() => (
+  !task.value
+  || task.value.automation_plan_current_run
+  || String(task.value.id) === String(plan.value?.current_run?.id || '')
+))
 const state = computed(() => {
-  if (plan.value?.archived_at) return 'archived'
+  if (task.value?.archived_at) return 'archived'
   const value = String(
-    plan.value?.effective_state
+    (isCurrentTask.value ? plan.value?.effective_state : null)
+      || task.value?.automation_plan_effective_state
+      || task.value?.status
       || plan.value?.actual_state
       || plan.value?.current_run?.status
       || plan.value?.desired_state
@@ -69,15 +77,43 @@ const stateHint = computed(() => ({
 const active = computed(() => ['starting', 'running', 'waiting_human'].includes(state.value))
 const terminal = computed(() => ['stopped', 'failed', 'completed'].includes(state.value))
 const revisionLabel = computed(() => {
-  const revision = plan.value?.current_revision
-  return revision?.revision ? `方案 V${revision.revision}` : '尚未生成方案版本'
+  const revision = task.value?.automation_plan_revision_number || plan.value?.current_revision?.revision
+  return revision ? `方案 V${revision}` : '尚未生成方案版本'
 })
-const runLabel = computed(() => plan.value?.current_run?.id
-  ? `运行 #${String(plan.value.current_run.id).slice(0, 8)}`
+const runLabel = computed(() => task.value?.id || plan.value?.current_run?.id
+  ? `运行 #${String(task.value?.id || plan.value.current_run.id).slice(0, 8)}`
   : '暂无运行编号')
-const kindLabel = computed(() => plan.value?.kind === 'passive_resume' ? '被动咨询与简历获取' : '主动搜索并拉取简历')
+const taskKind = computed(() => task.value?.automation_plan_kind || plan.value?.kind)
+const kindLabel = computed(() => taskKind.value === 'passive_resume' ? '被动咨询与简历获取' : '主动搜索并拉取简历')
+const passiveStartAuthorized = computed(() => (
+  isCurrentTask.value
+  && plan.value?.kind === 'passive_resume'
+  && plan.value?.current_revision?.config?.execution_authorization?.source === 'plan_start'
+  && plan.value.current_revision.config.execution_authorization.actions?.includes('request_resume')
+))
+const monitoring = computed(() => isCurrentTask.value && plan.value?.kind === 'passive_resume' ? plan.value?.monitoring : null)
+const monitoringHasFailures = computed(() => (
+  Number(monitoring.value?.message_failed_count || 0) > 0
+  || Number(monitoring.value?.attachment_failed_count || 0) > 0
+  || ['failed', 'waiting_human'].includes(String(monitoring.value?.status || ''))
+))
+const monitoringHint = computed(() => {
+  if (!monitoring.value) return '正在等待首次检查；系统会按方案间隔持续监听当前岗位的新咨询。'
+  if (Number(monitoring.value.attachment_failed_count || 0) > 0) {
+    return '候选人消息已保留，但附件状态尚未核验；系统已禁止自动求简历，请等待安全重试或人工处理。'
+  }
+  if (Number(monitoring.value.message_failed_count || 0) > 0) {
+    return '发现了候选人会话，但消息读取失败；本轮没有进入意图判断，也没有执行外发。'
+  }
+  if (Number(monitoring.value.discovered_count || 0) === 0) {
+    return '本轮没有可处理的新咨询，系统会继续按设置的间隔检查。'
+  }
+  return `本轮发现 ${Number(monitoring.value.discovered_count || 0)} 条，已安全处理 ${Number(monitoring.value.synced_count || 0)} 条。`
+})
 const approvalInboxVisible = computed(() => (
-  plan.value?.kind === 'passive_resume'
+  isCurrentTask.value
+  && plan.value?.kind === 'passive_resume'
+  && !passiveStartAuthorized.value
   && ['starting', 'running', 'waiting_human'].includes(state.value)
 ))
 const tasksTo = { name: 'recruitment-tasks' }
@@ -162,13 +198,14 @@ function sameQueryValue(left, right) {
 
 function syncRouteContext(value) {
   if (!value) return
+  const selectedRunId = task.value?.id || route.query.run || value.current_run?.id
   const next = {
     ...route.query,
     job: String(value.job),
-    run: value.current_run?.id ? String(value.current_run.id) : undefined,
+    run: selectedRunId ? String(selectedRunId) : undefined,
     view: route.query.view || 'tasks',
   }
-  if (value.archived_at) next.status = 'archived'
+  if (task.value?.archived_at || value.archived_at) next.status = 'archived'
   else if (next.status === 'archived') delete next.status
   if (
     sameQueryValue(route.query.job, next.job)
@@ -198,13 +235,25 @@ async function fetchPlan() {
   throw lastError || new Error('招聘任务不存在或无权访问')
 }
 
+async function fetchTask(currentPlan) {
+  const id = route.query.run || currentPlan?.current_run?.id
+  if (!id) return null
+  const value = await api(`recruitment/workflow-runs/${encodeURIComponent(id)}/`)
+  if (String(value?.automation_plan || '') !== planId.value) {
+    throw new Error('该运行不属于当前招聘任务')
+  }
+  return value
+}
+
 async function loadPlan({ silent = false } = {}) {
   const sequence = ++loadSequence
   if (!silent) loading.value = true
   try {
     const value = await fetchPlan()
+    const selectedTask = await fetchTask(value)
     if (!componentAlive || sequence !== loadSequence) return
     plan.value = value
+    task.value = selectedTask
     loadError.value = ''
     syncRouteContext(value)
     await loadPendingResumeApprovals(value)
@@ -228,6 +277,16 @@ async function controlPlan(action) {
       }),
     })
     plan.value = updated
+    if (updated.current_run?.id && String(updated.current_run.id) !== String(task.value?.id || '')) {
+      task.value = null
+      await router.replace({
+        name: route.name,
+        params: route.params,
+        query: { ...route.query, run: String(updated.current_run.id), status: undefined },
+      })
+      await loadPlan({ silent: true })
+      return true
+    }
     syncRouteContext(updated)
     await loadPendingResumeApprovals(updated)
     return true
@@ -270,8 +329,13 @@ async function restartPlan() {
       body: JSON.stringify(command),
     })
     plan.value = updated
-    syncRouteContext(updated)
-    await loadPendingResumeApprovals(updated)
+    task.value = null
+    await router.replace({
+      name: route.name,
+      params: route.params,
+      query: { ...route.query, run: String(updated.current_run.id), status: undefined },
+    })
+    await loadPlan({ silent: true })
   } catch (error) {
     if (error.status === 409) await loadPlan({ silent: true })
     actionError.value = error.message || '任务重新开启失败，请刷新后重试'
@@ -280,16 +344,15 @@ async function restartPlan() {
   }
 }
 
-async function archivePlan() {
-  if (!plan.value?.id || busy.value) return
+async function archiveTask() {
+  if (!task.value?.id || busy.value) return
   busy.value = 'archive'
   actionError.value = ''
   try {
-    const updated = await api(`recruitment/automation-plans/${plan.value.id}/archive/`, { method: 'POST' })
-    plan.value = updated
+    task.value = await api(`recruitment/workflow-runs/${encodeURIComponent(task.value.id)}/archive/`, { method: 'POST' })
     archiveRequested.value = false
-    syncRouteContext(updated)
-    await loadPendingResumeApprovals(updated)
+    syncRouteContext(plan.value)
+    await loadPendingResumeApprovals(plan.value)
   } catch (error) {
     if (error.status === 409) await loadPlan({ silent: true })
     actionError.value = error.message || '任务删除失败，请刷新后重试'
@@ -298,15 +361,14 @@ async function archivePlan() {
   }
 }
 
-async function restorePlan() {
-  if (!plan.value?.id || busy.value) return
+async function restoreTask() {
+  if (!task.value?.id || busy.value) return
   busy.value = 'restore'
   actionError.value = ''
   try {
-    const updated = await api(`recruitment/automation-plans/${plan.value.id}/restore/?archived=1`, { method: 'POST' })
-    plan.value = updated
-    syncRouteContext(updated)
-    await loadPendingResumeApprovals(updated)
+    task.value = await api(`recruitment/workflow-runs/${encodeURIComponent(task.value.id)}/restore/?automation_plan=1&archived=1`, { method: 'POST' })
+    syncRouteContext(plan.value)
+    await loadPendingResumeApprovals(plan.value)
   } catch (error) {
     actionError.value = error.message || '任务恢复失败，请刷新后重试'
   } finally {
@@ -359,23 +421,43 @@ onUnmounted(() => {
         </div>
         <div class="task-detail-actions">
           <RouterLink class="task-button" :to="{ name: 'recruitment-workbench', query: { new: '1' } }"><AppIcon name="plus" :size="15" />继续创建任务</RouterLink>
-          <button v-if="active" class="task-button" type="button" :disabled="Boolean(busy)" data-test="stop-modify-task" @click="modifyPlan">{{ busy === 'stop' ? '正在停止…' : '停止并修改' }}</button>
-          <button v-if="active || state === 'paused'" class="task-button is-danger" type="button" :disabled="Boolean(busy)" data-test="stop-task" @click="controlPlan('stop')">{{ busy === 'stop' ? '正在停止…' : '停止任务' }}</button>
-          <button v-if="state === 'paused'" class="task-button" type="button" :disabled="Boolean(busy)" data-test="resume-task" @click="controlPlan('resume')">{{ busy === 'resume' ? '正在继续…' : '继续任务' }}</button>
-          <button v-if="terminal" class="task-button" type="button" :disabled="Boolean(busy)" data-test="modify-task" @click="modifyPlan">修改任务</button>
-          <button v-if="terminal" class="task-button is-primary" type="button" :disabled="Boolean(busy)" data-test="restart-task" @click="restartPlan">{{ busy === 'restart' ? '正在开启…' : '重新开启' }}</button>
+          <button v-if="isCurrentTask && active" class="task-button" type="button" :disabled="Boolean(busy)" data-test="stop-modify-task" @click="modifyPlan">{{ busy === 'stop' ? '正在停止…' : '停止并修改' }}</button>
+          <button v-if="isCurrentTask && (active || state === 'paused')" class="task-button is-danger" type="button" :disabled="Boolean(busy)" data-test="stop-task" @click="controlPlan('stop')">{{ busy === 'stop' ? '正在停止…' : '停止任务' }}</button>
+          <button v-if="isCurrentTask && state === 'paused'" class="task-button" type="button" :disabled="Boolean(busy)" data-test="resume-task" @click="controlPlan('resume')">{{ busy === 'resume' ? '正在继续…' : '继续任务' }}</button>
+          <button v-if="isCurrentTask && terminal" class="task-button" type="button" :disabled="Boolean(busy)" data-test="modify-task" @click="modifyPlan">修改任务</button>
+          <button v-if="isCurrentTask && terminal" class="task-button is-primary" type="button" :disabled="Boolean(busy)" data-test="restart-task" @click="restartPlan">{{ busy === 'restart' ? '正在开启…' : '重新开启' }}</button>
           <button v-if="terminal" class="task-button is-danger-text" type="button" :disabled="Boolean(busy)" data-test="archive-task" @click="archiveRequested = true">删除任务</button>
-          <button v-if="state === 'archived'" class="task-button is-primary" type="button" :disabled="Boolean(busy)" data-test="restore-task" @click="restorePlan">{{ busy === 'restore' ? '正在恢复…' : '恢复任务' }}</button>
-          <button v-if="['stopping', 'pausing'].includes(state)" class="task-button" type="button" disabled>正在等待安全收尾…</button>
+          <button v-if="state === 'archived'" class="task-button is-primary" type="button" :disabled="Boolean(busy)" data-test="restore-task" @click="restoreTask">{{ busy === 'restore' ? '正在恢复…' : '恢复任务' }}</button>
+          <button v-if="isCurrentTask && ['stopping', 'pausing'].includes(state)" class="task-button" type="button" disabled>正在等待安全收尾…</button>
         </div>
       </header>
 
       <section :class="['task-detail-card', 'task-status-card', `is-${state}`]">
         <div><span>当前状态</span><strong>{{ stateLabel }}</strong><p>{{ stateHint }}</p></div>
-        <dl><div><dt>控制版本</dt><dd>V{{ plan.control_version }}</dd></div><div><dt>运行代际</dt><dd>{{ plan.control_generation }}</dd></div><div><dt>最近更新</dt><dd>{{ new Date(plan.updated_at).toLocaleString('zh-CN', { hour12: false }) }}</dd></div></dl>
+        <dl><div><dt>{{ isCurrentTask ? '控制版本' : '方案版本' }}</dt><dd>V{{ isCurrentTask ? plan.control_version : task?.automation_plan_revision_number }}</dd></div><div><dt>运行代际</dt><dd>{{ task?.automation_generation || plan.control_generation }}</dd></div><div><dt>最近更新</dt><dd>{{ new Date(task?.updated_at || plan.updated_at).toLocaleString('zh-CN', { hour12: false }) }}</dd></div></dl>
       </section>
 
-      <section v-if="approvalInboxVisible" class="task-detail-card task-approval-inbox" data-test="resume-approval-inbox" aria-live="polite">
+      <section
+        v-if="isCurrentTask && plan.kind === 'passive_resume' && !task?.archived_at"
+        :class="['task-detail-card', 'task-monitoring-card', { 'has-warning': monitoringHasFailures }]"
+        data-test="passive-monitoring"
+        aria-live="polite"
+      >
+        <AppIcon :name="monitoringHasFailures ? 'alert-circle' : 'workflow'" :size="18" />
+        <div><strong>{{ monitoringHasFailures ? '监听发现异常' : '持续监听新咨询' }}</strong><small>{{ monitoringHint }}</small></div>
+        <dl v-if="monitoring">
+          <div><dt>上次检查</dt><dd>{{ new Date(monitoring.last_checked_at).toLocaleString('zh-CN', { hour12: false }) }}</dd></div>
+          <div><dt>发现 / 处理</dt><dd>{{ monitoring.discovered_count || 0 }} / {{ monitoring.synced_count || 0 }}</dd></div>
+          <div><dt>异常</dt><dd>{{ Number(monitoring.message_failed_count || 0) + Number(monitoring.attachment_failed_count || 0) }}</dd></div>
+        </dl>
+      </section>
+
+      <section v-if="passiveStartAuthorized && active" class="task-detail-card task-plan-authorization" data-test="plan-start-authorization">
+        <AppIcon name="shield" :size="18" />
+        <div><strong>开始执行已包含求简历授权</strong><small>系统会按本方案冻结的话术自动建立发送批次，不再要求 HR 重复确认；身份歧义、风控或外部结果不确定时仍会停止并转人工。</small></div>
+      </section>
+
+      <section v-else-if="approvalInboxVisible" class="task-detail-card task-approval-inbox" data-test="resume-approval-inbox" aria-live="polite">
         <header>
           <span><AppIcon name="workflow" :size="18" /></span>
           <div><strong>新消息待确认</strong><small>确认后才会给候选人发话术，并点击 BOSS“求简历”。</small></div>
@@ -402,12 +484,12 @@ onUnmounted(() => {
       v-if="archiveRequested && plan"
       title="删除招聘任务"
       :name="`${plan.job_title} · ${revisionLabel}`"
-      description="任务会从当前结果列表移除，但方案版本、运行结果、候选人、简历和审计证据都会保留。"
+      description="仅这一次任务会从当前列表移除；其他任务卡、方案版本、运行结果、候选人、简历和审计证据都会保留。"
       action-label="确认删除任务"
-      note="删除后可在结果中心的“已删除任务”筛选中打开并恢复；恢复不会自动重新启动任务。"
+      note="恢复这次任务只会让卡片重新可见，不会自动重新启动。"
       :saving="busy === 'archive'"
       @close="archiveRequested = false"
-      @confirm="archivePlan"
+      @confirm="archiveTask"
     />
   </div>
 </template>
@@ -486,6 +568,22 @@ onUnmounted(() => {
 .task-status-card dl div { display: grid; gap: var(--task-space-1); min-width: 0; }
 .task-status-card dd { margin: 0; overflow: hidden; color: var(--task-ink); font-size: clamp(13px, .35rem + .42cqi, 16px); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .task-approval-inbox { display: grid; gap: var(--task-space-3); padding: var(--task-space-4) var(--task-space-5); border-left: 4px solid var(--task-warning); }
+.task-monitoring-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--task-space-3); padding: var(--task-space-4) var(--task-space-5); border-left: 4px solid var(--task-brand); }
+.task-monitoring-card > svg { color: var(--task-brand); }
+.task-monitoring-card > div { display: grid; gap: 3px; }
+.task-monitoring-card strong { color: var(--task-ink); font-size: clamp(14px, .35rem + .45cqi, 17px); }
+.task-monitoring-card small { color: var(--task-muted); font-size: clamp(13px, .35rem + .4cqi, 15px); line-height: 1.55; }
+.task-monitoring-card dl { display: grid; grid-template-columns: repeat(3, auto); gap: var(--task-space-4); margin: 0; }
+.task-monitoring-card dl div { display: grid; gap: 2px; }
+.task-monitoring-card dt { color: var(--task-muted); font-size: 11px; font-weight: 800; }
+.task-monitoring-card dd { margin: 0; color: var(--task-ink); font-size: 13px; font-weight: 750; }
+.task-monitoring-card.has-warning { border-left-color: var(--task-warning); background: var(--task-warning-soft); }
+.task-monitoring-card.has-warning > svg { color: var(--task-warning); }
+.task-plan-authorization { display: flex; align-items: center; gap: var(--task-space-3); padding: var(--task-space-4) var(--task-space-5); border-left: 4px solid var(--task-brand); }
+.task-plan-authorization > svg { flex: none; color: var(--task-brand); }
+.task-plan-authorization > div { display: grid; gap: 3px; }
+.task-plan-authorization strong { color: var(--task-ink); font-size: clamp(14px, .35rem + .45cqi, 17px); }
+.task-plan-authorization small { color: var(--task-muted); font-size: clamp(13px, .35rem + .4cqi, 15px); line-height: 1.55; }
 .task-approval-inbox > header { display: flex; align-items: center; gap: var(--task-space-3); }
 .task-approval-inbox > header > span { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 10px; color: #9a5b08; background: var(--task-warning-soft); }
 .task-approval-inbox > header > div, .task-approval-inbox article > div { display: grid; gap: 2px; min-width: 0; }
@@ -522,6 +620,8 @@ onUnmounted(() => {
   .task-detail-loading p { grid-column: auto; }
   .task-detail-error { align-items: flex-start; flex-wrap: wrap; }
   .task-approval-inbox article { grid-template-columns: 1fr; }
+  .task-monitoring-card { grid-template-columns: auto minmax(0, 1fr); }
+  .task-monitoring-card dl { grid-column: 1 / -1; grid-template-columns: 1fr; }
   .task-approval-inbox article button { min-height: 44px; }
 }
 

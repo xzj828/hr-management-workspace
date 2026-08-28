@@ -11,6 +11,27 @@ export async function ensureCsrf() {
   await fetch('/api/auth/csrf/', { credentials: 'include' })
 }
 
+function collectErrorMessages(value, messages) {
+  if (typeof value === 'string') {
+    const message = value.trim()
+    if (message) messages.push(message)
+    return
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectErrorMessages(item, messages))
+    return
+  }
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach((item) => collectErrorMessages(item, messages))
+  }
+}
+
+export function apiErrorMessage(payload, fallback = '请求失败') {
+  const messages = []
+  collectErrorMessages(payload?.detail ?? payload, messages)
+  return [...new Set(messages)].join('；') || fallback
+}
+
 export async function api(path, options = {}) {
   const headers = new Headers(options.headers || {})
   const isForm = options.body instanceof FormData
@@ -30,7 +51,7 @@ export async function api(path, options = {}) {
   const contentType = response.headers.get('content-type') || ''
   const payload = contentType.includes('application/json') ? await response.json() : await response.blob()
   if (!response.ok) {
-    const error = new Error(payload?.detail || '请求失败')
+    const error = new Error(apiErrorMessage(payload))
     error.status = response.status
     error.payload = payload
     throw error
@@ -41,4 +62,3 @@ export async function api(path, options = {}) {
 export function listItems(payload) {
   return Array.isArray(payload) ? payload : payload?.results || []
 }
-

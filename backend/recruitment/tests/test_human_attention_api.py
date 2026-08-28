@@ -90,6 +90,38 @@ class HumanAttentionApiTests(APITestCase):
         self.assertEqual(resolved.data["status"], HumanAttention.Status.RESOLVED)
         self.assertEqual(resolved.data["resolved_by_name"], self.user.username)
 
+    def test_hr_can_bulk_archive_visible_attention_items_without_resolving_them(self):
+        open_attention, _ = ensure_attention(
+            attention_type=HumanAttention.Type.OTHER,
+            title="待人工判断",
+            idempotency_key="bulk-open-attention",
+            account=self.account,
+            job=self.job,
+        )
+        resolved_attention, _ = ensure_attention(
+            attention_type=HumanAttention.Type.OBSERVING_CANDIDATE,
+            title="已经处理",
+            idempotency_key="bulk-resolved-attention",
+            account=self.account,
+            job=self.job,
+        )
+        resolved_attention.status = HumanAttention.Status.RESOLVED
+        resolved_attention.save(update_fields=["status", "updated_at"])
+
+        response = self.client.post(
+            "/api/recruitment/human-attentions/bulk-archive/",
+            {"attention_ids": [open_attention.pk, resolved_attention.pk]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["archived_count"], 2)
+        open_attention.refresh_from_db()
+        resolved_attention.refresh_from_db()
+        self.assertEqual(open_attention.status, HumanAttention.Status.ARCHIVED)
+        self.assertEqual(resolved_attention.status, HumanAttention.Status.ARCHIVED)
+        self.assertIsNone(open_attention.resolved_at)
+
     def test_other_hr_cannot_see_account_policy_or_attention(self):
         ensure_attention(
             attention_type=HumanAttention.Type.OTHER,

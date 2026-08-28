@@ -28,6 +28,7 @@ const modelSettingsOpen = ref(false)
 const currentModule = computed(() => moduleForRoute(route))
 const isRecruitmentShell = computed(() => currentModule.value === 'recruitment')
 const isResultsWorkspace = computed(() => ['recruitment-results', 'recruitment-tasks', 'recruitment-task-detail'].includes(String(route.name)))
+const isRecruitmentTaskList = computed(() => route.name === 'recruitment-tasks')
 const isRecruitmentDashboard = computed(() => route.name === 'recruitment-dashboard')
 const isRecruitmentAdmin = computed(() => route.name === 'recruitment-admin')
 const activeTopNavigationName = computed(() => (
@@ -86,7 +87,7 @@ function closeAccountModelSettings() {
 </script>
 
 <template>
-  <div class="shell" :class="{ 'shell--collapsed': collapsed, 'shell--recruitment': isRecruitmentShell, 'shell--results': isResultsWorkspace, 'shell--recruitment-dashboard': isRecruitmentDashboard, 'shell--recruitment-admin': isRecruitmentAdmin }">
+  <div class="shell" :class="{ 'shell--collapsed': collapsed, 'shell--recruitment': isRecruitmentShell, 'shell--results': isResultsWorkspace, 'shell--task-list': isRecruitmentTaskList, 'shell--recruitment-dashboard': isRecruitmentDashboard, 'shell--recruitment-admin': isRecruitmentAdmin }">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand__mark">XM</div>
@@ -137,6 +138,7 @@ function closeAccountModelSettings() {
         :class="{
           'page-container--workbench': route.name === 'recruitment-workbench',
           'page-container--results': isResultsWorkspace,
+          'page-container--task-list': isRecruitmentTaskList,
           'page-container--recruitment-dashboard': isRecruitmentDashboard,
           'page-container--recruitment-admin': isRecruitmentAdmin,
         }"

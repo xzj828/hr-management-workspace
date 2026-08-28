@@ -7,11 +7,11 @@ from recruitment.services.workflows import create_version
 STANDARD_SCHEMES = {
     "passive_resume": {
         "name": "被动咨询与简历获取",
-        "description": "同步完整会话，确认首条话术后先打招呼，再通过 BOSS 原生动作索要附件简历。",
+        "description": "同步完整会话，复用开始执行时的授权发送首条话术，再通过 BOSS 原生动作索要附件简历。",
     },
     "active_resume_search": {
         "name": "主动搜索并拉取简历",
-        "description": "按职位搜索候选人，拉取在线简历并创建待人工打招呼任务。",
+        "description": "按职位搜索并拉取在线简历，由 AI 按已发布岗位标准逐份分析，合格结果交给 HR 批量打招呼。",
     },
 }
 
@@ -32,7 +32,13 @@ def _passive_graph(config):
         _node("start", "start", "开始", 20),
         _node("sync", "sync_messages", "同步完整消息", 210),
         _node("intent", "classify_intent", "判断消息意图", 400),
-        _node("approve_request", "human_approval", "HR 确认求简历", 590),
+        _node(
+            "approve_request",
+            "human_approval",
+            "开始执行已授权",
+            590,
+            {"authorization": "plan_start", "action": "request_resume"},
+        ),
         _node("request", "request_resume", "打招呼并原生求简历", 780, {"message": reply}),
         _node("attention", "create_attention", "人工介入", 590, {"attention_type": "observing_candidate"}),
         _node("stop_rejected", "stop", "候选人拒绝，停止跟进", 780),
@@ -77,11 +83,13 @@ def _active_graph(config):
         "bonus": list(config.get("bonus") or []),
         "target_resume_count": int(config.get("target_resume_count", 1)),
         "max_scan_count": int(config.get("max_scan_count", 20)),
+        "standard_id": config.get("standard_id"),
+        "standard_version": config.get("standard_version"),
     }
     nodes = [
         _node("start", "start", "开始", 40),
-        _node("search_pull", "search_and_pull_resumes", "搜索并拉取简历", 300, search_config),
-        _node("attention", "create_attention", "提醒人工打招呼", 650, {"attention_type": "greeting_required"}),
+        _node("search_pull", "search_and_pull_resumes", "搜索、拉取并 AI 初筛", 300, search_config),
+        _node("attention", "create_attention", "提醒 HR 批量打招呼", 650, {"attention_type": "greeting_required"}),
         _node("end", "end", "结束", 940),
     ]
     edges = [

@@ -11,7 +11,9 @@ from recruitment.models import (
     AutomationApproval,
     AutomationEvidence,
     AutomationUsage,
+    JobStandardVersion,
     RecruitmentAuditLog,
+    RecruitmentAutomationPlan,
     RpaTask,
     SearchCampaign,
     WorkflowNodeRun,
@@ -26,6 +28,8 @@ def _campaign_snapshot(campaign, *, workflow_node_run_id=None):
         "boss_account_id": campaign.boss_account_id,
         "job": campaign.job_id,
         "job_title": campaign.job.title,
+        "job_standard_id": campaign.standard_id,
+        "job_standard_version": campaign.standard.version if campaign.standard_id else None,
         "source": campaign.source,
         "criteria": json.loads(json.dumps(campaign.criteria or {}, ensure_ascii=False)),
         "target_resume_count": campaign.target_resume_count,
@@ -58,7 +62,7 @@ def _ensure_authorized(campaign, actor):
 def prepare_search_campaign(*, campaign, actor, workflow_node_run=None):
     locked = (
         SearchCampaign.objects.select_for_update()
-        .select_related("boss_account", "job")
+        .select_related("boss_account", "job", "standard")
         .get(pk=campaign.pk)
     )
     _ensure_authorized(locked, actor)
@@ -70,7 +74,19 @@ def prepare_search_campaign(*, campaign, actor, workflow_node_run=None):
     }:
         raise ValidationError("当前主动寻访任务不能生成确认")
     if locked.max_scan_count < locked.target_resume_count:
-        raise ValidationError("最大扫描人数不能小于目标简历数")
+        raise ValidationError("AI 最大分析份数不能小于目标合格简历数")
+    if locked.standard_id is None:
+        locked.standard = (
+            JobStandardVersion.objects.filter(
+                job=locked.job,
+                status=JobStandardVersion.Status.PUBLISHED,
+            )
+            .order_by("-version", "-id")
+            .first()
+        )
+        if locked.standard_id is None:
+            raise ValidationError("主动寻访需要先发布岗位评分标准，才能按 AI 合格数量执行")
+        locked.save(update_fields=["standard", "updated_at"])
     if workflow_node_run is not None:
         if locked.workflow_run_id is None or workflow_node_run.run_id != locked.workflow_run_id:
             raise ValidationError("主动寻访任务与流程节点不匹配")
@@ -187,6 +203,63 @@ def start_search_campaign(*, campaign, actor, approval, idempotency_key=""):
     locked.stop_reason = SearchCampaign.StopReason.NONE
     locked.error_message = ""
     locked.save(update_fields=["status", "stop_reason", "error_message", "updated_at"])
+    return task
+
+
+@transaction.atomic
+def start_plan_authorized_search_campaign(*, campaign, approval, actor):
+    """Materialize a managed active Plan's frozen start authorization."""
+    locked_approval = (
+        AutomationApproval.objects.select_for_update()
+        .select_related("automation_plan_revision")
+        .get(pk=approval.pk)
+    )
+    authorization = (
+        locked_approval.automation_plan_revision.config_snapshot.get("execution_authorization", {})
+        if locked_approval.automation_plan_revision_id
+        else {}
+    )
+    if (
+        locked_approval.action != AutomationApproval.Action.SEARCH_AND_PULL_RESUMES
+        or locked_approval.automation_plan_revision_id is None
+        or locked_approval.automation_plan_revision.kind
+        != RecruitmentAutomationPlan.Kind.ACTIVE_RESUME_SEARCH
+        or authorization.get("source") != "plan_start"
+        or AutomationApproval.Action.SEARCH_AND_PULL_RESUMES
+        not in authorization.get("actions", [])
+        or authorization.get("actor_id") != actor.pk
+    ):
+        raise ValidationError("该主动寻访动作没有开始执行授权")
+
+    approved_from_draft = locked_approval.status == AutomationApproval.Status.DRAFT
+    if approved_from_draft:
+        from recruitment.services.approvals import approve
+
+        locked_approval = approve(approval=locked_approval, actor=actor)
+    elif not (
+        locked_approval.status == AutomationApproval.Status.APPROVED
+        and locked_approval.approved_by_id == actor.pk
+    ):
+        raise ValidationError("开始执行授权对应的主动寻访确认状态无效")
+
+    task = start_search_campaign(
+        campaign=campaign,
+        actor=actor,
+        approval=locked_approval,
+    )
+    if approved_from_draft:
+        RecruitmentAuditLog.objects.create(
+            actor=actor,
+            boss_account=locked_approval.boss_account,
+            action="automation_approval_authorized_at_plan_start",
+            target_id=str(locked_approval.pk),
+            detail={
+                "approval_action": locked_approval.action,
+                "automation_plan_revision_id": locked_approval.automation_plan_revision_id,
+                "automation_generation": locked_approval.automation_generation,
+                "task_id": str(task.pk),
+            },
+        )
     return task
 
 

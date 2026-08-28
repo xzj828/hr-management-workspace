@@ -81,6 +81,8 @@ function baseApi(path) {
   })
   if (path === 'recruitment/job-documents/?job=51') return Promise.resolve({ results: [] })
   if (path === 'recruitment/job-documents/?job=52') return Promise.resolve({ results: [] })
+  if (path === 'recruitment/job-standards/?job=51') return Promise.resolve({ results: [{ id: 61, version: 1, status: 'published' }] })
+  if (path === 'recruitment/job-standards/?job=52') return Promise.resolve({ results: [{ id: 62, version: 1, status: 'published' }] })
   if (path === 'recruitment/automation-plans/?job=51') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation-plans/?job=52') return Promise.resolve({ results: [] })
   if (path === 'recruitment/automation-plans/?job=51&archived=1') return Promise.resolve({ results: [] })
@@ -95,6 +97,8 @@ async function mountView(query = {}) {
     routes: [
       { path: '/recruitment/workbench', name: 'recruitment-workbench', component: RecruitmentWorkbenchView },
       { path: '/recruitment/results', name: 'recruitment-results', component: { template: '<div>results</div>' } },
+      { path: '/recruitment/details/resumes', name: 'recruitment-resumes', component: { template: '<div>resumes</div>' } },
+      { path: '/recruitment/tasks', name: 'recruitment-tasks', component: { template: '<div>tasks</div>' } },
       { path: '/recruitment/tasks/:planId', name: 'recruitment-task-detail', component: { template: '<div>task detail</div>' } },
       { path: '/recruitment/admin', name: 'recruitment-admin', component: { template: '<div>admin</div>' } },
     ],
@@ -233,7 +237,7 @@ describe('RecruitmentWorkbenchView', () => {
     const writesBeforeReview = apiMock.mock.calls.filter(([, options]) => options?.method === 'POST').length
     await completePlanAndReview(wrapper)
     expect(wrapper.get('[data-test="wizard-step-review"]').attributes('aria-current')).toBe('step')
-    expect(router.currentRoute.value.name).toBe('recruitment-task-detail')
+    expect(router.currentRoute.value.name).toBe('recruitment-tasks')
     expect(wrapper.find('.workbench-review').exists()).toBe(true)
     expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="workspace-task-entry"]').exists()).toBe(false)
@@ -258,7 +262,7 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="complete-plan-step"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="workbench-step-review"]').exists()).toBe(true)
-    expect(wrapper.findAll('.workbench-checks > li')).toHaveLength(6)
+    expect(wrapper.findAll('.workbench-checks > li')).toHaveLength(7)
     expect(mainElement.scrollTop).toBe(0)
 
     mainElement.scrollTop = 120
@@ -629,6 +633,8 @@ describe('RecruitmentWorkbenchView', () => {
     await wrapper.get('[data-test="max-scan-count"]').setValue('30')
     expect(wrapper.get('[data-test="complete-plan-step"]').text()).toContain('检查并开始执行')
     await completePlanAndReview(wrapper)
+    expect(wrapper.text()).toContain('点击开始执行即授权本方案按冻结条件搜索，并最多查看 30 份在线简历')
+    expect(wrapper.text()).toContain('后续不再重复确认')
 
     const startCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')
     const command = JSON.parse(startCall[1].body)
@@ -654,9 +660,9 @@ describe('RecruitmentWorkbenchView', () => {
       .filter(([, options]) => options?.method === 'POST')
       .map(([path]) => path)
     expect(writePaths).toEqual(['recruitment/automation-plans/start/'])
-    expect(router.currentRoute.value.name).toBe('recruitment-task-detail')
-    expect(router.currentRoute.value.params.planId).toBe('301')
-    expect(router.currentRoute.value.query).toMatchObject({ job: '51', run: 'run-77', view: 'tasks' })
+    expect(router.currentRoute.value.name).toBe('recruitment-tasks')
+    expect(router.currentRoute.value.params).toEqual({})
+    expect(router.currentRoute.value.query).toEqual({})
     expect(wrapper.find('[data-test="operation-control"]').exists()).toBe(false)
     expect(sessionStorage.getItem('ximing-hr:recruitment-workbench-draft:v1:9:51')).toBeNull()
     expect(sessionStorage.getItem('ximing-hr:recruitment-workbench-reset:v1:9')).not.toBeNull()
@@ -669,6 +675,48 @@ describe('RecruitmentWorkbenchView', () => {
     expect(router.currentRoute.value.query.job).toBeUndefined()
     expect(useRecruitmentContextStore().selectedJobId).toBe('')
     expect(wrapper.get('[data-test="workbench-job"]').element.value).toBe('')
+  })
+
+  it('uses workbench manual requirements without a separately published scoring standard', async () => {
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/job-standards/?job=51') return Promise.resolve({ results: [] })
+      if (path === 'recruitment/automation-plans/start/' && options?.method === 'POST') return Promise.resolve(planFixture())
+      return baseApi(path)
+    })
+    ;({ wrapper } = await mountView())
+    await goToPlan(wrapper, { core: '3 年 Python 经验' })
+    await wrapper.get('[data-test="scheme-active"]').setValue(true)
+    await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
+    await completePlanAndReview(wrapper)
+
+    const startCall = apiMock.mock.calls.find(([path]) => path === 'recruitment/automation-plans/start/')
+    expect(JSON.parse(startCall[1].body).config.core).toEqual(['3 年 Python 经验'])
+    expect(wrapper.text()).not.toContain('主动寻访需要先发布岗位评分标准')
+  })
+
+  it('waits for an uploaded Word or Excel standard to finish generating without asking for another upload', async () => {
+    apiMock.mockImplementation((path) => {
+      if (path === 'recruitment/job-documents/?job=51') {
+        return Promise.resolve({ results: [{
+          id: 71,
+          title: '岗位标准',
+          category_label: '岗位需求',
+          current_version: { id: 72, version: 1 },
+        }] })
+      }
+      if (path === 'recruitment/job-standards/?job=51') return Promise.resolve({ results: [] })
+      return baseApi(path)
+    })
+    ;({ wrapper } = await mountView())
+    await goToPlan(wrapper)
+    await wrapper.get('[data-test="scheme-active"]').setValue(true)
+    await wrapper.get('[data-test="active-keyword"]').setValue('Python 后端')
+    await completePlanAndReview(wrapper)
+
+    expect(wrapper.text()).toContain('上传的 Word/Excel 正在生成标准')
+    expect(wrapper.text()).toContain('不需要重新上传')
+    expect(wrapper.get('[data-test="start-execution"]').attributes('disabled')).toBeDefined()
+    expect(apiMock.mock.calls.some(([path]) => path === 'recruitment/automation-plans/start/')).toBe(false)
   })
 
   it('uses the archived plan control version when starting a replacement task', async () => {

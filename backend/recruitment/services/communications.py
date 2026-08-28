@@ -498,6 +498,58 @@ def materialize_communication_batch(*, approval, actor):
     return batch
 
 
+@serialize_sqlite_lifecycle
+@transaction.atomic
+def materialize_plan_start_authorized_resume_request(*, approval, actor):
+    """Reuse an immutable passive-plan start command as the request-resume approval."""
+    locked = (
+        AutomationApproval.objects.select_for_update()
+        .select_related("automation_plan_revision")
+        .get(pk=approval.pk)
+    )
+    authorization = (
+        locked.automation_plan_revision.config_snapshot.get("execution_authorization", {})
+        if locked.automation_plan_revision_id
+        else {}
+    )
+    if (
+        locked.action != AutomationApproval.Action.REQUEST_RESUME
+        or locked.automation_plan_revision_id is None
+        or locked.automation_plan_revision.kind != RecruitmentAutomationPlan.Kind.PASSIVE_RESUME
+        or authorization.get("source") != "plan_start"
+        or ConversationAction.Action.REQUEST_RESUME not in authorization.get("actions", [])
+        or authorization.get("actor_id") != actor.pk
+    ):
+        raise ValidationError("该求简历动作没有开始执行授权")
+
+    approved_from_draft = locked.status == AutomationApproval.Status.DRAFT
+    if approved_from_draft:
+        from recruitment.services.approvals import approve
+
+        locked = approve(approval=locked, actor=actor)
+    elif not (
+        locked.status == AutomationApproval.Status.APPROVED
+        and locked.approved_by_id == actor.pk
+    ):
+        raise ValidationError("开始执行授权对应的求简历确认状态无效")
+
+    batch = materialize_communication_batch(approval=locked, actor=actor)
+    if approved_from_draft:
+        RecruitmentAuditLog.objects.create(
+            actor=actor,
+            boss_account=locked.boss_account,
+            action="automation_approval_authorized_at_plan_start",
+            target_id=str(locked.pk),
+            detail={
+                "approval_action": locked.action,
+                "automation_plan_revision_id": locked.automation_plan_revision_id,
+                "automation_generation": locked.automation_generation,
+                "batch_id": str(batch.pk),
+            },
+        )
+    return batch
+
+
 @transaction.atomic
 def cancel_workflow_communication(*, workflow_node_run, actor, now=None):
     """Cancel every communication item that has not entered the external adapter."""

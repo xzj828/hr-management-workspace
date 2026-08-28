@@ -105,6 +105,19 @@ def ingest_conversation(*, application, account, messages, cursor=""):
             },
         )
         if not created:
+            # A previous read may have preserved the text while attachment
+            # verification was unknown. A later verified read clears only that
+            # fail-closed marker; it never rewrites message identity or content.
+            incoming_attachment_state = str(item.get("attachment_sync_state", ""))
+            raw_payload = dict(message.raw_payload) if isinstance(message.raw_payload, dict) else {}
+            if (
+                incoming_attachment_state == "ready"
+                and raw_payload.get("attachment_sync_state") == "unknown"
+            ):
+                raw_payload["attachment_sync_state"] = "ready"
+                raw_payload.pop("attachment_error_code", None)
+                message.raw_payload = raw_payload
+                message.save(update_fields=["raw_payload"])
             continue
         created_messages += 1
         if direction == ConversationMessage.Direction.CANDIDATE:
@@ -166,7 +179,11 @@ def _queue_resume_request(
     automation_plan_revision=None,
     automation_generation=None,
 ):
-    from recruitment.services.communications import _identity_snapshot, prepare_communication
+    from recruitment.services.communications import (
+        _identity_snapshot,
+        materialize_plan_start_authorized_resume_request,
+        prepare_communication,
+    )
 
     plan_revision_id = getattr(automation_plan_revision, "pk", automation_plan_revision)
     if plan_revision_id is not None:
@@ -205,7 +222,7 @@ def _queue_resume_request(
         )
         return None
     try:
-        return prepare_communication(
+        approval = prepare_communication(
             account=account,
             applications=[application],
             action=ConversationAction.Action.REQUEST_RESUME,
@@ -225,6 +242,12 @@ def _queue_resume_request(
             automation_plan_revision=automation_plan_revision,
             automation_generation=automation_generation,
         )
+        if plan_revision_id is not None:
+            materialize_plan_start_authorized_resume_request(
+                approval=approval,
+                actor=actor,
+            )
+        return approval
     except (PermissionDenied, ValidationError) as exc:
         ensure_attention(
             attention_type="resume_request_failed",
@@ -273,6 +296,11 @@ def process_pending_messages(
         attachments__original_name__iendswith=".pdf"
     ).exists()
     latest = candidate_messages[-1]
+    latest_payload = latest.raw_payload if isinstance(latest.raw_payload, dict) else {}
+    if latest_payload.get("attachment_sync_state") == "unknown":
+        # Preserve the unread candidate message for a later verified pass, but
+        # do not classify it into an outbound request while resume state is unknown.
+        return ConversationDecision(MessageIntent.IGNORE, message=latest)
     intent = classify_candidate_message(latest.content, has_resume_attachment=has_resume)
     attention = None
     if intent == MessageIntent.OBSERVING and create_attentions:
@@ -406,7 +434,7 @@ def recover_unfulfilled_resume_requests(
         )
         recovered += int(
             approval is not None
-            and approval.status == "draft"
+            and approval.status in {"draft", "approved"}
             and approval.automation_plan_revision_id == locked_plan.current_revision_id
             and approval.automation_generation == locked_plan.control_generation
         )

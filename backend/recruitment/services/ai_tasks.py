@@ -340,6 +340,13 @@ def _run_with_heartbeat(task):
     return result
 
 
+def _notify_linked_search_campaigns(task):
+    from recruitment.services.search_campaign_intelligence import notify_search_campaigns_for_ai_task
+
+    transaction.on_commit(lambda: notify_search_campaigns_for_ai_task(task))
+    return task
+
+
 def execute_task(task: AiProcessingTask) -> AiProcessingTask:
     task = _bind_task_snapshot_once(task)
     if task.model_snapshot_bound_at is None:
@@ -348,7 +355,7 @@ def execute_task(task: AiProcessingTask) -> AiProcessingTask:
         task.error_message = "等待该任务首次绑定可用的大模型配置"
         _clear_lease(task)
         task.save()
-        return task
+        return _notify_linked_search_campaigns(task)
     try:
         task_model_credential(task)
     except ModelGatewayError as exc:
@@ -357,7 +364,7 @@ def execute_task(task: AiProcessingTask) -> AiProcessingTask:
         task.error_message = str(exc)[:500]
         _clear_lease(task)
         task.save()
-        return task
+        return _notify_linked_search_campaigns(task)
     task.status = AiProcessingTask.Status.MODEL
     task.attempt_count += 1
     task.progress = max(task.progress, 40)
@@ -382,21 +389,21 @@ def execute_task(task: AiProcessingTask) -> AiProcessingTask:
         else:
             task.status = AiProcessingTask.Status.FAILED
         task.save()
-        return task
+        return _notify_linked_search_campaigns(task)
     except ExtractionError as exc:
         task.status = AiProcessingTask.Status.FAILED
         task.error_code = exc.code
         task.error_message = str(exc)[:500]
         _clear_lease(task)
         task.save()
-        return task
+        return _notify_linked_search_campaigns(task)
     except Exception:
         task.status = AiProcessingTask.Status.FAILED
         task.error_code = "ai_task_failed"
         task.error_message = "AI 任务执行失败，请查看服务端日志后重试"
         _clear_lease(task)
         task.save()
-        return task
+        return _notify_linked_search_campaigns(task)
     requested_status = result.pop("_task_status", AiProcessingTask.Status.SUCCEEDED)
     task.status = requested_status
     task.progress = 100
@@ -405,7 +412,7 @@ def execute_task(task: AiProcessingTask) -> AiProcessingTask:
     task.error_message = ""
     _clear_lease(task)
     task.save()
-    return task
+    return _notify_linked_search_campaigns(task)
 
 
 def retry_task(*, task, requested_by) -> AiProcessingTask:
@@ -433,4 +440,4 @@ def retry_task(*, task, requested_by) -> AiProcessingTask:
         locked.error_message = ""
         _clear_lease(locked)
         locked.save()
-        return locked
+        return _notify_linked_search_campaigns(locked)

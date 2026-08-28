@@ -405,8 +405,8 @@ onUnmounted(() => {
           <template v-if="selectedNode.type === 'search_and_pull_resumes'">
             <label>搜索来源<select v-model="selectedNode.config.source"><option value="search">常规搜索</option><option value="recommend">推荐牛人</option><option value="deep_search">深度搜索</option></select></label>
             <label>搜索关键词<input v-model.trim="selectedNode.config.keyword" maxlength="20" placeholder="例如：Python" /></label>
-            <label>目标简历数<input v-model.number="selectedNode.config.target_resume_count" type="number" min="1" max="100" /></label>
-            <label>最大扫描人数<input v-model.number="selectedNode.config.max_scan_count" type="number" :min="selectedNode.config.target_resume_count || 1" max="100" /></label>
+            <label>目标合格简历数<input v-model.number="selectedNode.config.target_resume_count" type="number" min="1" max="100" /></label>
+            <label>AI 最大分析份数<input v-model.number="selectedNode.config.max_scan_count" type="number" :min="selectedNode.config.target_resume_count || 1" max="100" /></label>
           </template>
           <label v-if="selectedNode.type === 'create_attention'">待办类型<select v-model="selectedNode.config.attention_type"><option value="observing_candidate">候选人希望了解</option><option value="greeting_required">需要 HR 打招呼</option><option value="other">其他人工处理</option></select></label>
           <p>节点标识：<code>{{ selectedNode.key }}</code></p>

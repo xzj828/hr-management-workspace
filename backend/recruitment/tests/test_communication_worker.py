@@ -234,6 +234,7 @@ class CommunicationWorkerTests(SimpleTestCase):
 
         self.assertEqual(outcome["status"], "waiting_human")
         self.assertEqual(outcome["error_code"], "external_result_uncertain")
+        self.assertEqual(outcome["result"]["diagnostic_code"], "resume_request_adapter_error")
 
     def test_request_resume_without_native_acknowledgement_is_waiting_human(self):
         runner = FakeRunner()

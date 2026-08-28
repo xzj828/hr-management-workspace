@@ -427,10 +427,23 @@ def execute_request_resume(task, account, runner):
             first_contact=bool(payload.get("first_contact", False)),
             job_title=str(target.get("job_title", "")).strip(),
         )
-    except Exception:
+    except Exception as exc:
+        detail = str(exc)
+        if "Runtime.callFunctionOn timed out" in detail:
+            diagnostic_code = "browser_dom_operation_timeout"
+        elif "未返回可验证回执" in detail:
+            diagnostic_code = "resume_request_receipt_missing"
+        elif "确认弹窗" in detail or "确认按钮" in detail:
+            diagnostic_code = "resume_request_confirmation_unavailable"
+        elif "按钮不可用" in detail or "未找到 BOSS“求简历”按钮" in detail:
+            diagnostic_code = "resume_request_control_unavailable"
+        elif "打开后的 BOSS 会话身份" in detail:
+            diagnostic_code = "resume_request_identity_changed"
+        else:
+            diagnostic_code = "resume_request_adapter_error"
         return {
             "status": "waiting_human",
-            "result": {},
+            "result": {"diagnostic_code": diagnostic_code},
             "error_code": "external_result_uncertain",
             "error_message": "打招呼或求简历可能已执行，请在 BOSS 中人工核查；系统不会自动重试",
         }
@@ -630,10 +643,15 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
         for row in eligible
     }
     checkpoint_stopped = False
+    opened_count = 0
+    message_failed_count = 0
+    attachment_failed_count = 0
     for sequence, row in enumerate(eligible[:50], start=1):
         if name_counts[row["name"]] != 1:
             row["sync_error"] = "同名候选人不唯一，未打开会话"
+            row["sync_error_code"] = "conversation_identity_ambiguous"
             skipped += 1
+            message_failed_count += 1
             continue
         if checkpoint is not None and not checkpoint("before_open_chat", sequence):
             checkpoint_stopped = True
@@ -648,23 +666,39 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
                     account,
                     external_id,
                     job_title=str(row.get("job_title", "")).strip(),
-                    unread=not backfill_conversations,
+                    # The unread list is discovery-only. Opening the frozen stable ID
+                    # from the scoped all-conversations list avoids losing the target
+                    # when BOSS marks it read during navigation.
+                    unread=False,
                 )
             else:
                 opened = runner.open_chat(account, row["name"])
             row["messages"] = parse_chat_messages(opened.stdout)
+            opened_count += 1
+        except (BossCliError, BrowserConnectionError):
+            row["sync_error"] = "会话消息读取失败"
+            row["sync_error_code"] = "conversation_message_read_failed"
+            message_failed_count += 1
+        else:
             download_attachments = getattr(runner, "download_resume_attachments", None)
-            if not callable(download_attachments):
-                raise BossCliError("当前 BOSS 适配器不支持安全的简历附件下载")
-            row["attachments"] = download_attachments(
-                account,
-                external_id,
-                row["name"],
-                incoming,
-                job_title=str(row.get("job_title", "")).strip(),
-            )
-        except (BossCliError, BrowserConnectionError) as exc:
-            row["sync_error"] = str(exc)
+            try:
+                if not callable(download_attachments):
+                    raise BossCliError("当前 BOSS 适配器不支持安全的简历附件下载")
+                row["attachments"] = download_attachments(
+                    account,
+                    external_id,
+                    row["name"],
+                    incoming,
+                    job_title=str(row.get("job_title", "")).strip(),
+                )
+                row["attachment_sync_state"] = "ready"
+            except (BossCliError, BrowserConnectionError):
+                # Keep verified text evidence, but make the attachment uncertainty
+                # explicit so the server can fail closed before any outbound action.
+                row["attachments"] = []
+                row["attachment_sync_state"] = "unknown"
+                row["attachment_error_code"] = "conversation_attachment_read_failed"
+                attachment_failed_count += 1
         if checkpoint is not None and not checkpoint("after_open_chat", sequence):
             checkpoint_stopped = True
             break
@@ -673,6 +707,11 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
         "result": {
             "conversations": rows,
             "skipped": skipped,
+            "discovered_count": len(rows),
+            "eligible_count": min(len(eligible), 50),
+            "opened_count": opened_count,
+            "message_failed_count": message_failed_count,
+            "attachment_failed_count": attachment_failed_count,
             "checkpoint_stopped": checkpoint_stopped,
         },
     }
@@ -772,7 +811,6 @@ def execute_search_pull_resumes(task, account, runner, checkpoint=None):
         criteria=criteria,
     )
     max_scan = max(1, min(int(payload.get("max_scan_count", 1)), 100))
-    target = max(1, min(int(payload.get("target_resume_count", 1)), max_scan))
     scanned = rows[:max_scan]
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     incoming.mkdir(parents=True, exist_ok=True)
@@ -782,6 +820,8 @@ def execute_search_pull_resumes(task, account, runner, checkpoint=None):
     seen_identities = set()
     view_attempt_count = 0
     manual_intervention_required = False
+    manual_error_code = ""
+    manual_error_message = ""
     checkpoint_stopped = False
     stable_preview = getattr(runner, "preview_by_external_id", None)
     from recruitment.services.discovery import _fingerprint
@@ -825,6 +865,9 @@ def execute_search_pull_resumes(task, account, runner, checkpoint=None):
                 "observed_external_id": "",
                 "error": error,
             })
+            manual_intervention_required = True
+            manual_error_code = "target_identity_unverifiable"
+            manual_error_message = "已扫描到候选人，但刷新后无法按平台稳定 ID 唯一确认，在线简历未打开"
             continue
         external_id = str(verified.get("external_id", "")).strip()
         verified_name = str(verified.get("display_name", "")).strip()
@@ -846,6 +889,8 @@ def execute_search_pull_resumes(task, account, runner, checkpoint=None):
                 "error": error,
             })
             manual_intervention_required = True
+            manual_error_code = "target_identity_unverifiable"
+            manual_error_message = "已扫描到候选人，但页面未提供可验证的平台稳定 ID，在线简历未打开"
             continue
         if not callable(stable_preview):
             error = "当前 BOSS 适配器只能按姓名查看在线简历，已转人工"
@@ -864,6 +909,8 @@ def execute_search_pull_resumes(task, account, runner, checkpoint=None):
                 "error": error,
             })
             manual_intervention_required = True
+            manual_error_code = "stable_identity_action_unavailable"
+            manual_error_message = "在线简历查看需要按平台稳定 ID 原子执行，当前适配器不支持"
             continue
         if view_attempt_count >= budget:
             break
@@ -912,10 +959,12 @@ def execute_search_pull_resumes(task, account, runner, checkpoint=None):
         if checkpoint is not None and not checkpoint("after_preview", attempt["sequence"]):
             checkpoint_stopped = True
             break
-        if len(pulled) >= target:
-            break
     return {
-        "status": "waiting_human" if manual_intervention_required and len(pulled) < target else "succeeded",
+        # A candidate can disappear or change while later rows are processed.
+        # Preserve every independently verified preview as a successful partial
+        # batch; waiting_human is reserved for runs where nothing can be safely
+        # persisted at all.
+        "status": "waiting_human" if manual_intervention_required and not pulled else "succeeded",
         "result": {
             "candidates": scanned,
             "resumes": pulled,
@@ -927,9 +976,9 @@ def execute_search_pull_resumes(task, account, runner, checkpoint=None):
             "checkpoint_stopped": checkpoint_stopped,
         },
         **({
-            "error_code": "stable_identity_action_unavailable",
-            "error_message": "在线简历查看需要按平台稳定 ID 原子执行，当前适配器不支持",
-        } if manual_intervention_required and len(pulled) < target else {}),
+            "error_code": manual_error_code or "target_identity_unverifiable",
+            "error_message": manual_error_message or "已扫描到候选人，但无法安全确认候选人身份，在线简历未打开",
+        } if manual_intervention_required and not pulled else {}),
     }
 
 

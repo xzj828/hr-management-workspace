@@ -3,12 +3,13 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
+import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import ResumeIntelligencePanel from '@/components/ResumeIntelligencePanel.vue'
 import ScreeningDecisionDrawer from '@/components/ScreeningDecisionDrawer.vue'
 import CommunicationConfirmDrawer from '@/components/CommunicationConfirmDrawer.vue'
 import WorkflowRunPanel from '@/components/WorkflowRunPanel.vue'
 import RecruitmentResultsNavigation from '@/components/RecruitmentResultsNavigation.vue'
-import { stageColumns } from '@/recruitment'
+import { formatFileSize, stageColumns } from '@/recruitment'
 import { createRequestId } from '@/recruitmentJobs'
 import { communicationPayload } from '@/recruitmentCommunications'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
@@ -61,6 +62,12 @@ const detailAssessments = ref([])
 const detailTasks = ref([])
 const detailLoading = ref(false)
 const detailError = ref('')
+const purgeTarget = ref(null)
+const purgeSaving = ref(false)
+const purgeError = ref('')
+const clearTarget = ref('')
+const clearSaving = ref(false)
+const clearError = ref('')
 const decisionDrawerMode = ref('')
 const decisionBusy = ref(false)
 const decisionSaved = ref(false)
@@ -140,7 +147,7 @@ const visibleStatusOptions = computed(() => statusOptions.some((option) => optio
   : [...statusOptions, { value: statusFilter.value, label: statusLabels?.[statusFilter.value] || statusFilter.value }])
 
 const statusLabels = {
-  queued: '已排队', running: '运行中', waiting_human: '等待人工', paused: '已暂停',
+  queued: '已排队', running: '拉取中', analyzing: 'AI 分析中', waiting_human: '等待人工', paused: '已暂停',
   succeeded: '已完成', failed: '失败', cancelled: '已取消', draft: '草稿',
   open: '待处理', resolved: '已处理', archived: '已归档',
 }
@@ -149,13 +156,17 @@ const currentJobId = computed(() => currentJob.value ? String(currentJob.value.i
 const jobRuns = computed(() => resources.runs.items.filter((item) => {
   if (String(item.job || '') !== currentJobId.value) return false
   const wantsArchived = statusFilter.value === 'archived'
-  if (Boolean(item.automation_plan_archived_at) !== wantsArchived) return false
+  if (Boolean(item.archived_at || item.automation_plan_archived_at) !== wantsArchived) return false
   const account = String(route.query.account || '')
   return !account || String(item.boss_account || item.account || '') === account
 }))
 const runById = computed(() => new Map(jobRuns.value.map((item) => [String(item.id), item])))
 const jobCampaigns = computed(() => resources.campaigns.items.filter((item) => {
   if (String(item.job || '') !== currentJobId.value) return false
+  const linkedRun = resources.runs.items.find((run) => String(run.id) === String(item.workflow_run || ''))
+  const wantsArchived = statusFilter.value === 'archived'
+  if (linkedRun && Boolean(linkedRun.archived_at || linkedRun.automation_plan_archived_at) !== wantsArchived) return false
+  if (!linkedRun && wantsArchived) return false
   const account = String(route.query.account || '')
   return !account || String(item.boss_account || item.account || '') === account
 }))
@@ -171,7 +182,7 @@ function matchesStatus(status, group) {
   if (group === 'all') return true
   if (group === 'archived') return true
   if (group === 'needs_action') return ['waiting_human', 'paused'].includes(status)
-  if (group === 'in_progress') return ['queued', 'running'].includes(status)
+  if (group === 'in_progress') return ['queued', 'running', 'analyzing'].includes(status)
   if (group === 'succeeded') return status === 'succeeded'
   if (group === 'failed') return ['failed', 'cancelled'].includes(status)
   return status === group
@@ -189,9 +200,10 @@ const filteredCampaigns = computed(() => jobCampaigns.value.filter((item) => {
 
 const filteredAttentions = computed(() => jobAttentions.value.filter((item) => {
   if (selectedRunId.value && String(item.workflow_run || '') !== selectedRunId.value) return false
-  if (statusFilter.value === 'all') return true
+  if (statusFilter.value === 'all') return item.status !== 'archived'
   if (statusFilter.value === 'needs_action') return item.status === 'open'
   if (statusFilter.value === 'succeeded') return item.status === 'resolved'
+  if (statusFilter.value === 'archived') return item.status === 'archived'
   return false
 }))
 
@@ -254,6 +266,39 @@ const displayedCandidateResults = computed(() => {
   const start = (candidatePage.value - 1) * candidatePageSize.value
   return candidateResults.value.slice(start, start + candidatePageSize.value)
 })
+const clearableResumeRows = computed(() => screeningResults.value.filter((row) => row.resume))
+const clearableAttentionItems = computed(() => jobAttentions.value.filter((item) => item.status !== 'archived'))
+const clearableTaskRuns = computed(() => jobRuns.value.filter((run) => !run.archived_at))
+const activeClearTarget = computed(() => ({ attention: 'attentions', tasks: 'tasks', candidates: 'resumes' }[activeView.value] || ''))
+const activeClearCount = computed(() => ({
+  attentions: clearableAttentionItems.value.length,
+  tasks: clearableTaskRuns.value.length,
+  resumes: clearableResumeRows.value.length,
+}[activeClearTarget.value] || 0))
+const activeClearLabel = computed(() => activeClearTarget.value === 'resumes' ? '一键清除简历' : '一键清除')
+const clearDialog = computed(() => ({
+  attentions: {
+    title: '一键清除人工事项',
+    name: `${currentJob.value?.title || '当前岗位'} · ${clearableAttentionItems.value.length} 项`,
+    description: '将这些人工事项从当前列表归档。未完成的流程不会因此被自动批准或继续执行。',
+    note: '历史事项和处理证据仍会保留；此操作不会替代“标记已处理”。',
+    actionLabel: '确认清除',
+  },
+  tasks: {
+    title: '一键清除任务结果',
+    name: `${currentJob.value?.title || '当前岗位'} · ${clearableTaskRuns.value.length} 个任务`,
+    description: '将当前岗位中已经结束的任务结果从当前列表归档。',
+    note: '正在运行、等待人工或暂停中的任务会安全保留；历史结果和审计证据不会被物理删除。',
+    actionLabel: '确认清除',
+  },
+  resumes: {
+    title: '一键清除已保存简历',
+    name: `${currentJob.value?.title || '当前岗位'} · ${clearableResumeRows.value.length} 份简历`,
+    description: '将物理删除当前岗位所有已保存的简历原文件，并让这些简历退出当前排名。此操作不可恢复。',
+    note: '历史结构化结果、评分、HR 结论和审计记录仍会保留；正在处理的简历会安全跳过。',
+    actionLabel: '确认清除',
+  },
+}[clearTarget.value] || null))
 
 const candidateStageOptions = computed(() => [
   { value: 'all', label: '全部阶段' },
@@ -343,7 +388,7 @@ const hiringCompletion = computed(() => {
   return target ? Math.min(100, Math.round(hiredCount.value / target * 100)) : 0
 })
 const openAttentionCount = computed(() => jobAttentions.value.filter((item) => item.status === 'open').length)
-const activeRunCount = computed(() => jobRuns.value.filter((item) => ['queued', 'running', 'waiting_human', 'paused'].includes(item.status)).length)
+const activeRunCount = computed(() => jobRuns.value.filter((item) => ['queued', 'running', 'analyzing', 'waiting_human', 'paused'].includes(item.status)).length)
 const pulledResumeCount = computed(() => jobCampaigns.value.reduce((total, item) => total + Number(item.pulled_resume_count || 0), 0))
 const isRefreshing = computed(() => Object.values(resources).some((resource) => resource.loading))
 const hasLoadedResource = computed(() => Object.values(resources).some((resource) => resource.loaded))
@@ -443,7 +488,7 @@ function statusTone(status) {
   if (['succeeded', 'resolved'].includes(status)) return 'success'
   if (['failed', 'cancelled'].includes(status)) return 'danger'
   if (['waiting_human', 'paused', 'open'].includes(status)) return 'warning'
-  if (['running', 'queued'].includes(status)) return 'active'
+  if (['running', 'analyzing', 'queued'].includes(status)) return 'active'
   return 'neutral'
 }
 
@@ -455,8 +500,8 @@ function runProgress(run) {
 }
 
 function campaignProgress(campaign) {
-  const target = Math.max(1, Number(campaign.target_resume_count || 0))
-  return Math.min(100, Math.round(Number(campaign.pulled_resume_count || 0) / target * 100))
+  const maximum = Math.max(1, Number(campaign.max_scan_count || 0))
+  return Math.min(100, Math.round(Number(campaign.scanned_count || 0) / maximum * 100))
 }
 
 function detailText(detail) {
@@ -488,19 +533,6 @@ function aiRecommendationLabel(row) {
 function aiRecommendationTone(row) {
   if (row.aiState !== 'scored' || !row.assessment) return 'neutral'
   return { advance: 'success', review: 'warning', hold: 'danger' }[row.assessment.recommendation] || 'warning'
-}
-
-function resumeStatusLabel(row) {
-  if (!row.resume) return '等待候选人提供'
-  if (row.aiState === 'processing') return '正在解析 / 评分'
-  if (row.aiState === 'failed') return '智能处理失败'
-  if (!row.structure) return '等待结构化'
-  if (!row.assessment) return screeningMeta.standard ? '等待评分' : '等待岗位标准'
-  return '原件与报告已就绪'
-}
-
-function candidateMeta(row) {
-  return [row.candidate?.current_title, row.candidate?.current_city].filter(Boolean).join(' · ')
 }
 
 function hrDecisionLabel(decision) {
@@ -642,6 +674,91 @@ async function runResumeAction(row, action) {
     await loadResults()
   } catch (error) {
     detailError.value = error.message || '简历处理任务创建失败'
+  }
+}
+
+function openResumePurge(row) {
+  if (!row?.resume) return
+  purgeTarget.value = row
+  purgeError.value = ''
+}
+
+async function confirmResumePurge() {
+  const target = purgeTarget.value
+  if (!target?.resume || purgeSaving.value) return
+  purgeSaving.value = true
+  purgeError.value = ''
+  try {
+    const result = await api(`recruitment/resumes/${target.resume.id}/purge/`, { method: 'POST' })
+    const releasedBytes = Number(result?.released_bytes ?? target.resume.file_size ?? 0)
+    await closeCandidateDetail()
+    purgeTarget.value = null
+    await loadResults()
+    operationNotice.value = {
+      tone: 'success',
+      message: releasedBytes > 0
+        ? `简历原文件已删除，释放 ${formatFileSize(releasedBytes)} 本地空间；历史评分和审计记录已保留。`
+        : '简历原文件已清理；历史评分和审计记录已保留。',
+    }
+  } catch (error) {
+    purgeError.value = error.message || '简历删除失败，请稍后重试'
+  } finally {
+    purgeSaving.value = false
+  }
+}
+
+function openBulkClear(target) {
+  const count = {
+    attentions: clearableAttentionItems.value.length,
+    tasks: clearableTaskRuns.value.length,
+    resumes: clearableResumeRows.value.length,
+  }[target] || 0
+  if (!count) return
+  clearTarget.value = target
+  clearError.value = ''
+}
+
+async function confirmBulkClear() {
+  if (!clearTarget.value || clearSaving.value) return
+  clearSaving.value = true
+  clearError.value = ''
+  try {
+    let result
+    if (clearTarget.value === 'attentions') {
+      result = await api('recruitment/human-attentions/bulk-archive/', {
+        method: 'POST',
+        body: JSON.stringify({ attention_ids: clearableAttentionItems.value.map((item) => item.id) }),
+      })
+      operationNotice.value = {
+        tone: result.skipped_count ? 'warning' : 'success',
+        message: `已清除 ${result.archived_count || 0} 项人工事项${result.skipped_count ? `，${result.skipped_count} 项因不可访问而保留` : ''}。`,
+      }
+    } else if (clearTarget.value === 'tasks') {
+      result = await api('recruitment/workflow-runs/bulk-archive/', {
+        method: 'POST',
+        body: JSON.stringify({ run_ids: clearableTaskRuns.value.map((run) => run.id) }),
+      })
+      operationNotice.value = {
+        tone: result.skipped_count ? 'warning' : 'success',
+        message: `已清除 ${result.archived_count || 0} 个已结束任务${result.skipped_count ? `，${result.skipped_count} 个运行中或受保护任务已保留` : ''}。`,
+      }
+    } else {
+      result = await api('recruitment/resumes/bulk-purge/', {
+        method: 'POST',
+        body: JSON.stringify({ resume_ids: clearableResumeRows.value.map((row) => row.resume.id) }),
+      })
+      const released = Number(result.released_bytes || 0)
+      operationNotice.value = {
+        tone: result.failed_count ? 'warning' : 'success',
+        message: `已清除 ${result.purged_count || 0} 份简历${released ? `，释放 ${formatFileSize(released)} 本地空间` : ''}${result.failed_count ? `；${result.failed_count} 份正在处理或删除失败，已安全保留` : ''}。`,
+      }
+    }
+    clearTarget.value = ''
+    await loadResults()
+  } catch (error) {
+    clearError.value = error.message || '批量清除失败，请稍后重试'
+  } finally {
+    clearSaving.value = false
   }
 }
 
@@ -990,6 +1107,9 @@ watch(
     selectedApplicationIds.value = []
     decisionDrawerMode.value = ''
     operationNotice.value = null
+    purgeTarget.value = null
+    purgeSaving.value = false
+    purgeError.value = ''
     detailReturnFocus = null
     detailStructure.value = null
     detailAssessment.value = null
@@ -1022,7 +1142,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="['page-stack', 'results-center', { 'is-embedded': embedded }]">
+  <div :class="['page-stack', 'results-center', { 'is-embedded': embedded, 'results-center--business-results-typography': !embedded }]">
     <RecruitmentResultsNavigation v-if="!embedded" />
     <header v-if="!embedded" class="page-hero page-hero--compact results-hero">
       <div>
@@ -1093,9 +1213,12 @@ onUnmounted(() => {
 
       <template v-else>
         <div class="results-workspace">
-          <nav class="results-tabs" role="tablist" aria-label="结果中心视图">
-            <button v-for="tab in tabs" :key="tab.key" type="button" role="tab" :aria-selected="activeView === tab.key" :class="{ active: activeView === tab.key }" :data-test="`results-tab-${tab.key}`" @click="activeView = tab.key">{{ tab.label }} <span>{{ tab.count }}</span></button>
-          </nav>
+          <div class="results-tabbar">
+            <nav class="results-tabs" role="tablist" aria-label="结果中心视图">
+              <button v-for="tab in tabs" :key="tab.key" type="button" role="tab" :aria-selected="activeView === tab.key" :class="{ active: activeView === tab.key }" :data-test="`results-tab-${tab.key}`" @click="activeView = tab.key">{{ tab.label }} <span>{{ tab.count }}</span></button>
+            </nav>
+            <button v-if="activeClearTarget" class="results-list-clear" type="button" :data-test="`clear-${activeClearTarget}`" :disabled="!activeClearCount" @click="openBulkClear(activeClearTarget)">{{ activeClearLabel }}</button>
+          </div>
 
         <section v-if="activeView === 'attention'" class="results-panel results-panel--attention" data-test="attention-view">
           <p v-if="resources.attentions.error" class="results-inline-error">人工事项加载失败：{{ resources.attentions.error }}</p>
@@ -1112,7 +1235,7 @@ onUnmounted(() => {
               <time>{{ formatDateTime(item.created_at) }}</time>
               <span :class="['candidate-status', `is-${statusTone(item.status)}`]">{{ item.status_label || statusLabel(item.status) }}</span>
               <div class="attention-actions">
-                <RouterLink :to="{ name: 'recruitment-candidates', query: { job: currentJobId, application: item.application || undefined } }">查看相关信息 <AppIcon name="chevron-right" :size="11" /></RouterLink>
+                <RouterLink :to="{ name: 'recruitment-candidates', query: { job: currentJobId, application: item.application || undefined } }">查看相关信息 <AppIcon name="chevron-right" :size="14" /></RouterLink>
                 <button v-if="item.status === 'open'" class="attention-actions__primary" type="button" :disabled="Boolean(attentionActionId)" :data-test="`resolve-attention-${item.id}`" @click="resolveAttention(item)">{{ attentionActionId === String(item.id) ? '正在处理…' : '标记已处理' }}</button>
               </div>
             </article>
@@ -1122,7 +1245,8 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <section v-else-if="activeView === 'tasks'" class="results-task-grid" data-test="tasks-view">
+        <section v-else-if="activeView === 'tasks'" class="results-task-view" data-test="tasks-view">
+          <div class="results-task-grid">
           <article class="results-subpanel">
             <header><h3>自动化运行</h3><span>{{ filteredRuns.filter((run) => ['queued', 'running', 'waiting_human', 'paused'].includes(run.status)).length }} 个运行中</span></header>
             <p v-if="resources.runs.error" class="results-inline-error">任务运行加载失败：{{ resources.runs.error }}</p>
@@ -1133,7 +1257,7 @@ onUnmounted(() => {
               <article v-for="run in filteredRuns" :key="run.id" class="results-data-table__row">
                 <div class="results-table-name"><strong>{{ run.template_name || '自动化任务' }}</strong><small>#{{ String(run.id).slice(0, 8) }}</small></div>
                 <span :class="['candidate-status', `is-${statusTone(run.status)}`]">{{ statusLabel(run.status) }}</span>
-                <span>{{ (run.node_runs || []).filter((node) => node.status === 'succeeded').length }}/{{ (run.node_runs || []).length }}</span>
+                <span>{{ (run.node_runs || []).filter((node) => ['succeeded', 'skipped', 'failed', 'cancelled'].includes(node.status)).length }}/{{ (run.node_runs || []).length }}</span>
                 <span>{{ run.target_candidate_count ?? run.target_count ?? '—' }}</span>
                 <div class="results-table-progress"><div class="results-progress"><i :style="{ width: `${runProgress(run)}%` }"></i></div><small>{{ runProgress(run) }}%</small></div>
                 <time>{{ formatDateTime(run.started_at || run.created_at || run.updated_at) }}</time>
@@ -1148,19 +1272,19 @@ onUnmounted(() => {
           </article>
 
           <article class="results-subpanel">
-            <header><h3>主动寻访结果</h3><span>{{ filteredCampaigns.filter((campaign) => ['queued', 'running', 'waiting_human', 'paused'].includes(campaign.status)).length }} 个运行中，{{ filteredCampaigns.filter((campaign) => campaign.status === 'succeeded').length }} 个已完成</span></header>
+            <header><h3>主动寻访结果</h3><span>{{ filteredCampaigns.filter((campaign) => ['queued', 'running', 'analyzing', 'waiting_human', 'paused'].includes(campaign.status)).length }} 个运行中，{{ filteredCampaigns.filter((campaign) => campaign.status === 'succeeded').length }} 个已完成</span></header>
             <p v-if="resources.campaigns.error" class="results-inline-error">主动寻访加载失败：{{ resources.campaigns.error }}</p>
             <div class="campaign-list results-data-table">
-              <div class="results-data-table__head results-data-table__head--campaign"><span>运行名称</span><span>状态</span><span>已获取 / 目标</span><span>回复率</span><span>开始时间</span><span>操作</span></div>
+              <div class="results-data-table__head results-data-table__head--campaign"><span>运行名称</span><span>状态</span><span>AI 合格 / 目标</span><span>AI 分析进度</span><span>开始时间</span><span>操作</span></div>
               <template v-if="filteredCampaigns.length">
                 <article v-for="campaign in filteredCampaigns" :key="campaign.id" class="results-data-table__row results-data-table__row--campaign">
                   <div class="results-table-name"><strong>{{ campaign.name }}</strong><small>{{ campaign.source === 'recommend' ? '推荐人才' : campaign.source === 'deep_search' ? '深度搜索' : '关键词搜索' }}</small></div>
                   <span :class="['candidate-status', `is-${statusTone(campaign.status)}`]">{{ statusLabel(campaign.status) }}</span>
-                  <span>{{ campaign.pulled_resume_count }}/{{ campaign.target_resume_count }}</span>
-                  <div class="results-table-progress"><div class="results-progress"><i :style="{ width: `${campaignProgress(campaign)}%` }"></i></div><small>{{ campaignProgress(campaign) }}%</small></div>
+                  <span>{{ campaign.qualified_resume_count || 0 }}/{{ campaign.target_resume_count }}</span>
+                  <div class="results-table-progress"><div class="results-progress"><i :style="{ width: `${campaignProgress(campaign)}%` }"></i></div><small>{{ campaign.scanned_count || 0 }}/{{ campaign.max_scan_count }} · 已拉取 {{ campaign.pulled_resume_count || 0 }}</small></div>
                   <time>{{ formatDateTime(campaign.started_at || campaign.created_at || campaign.updated_at) }}</time>
                   <RouterLink :to="{ name: 'recruitment-workbench', query: { job: currentJobId, campaign: campaign.id } }">查看运行并处理</RouterLink>
-                  <p v-if="campaign.error_message || campaign.stop_reason" :class="{ 'run-error': campaign.error_message }">{{ campaign.error_message || `停止原因：${campaign.stop_reason}` }}</p>
+                  <p v-if="campaign.error_message || campaign.stop_reason" :class="{ 'run-error': campaign.error_message }">{{ campaign.error_message || `停止原因：${campaign.stop_reason_label || campaign.stop_reason}` }}</p>
                 </article>
               </template>
               <div v-else-if="resources.campaigns.loading" class="results-table-empty">正在加载主动寻访结果…</div>
@@ -1168,6 +1292,7 @@ onUnmounted(() => {
               <footer class="results-table-footer">共 {{ filteredCampaigns.length }} 项</footer>
             </div>
           </article>
+          </div>
         </section>
 
         <section v-else-if="activeView === 'candidates'" class="results-panel results-panel--candidates" data-test="candidates-view">
@@ -1210,21 +1335,21 @@ onUnmounted(() => {
                   <th scope="col">简历状态</th>
                   <th scope="col">HR 结论</th>
                   <th scope="col">通知状态</th>
-                  <th scope="col">操作</th>
+                  <th scope="col" class="candidate-action-heading">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="row in displayedCandidateResults" :key="row.application.id" :data-application-id="row.application.id" :class="{ 'is-selected': isApplicationSelected(row.application.id) }">
                   <td class="candidate-select-cell"><label><span class="sr-only">选择候选人 {{ row.candidate?.name || '未命名候选人' }}</span><input type="checkbox" :checked="isApplicationSelected(row.application.id)" :aria-label="`选择候选人 ${row.candidate?.name || '未命名候选人'}`" @change="toggleApplication(row.application.id, $event.target.checked)" /></label></td>
-                  <td data-label="排名"><strong :class="['candidate-rank', row.rank && row.rank <= 3 ? `is-top-${row.rank}` : '']"><AppIcon v-if="row.rank && row.rank <= 3" name="crown" :size="13" />{{ row.rank ?? '—' }}</strong></td>
-                  <td data-label="候选人"><button v-if="row.resume" class="candidate-name-button" type="button" :aria-label="`查看 ${row.candidate?.name || '候选人'} 的简历与分析报告`" @click="openCandidateDetail(row, $event)"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong><small v-if="candidateMeta(row)">{{ candidateMeta(row) }}</small></button><div v-else class="candidate-name-static"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong><small v-if="candidateMeta(row)">{{ candidateMeta(row) }}</small></div></td>
+                  <td data-label="排名"><strong :class="['candidate-rank', row.rank && row.rank <= 3 ? `is-top-${row.rank}` : '']"><AppIcon v-if="row.rank && row.rank <= 3" name="crown" :size="18" />{{ row.rank ?? '—' }}</strong></td>
+                  <td data-label="候选人"><button v-if="row.resume" class="candidate-name-button" type="button" :aria-label="`查看 ${row.candidate?.name || '候选人'} 的简历与分析报告`" @click="openCandidateDetail(row, $event)"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong></button><div v-else class="candidate-name-static"><strong>{{ row.candidate?.name || '未命名候选人' }}</strong></div></td>
                   <td data-label="招聘阶段"><span class="candidate-status is-neutral">{{ row.application.stage_label || statusLabel(row.application.stage) }}</span></td>
                   <td data-label="AI 初筛建议"><span :class="['candidate-status', `is-${aiRecommendationTone(row)}`]">{{ aiRecommendationLabel(row) }}</span></td>
                   <td data-label="得分"><div class="candidate-score" :class="{ 'has-score': row.assessment }" :title="row.assessment ? `置信度 ${Math.round(Number(row.assessment.confidence || 0) * 100)}%` : '尚未评分，不作为 0 分'"><strong>{{ scoreText(row.assessment) }}</strong><small class="sr-only">{{ row.assessment ? `置信度 ${Math.round(Number(row.assessment.confidence || 0) * 100)}%` : '不作为 0 分' }}</small></div></td>
-                  <td data-label="简历状态"><div class="candidate-resume"><strong>{{ row.resume?.original_name || '暂无简历' }}</strong><small v-if="row.resume">{{ resumeStatusLabel(row) }}</small></div></td>
+                  <td data-label="简历状态"><div class="candidate-resume"><strong>{{ row.resume?.original_name || '暂无简历' }}</strong></div></td>
                   <td data-label="HR 结论"><span :class="['candidate-status', row.hrDecision?.decision === 'pass' ? 'is-success' : row.hrDecision?.decision === 'fail' ? 'is-danger' : 'is-neutral']" :title="row.hrDecision?.reason || ''">{{ hrDecisionLabel(row.hrDecision) }}</span></td>
                   <td data-label="通知状态"><div class="candidate-notification"><span :class="['candidate-status', `is-${notificationTone(row.notification)}`]">{{ notificationLabel(row.notification) }}</span><small v-if="row.notification?.error_message">{{ row.notification.error_message }}</small></div></td>
-                  <td class="candidate-action-cell"><button v-if="row.resume" type="button" :data-test="`view-candidate-${row.application.id}`" @click="openCandidateDetail(row, $event)">查看详情</button><span v-else class="candidate-action-empty" aria-hidden="true">—</span></td>
+                  <td class="candidate-action-cell"><div v-if="row.resume"><button type="button" :data-test="`view-candidate-${row.application.id}`" @click="openCandidateDetail(row, $event)">查看详情</button><button class="candidate-action-danger" type="button" :data-test="`purge-resume-${row.application.id}`" @click="openResumePurge(row)">删除简历</button></div><span v-else class="candidate-action-empty" aria-hidden="true">—</span></td>
                 </tr>
               </tbody>
               </table>
@@ -1286,7 +1411,7 @@ onUnmounted(() => {
         @retry="retryRunNode"
       />
       <ResumeIntelligencePanel
-        v-if="selectedDetailRow"
+        v-if="selectedDetailRow && !purgeTarget"
         :resume="selectedDetailRow.resume"
         :structure="detailStructure"
         :assessment="detailAssessment"
@@ -1298,6 +1423,33 @@ onUnmounted(() => {
         @retry-structure="runResumeAction(selectedDetailRow, 'retry-structure')"
         @score="runResumeAction(selectedDetailRow, 'score')"
         @rescore="runResumeAction(selectedDetailRow, 'rescore')"
+        @purge="openResumePurge(selectedDetailRow)"
+      />
+      <ArchiveConfirmModal
+        v-if="purgeTarget"
+        title="删除已保存简历"
+        :name="`${purgeTarget.resume.candidate_name} · ${purgeTarget.resume.original_name}`"
+        :description="`将从当前排名移除这份简历，并物理删除本地原文件（${formatFileSize(purgeTarget.resume.file_size || 0)}）。此操作不可恢复。`"
+        note="历史结构化结果、评分、HR 结论和审计记录仍会保留。"
+        action-label="确认删除"
+        :saving="purgeSaving"
+        :error="purgeError"
+        :business-results-typography="!embedded"
+        @close="purgeTarget = null"
+        @confirm="confirmResumePurge"
+      />
+      <ArchiveConfirmModal
+        v-if="clearDialog"
+        :title="clearDialog.title"
+        :name="clearDialog.name"
+        :description="clearDialog.description"
+        :note="clearDialog.note"
+        :action-label="clearDialog.actionLabel"
+        :saving="clearSaving"
+        :error="clearError"
+        :business-results-typography="!embedded"
+        @close="clearTarget = ''"
+        @confirm="confirmBulkClear"
       />
       <ScreeningDecisionDrawer
         v-if="decisionDrawerMode"
@@ -1409,7 +1561,7 @@ onUnmounted(() => {
   --results-stage-card-min: 8.125rem;
   --results-progress-height: clamp(.5625rem, .35rem + .35cqi, .875rem);
   --results-stage-progress-height: clamp(.6875rem, .4rem + .4cqi, 1rem);
-  --results-attention-columns: minmax(220px, 1.1fr) 88px minmax(130px, .72fr) minmax(250px, 1.3fr) 118px 96px 224px;
+  --results-attention-columns: minmax(220px, 1.15fr) minmax(90px, .45fr) minmax(130px, .7fr) minmax(240px, 1.25fr) 106px 86px minmax(230px, 1fr);
   --results-status-marker-width: 4px;
   --results-skeleton-height: 76px;
   --results-skeleton-background: var(--results-color-surface-muted);
@@ -1425,6 +1577,15 @@ onUnmounted(() => {
   font-family: var(--results-font-family);
 }
 
+.results-center--business-results-typography {
+  --results-font-min: .9167rem;
+  --results-font-meta: var(--results-font-min);
+  --results-weight-bold: 400;
+  --results-weight-heavy: 400;
+  font-size: var(--results-font-min);
+  font-weight: var(--results-weight-regular);
+}
+
 .results-center *,
 .results-center *::before,
 .results-center *::after {
@@ -1436,6 +1597,28 @@ onUnmounted(() => {
 .results-center select,
 .results-center textarea {
   font-family: var(--results-font-family);
+}
+
+.results-center--business-results-typography :deep(:is(p, span, small, label, th, td, button, a, input, select, textarea, time, dt, dd, li, em)) {
+  font-weight: var(--results-weight-regular) !important;
+}
+
+.results-center--business-results-typography :deep(:is(h1, h2, h3, h4, h5, h6, strong, b)) {
+  font-weight: var(--results-weight-regular) !important;
+}
+
+.results-center--business-results-typography :deep(.workflow-run-panel :is(span, small, p, button, strong)),
+.results-center--business-results-typography :deep(.screening-decision-drawer :is(p, span, small, label, textarea, button, dt, dd, strong, em)),
+.results-center--business-results-typography :deep(.resume-evidence-card :is(p, span:not(.candidate-summary__avatar), small, button, strong)),
+.results-center--business-results-typography :deep(.analysis-report h3),
+.results-center--business-results-typography :deep(.keyword-section h3),
+.results-center--business-results-typography :deep(.communication-intro :is(strong, p)),
+.results-center--business-results-typography :deep(.communication-meta),
+.results-center--business-results-typography :deep(.communication-field),
+.results-center--business-results-typography :deep(.communication-warning),
+.results-center--business-results-typography :deep(.communication-recipients :is(span, strong, small)),
+.results-center--business-results-typography :deep(.drawer-confirm-footer button) {
+  font-size: var(--results-font-min) !important;
 }
 
 .results-center strong {
@@ -1737,11 +1920,18 @@ onUnmounted(() => {
   line-height: var(--results-leading-body);
 }
 
+.results-tabbar {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  border-bottom: var(--results-border-width) solid var(--results-color-line);
+}
+
 .results-tabs {
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
-  padding: 0 var(--results-space-4);
-  border-bottom: var(--results-border-width) solid var(--results-color-line);
+  padding-left: var(--results-space-4);
 }
 
 .results-tabs button {
@@ -1800,6 +1990,11 @@ onUnmounted(() => {
 .results-tabs button.active span {
   color: var(--results-color-brand-dark);
   background: var(--results-color-brand-soft);
+}
+
+.results-tabbar > .results-list-clear {
+  align-self: center;
+  margin: 0 var(--results-space-4) 0 var(--results-space-3);
 }
 
 .results-panel,
@@ -1884,7 +2079,29 @@ onUnmounted(() => {
   gap: var(--results-space-3);
   align-items: center;
   min-width: 0;
-  padding: var(--results-space-3) var(--results-space-4);
+  padding: 10px var(--results-space-4);
+}
+
+.results-list-clear {
+  flex: none;
+  min-height: 34px;
+  padding: 0 12px;
+  color: var(--results-color-danger-text);
+  background: var(--results-color-surface);
+  border: var(--results-border-width) solid rgba(190, 58, 69, .32);
+  border-radius: var(--results-radius-control);
+  font-size: var(--results-font-detail);
+  font-weight: var(--results-weight-bold);
+}
+
+.results-list-clear:hover:not(:disabled) {
+  background: var(--results-color-danger-soft);
+  border-color: rgba(190, 58, 69, .55);
+}
+
+.results-list-clear:disabled {
+  cursor: not-allowed;
+  opacity: var(--results-disabled-opacity);
 }
 
 .attention-list__head {
@@ -1895,8 +2112,17 @@ onUnmounted(() => {
   font-weight: var(--results-weight-heavy);
 }
 
+.attention-list__head > span:nth-last-child(2) {
+  text-align: center;
+}
+
+.attention-list__head > span:last-child {
+  padding-right: 8px;
+  text-align: right;
+}
+
 .attention-list > article {
-  min-height: var(--results-row-min-height);
+  min-height: 60px;
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
 }
 
@@ -1937,11 +2163,13 @@ onUnmounted(() => {
 }
 
 .attention-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(118px, 1fr) minmax(100px, auto);
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+  width: 100%;
 }
 
 .attention-list a,
@@ -1958,22 +2186,24 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--results-space-1);
-  min-height: 40px;
-  padding: 0 11px;
+  min-height: 36px;
+  padding: 0 10px;
   border: var(--results-border-width) solid #b8d8d4;
   border-radius: 9px;
   background: var(--results-color-surface);
   white-space: nowrap;
+  width: 100%;
 }
 
 .attention-actions button {
-  min-height: 40px;
-  padding: 0 12px;
+  min-height: 36px;
+  padding: 0 11px;
   color: #fff;
   background: var(--results-color-brand);
   border: var(--results-border-width) solid var(--results-color-brand);
   border-radius: 9px;
   white-space: nowrap;
+  width: 100%;
 }
 
 .attention-list a:hover,
@@ -2234,6 +2464,10 @@ onUnmounted(() => {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: var(--results-space-5);
   padding: var(--results-space-3) var(--results-space-5) var(--results-space-7);
+}
+
+.results-task-view {
+  min-width: 0;
 }
 
 .stage-progress-list article {
@@ -2569,7 +2803,7 @@ onUnmounted(() => {
 
 .candidate-ranking-table {
   width: 100%;
-  min-width: 1600px;
+  min-width: 1200px;
   table-layout: fixed;
   border-collapse: collapse;
   color: var(--results-color-copy);
@@ -2577,7 +2811,7 @@ onUnmounted(() => {
 }
 
 .candidate-ranking-table th {
-  padding: 15px 18px;
+  padding: 12px 16px;
   border-bottom: var(--results-border-width) solid var(--results-color-line);
   color: var(--results-color-muted);
   background: var(--results-color-surface-soft);
@@ -2590,8 +2824,8 @@ onUnmounted(() => {
 }
 
 .candidate-ranking-table td {
-  min-height: 68px;
-  padding: 16px 18px;
+  min-height: 52px;
+  padding: 11px 16px;
   border-bottom: var(--results-border-width) solid var(--results-color-line-soft);
   vertical-align: middle;
 }
@@ -2624,7 +2858,7 @@ onUnmounted(() => {
 
 .candidate-name-button {
   display: grid;
-  gap: 3px;
+  gap: 0;
   width: 100%;
   max-width: none;
   padding: 0;
@@ -2636,7 +2870,7 @@ onUnmounted(() => {
 
 .candidate-name-static {
   display: grid;
-  gap: 3px;
+  gap: 0;
   width: 100%;
 }
 
@@ -2681,8 +2915,8 @@ onUnmounted(() => {
 .candidate-status {
   display: inline-flex;
   align-items: center;
-  min-height: 32px;
-  padding: 6px 11px;
+  min-height: 30px;
+  padding: 5px 10px;
   border-radius: 8px;
   font-size: var(--results-font-meta);
   font-weight: var(--results-weight-regular);
@@ -2706,12 +2940,27 @@ onUnmounted(() => {
 }
 
 .candidate-action-cell {
-  text-align: right;
+  text-align: center;
+}
+
+.candidate-action-heading {
+  text-align: center !important;
+}
+
+.candidate-action-cell > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 164px;
+  margin: 0 auto;
 }
 
 .candidate-action-cell button {
-  min-height: 42px;
-  padding: 0 15px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 8px;
   border: var(--results-border-width) solid var(--results-color-brand-line);
   border-radius: var(--results-radius-control);
   color: var(--results-color-brand-dark);
@@ -2771,6 +3020,9 @@ onUnmounted(() => {
   min-height: 42px;
 }
 
+.candidate-action-cell .candidate-action-danger { color: var(--results-color-danger-text); border-color: rgba(190, 58, 69, .28); background: #fff; }
+.candidate-action-cell .candidate-action-danger:hover { color: #a72f3b; border-color: rgba(190, 58, 69, .52); background: #fff3f4; }
+
 .candidate-rank {
   display: inline-flex;
   align-items: center;
@@ -2781,16 +3033,16 @@ onUnmounted(() => {
 .candidate-rank.is-top-2 { color: #718096; }
 .candidate-rank.is-top-3 { color: #b46f3c; }
 
-.candidate-ranking-table th:nth-child(1) { width: 56px; }
-.candidate-ranking-table th:nth-child(2) { width: 72px; }
-.candidate-ranking-table th:nth-child(3) { width: 260px; }
-.candidate-ranking-table th:nth-child(4) { width: 165px; }
-.candidate-ranking-table th:nth-child(5) { width: 200px; }
-.candidate-ranking-table th:nth-child(6) { width: 135px; }
-.candidate-ranking-table th:nth-child(7) { width: 220px; }
-.candidate-ranking-table th:nth-child(8) { width: 170px; }
-.candidate-ranking-table th:nth-child(9) { width: 190px; }
-.candidate-ranking-table th:nth-child(10) { width: 170px; }
+.candidate-ranking-table th:nth-child(1) { width: 50px; }
+.candidate-ranking-table th:nth-child(2) { width: 60px; }
+.candidate-ranking-table th:nth-child(3) { width: 135px; }
+.candidate-ranking-table th:nth-child(4) { width: 110px; }
+.candidate-ranking-table th:nth-child(5) { width: 140px; }
+.candidate-ranking-table th:nth-child(6) { width: 90px; }
+.candidate-ranking-table th:nth-child(7) { width: 160px; }
+.candidate-ranking-table th:nth-child(8) { width: 110px; }
+.candidate-ranking-table th:nth-child(9) { width: 120px; }
+.candidate-ranking-table th:nth-child(10) { width: 190px; }
 
 .results-subpanel > header {
   min-height: 54px;
@@ -2861,6 +3113,11 @@ onUnmounted(() => {
 }
 
 .candidate-action-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 164px;
   color: var(--results-color-faint);
 }
 
@@ -2963,7 +3220,12 @@ onUnmounted(() => {
   .attention-object { grid-row: 3; grid-column: 1; }
   .attention-list article > p { grid-row: 4; grid-column: 1 / -1; }
   .attention-list article > time { grid-row: 5; grid-column: 1; align-self: center; }
-  .attention-actions { grid-row: 5; grid-column: 2; }
+  .attention-actions { display: flex; grid-row: 5; grid-column: 2; width: auto; }
+
+  .attention-list a,
+  .attention-actions button {
+    width: auto;
+  }
 
   .candidate-filter-bar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3050,6 +3312,13 @@ onUnmounted(() => {
     grid-column: 2 / -1;
     padding-top: 10px !important;
     text-align: left;
+  }
+
+  .candidate-action-cell > div {
+    display: inline-flex;
+    width: auto;
+    max-width: none;
+    margin: 0;
   }
 
   .candidate-action-empty {
@@ -3147,11 +3416,22 @@ onUnmounted(() => {
     display: none;
   }
 
+  .results-tabbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .results-tabs {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     overflow-x: visible;
     padding: 0;
+  }
+
+  .results-tabbar > .results-list-clear {
+    width: calc(100% - (2 * var(--results-space-3)));
+    min-height: var(--results-touch-target);
+    margin: var(--results-space-2) var(--results-space-3);
   }
 
   .results-tabs button {
@@ -3301,7 +3581,7 @@ onUnmounted(() => {
   .candidate-ranking-table td::before {
     content: attr(data-label);
     color: var(--results-color-muted);
-    font-size: 10px;
+    font-size: var(--results-font-meta);
     font-weight: var(--results-weight-regular);
   }
 

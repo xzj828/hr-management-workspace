@@ -615,17 +615,76 @@ class WorkflowRunSerializer(serializers.ModelSerializer):
     automation_plan_archived_at = serializers.DateTimeField(
         source="automation_plan_revision.plan.archived_at", read_only=True, allow_null=True
     )
+    job_title = serializers.CharField(source="job.title", read_only=True, allow_null=True)
+    automation_plan_kind = serializers.CharField(
+        source="automation_plan_revision.kind", read_only=True, allow_null=True
+    )
+    automation_plan_revision_number = serializers.IntegerField(
+        source="automation_plan_revision.revision", read_only=True, allow_null=True
+    )
+    automation_plan_current_run = serializers.SerializerMethodField()
+    automation_plan_effective_state = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowRun
         fields = [
             "id", "version", "version_number", "template_name", "boss_account", "account_name",
             "job", "actor", "mode", "status", "idempotency_key", "graph_snapshot", "input_snapshot",
-            "automation_plan_revision", "automation_plan", "automation_plan_archived_at", "automation_generation",
+            "automation_plan_revision", "automation_plan", "automation_plan_archived_at",
+            "automation_plan_kind", "automation_plan_revision_number", "automation_plan_current_run",
+            "automation_plan_effective_state", "automation_generation", "job_title",
             "result", "error_code", "error_message", "started_at", "completed_at", "created_at",
-            "updated_at", "node_runs", "events",
+            "updated_at", "archived_at", "node_runs", "events",
         ]
         read_only_fields = fields
+
+    def get_automation_plan_current_run(self, obj):
+        if obj.automation_plan_revision_id is None:
+            return False
+        return obj.automation_plan_revision.plan.current_run_id == obj.pk
+
+    def get_automation_plan_effective_state(self, obj):
+        if not self.get_automation_plan_current_run(obj):
+            return None
+        from recruitment.services.automation_plans import effective_plan_state
+
+        return effective_plan_state(obj.automation_plan_revision.plan)
+
+
+class RecruitmentTaskRunSerializer(serializers.ModelSerializer):
+    job_title = serializers.CharField(source="job.title", read_only=True)
+    automation_plan = serializers.IntegerField(
+        source="automation_plan_revision.plan_id", read_only=True
+    )
+    automation_plan_kind = serializers.CharField(
+        source="automation_plan_revision.kind", read_only=True
+    )
+    automation_plan_revision_number = serializers.IntegerField(
+        source="automation_plan_revision.revision", read_only=True
+    )
+    automation_plan_current_run = serializers.SerializerMethodField()
+    automation_plan_effective_state = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkflowRun
+        fields = [
+            "id", "job", "job_title", "status", "automation_plan",
+            "automation_plan_revision", "automation_plan_kind",
+            "automation_plan_revision_number", "automation_plan_current_run",
+            "automation_plan_effective_state", "automation_generation",
+            "started_at", "completed_at", "created_at", "updated_at", "archived_at",
+        ]
+        read_only_fields = fields
+
+    def get_automation_plan_current_run(self, obj):
+        return obj.automation_plan_revision.plan.current_run_id == obj.pk
+
+    def get_automation_plan_effective_state(self, obj):
+        if not self.get_automation_plan_current_run(obj):
+            return None
+        from recruitment.services.automation_plans import effective_plan_state
+
+        return effective_plan_state(obj.automation_plan_revision.plan)
 
 
 class RpaTaskEventSerializer(serializers.ModelSerializer):
@@ -793,17 +852,22 @@ class CandidateDiscoveryImportSerializer(serializers.Serializer):
 class SearchCampaignSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="boss_account.name", read_only=True)
     job_title = serializers.CharField(source="job.title", read_only=True)
+    standard_version = serializers.IntegerField(source="standard.version", read_only=True, allow_null=True)
+    stop_reason_label = serializers.CharField(source="get_stop_reason_display", read_only=True)
 
     class Meta:
         model = SearchCampaign
         fields = [
             "id", "name", "boss_account", "account_name", "job", "job_title", "workflow_run",
-            "source", "status", "target_resume_count", "max_scan_count", "scanned_count",
-            "pulled_resume_count", "criteria", "stop_reason", "error_message", "created_by",
+            "standard", "standard_version", "source", "status", "target_resume_count",
+            "max_scan_count", "scanned_count", "pulled_resume_count", "qualified_resume_count",
+            "analysis_failed_count", "criteria", "stop_reason", "stop_reason_label",
+            "error_message", "created_by",
             "started_at", "completed_at", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "status", "scanned_count", "pulled_resume_count", "stop_reason", "error_message",
+            "standard", "status", "scanned_count", "pulled_resume_count", "qualified_resume_count",
+            "analysis_failed_count", "stop_reason", "stop_reason_label", "error_message",
             "created_by", "started_at", "completed_at", "created_at", "updated_at",
         ]
 
@@ -815,7 +879,7 @@ class SearchCampaignSerializer(serializers.ModelSerializer):
         if attrs.get("max_scan_count", getattr(self.instance, "max_scan_count", 0)) < attrs.get(
             "target_resume_count", getattr(self.instance, "target_resume_count", 0)
         ):
-            raise serializers.ValidationError({"max_scan_count": "最大扫描人数不能小于目标简历数"})
+            raise serializers.ValidationError({"max_scan_count": "AI 最大分析份数不能小于目标合格简历数"})
         if account:
             _validate_authorized_account(account, self.context["request"].user)
         return attrs
@@ -877,13 +941,15 @@ class RecruitmentAutomationPlanSerializer(serializers.ModelSerializer):
     boss_account = serializers.IntegerField(source="job.boss_account_id", read_only=True)
     effective_state = serializers.SerializerMethodField()
     actual_state = serializers.SerializerMethodField()
+    monitoring = serializers.SerializerMethodField()
 
     class Meta:
         model = RecruitmentAutomationPlan
         fields = [
             "id", "job", "job_title", "boss_account", "kind", "desired_state",
             "effective_state", "actual_state", "control_version", "control_generation",
-            "current_revision", "current_run", "current_run_status", "archived_at", "created_at", "updated_at",
+            "current_revision", "current_run", "current_run_status", "monitoring",
+            "archived_at", "created_at", "updated_at",
         ]
         read_only_fields = fields
 
@@ -899,6 +965,50 @@ class RecruitmentAutomationPlanSerializer(serializers.ModelSerializer):
         if obj.current_run_id is None:
             return None
         return {"id": str(obj.current_run_id), "status": obj.current_run.status}
+
+    def get_monitoring(self, obj):
+        if (
+            obj.kind != RecruitmentAutomationPlan.Kind.PASSIVE_RESUME
+            or obj.current_revision_id is None
+        ):
+            return None
+        latest = None
+        for task in RpaTask.objects.filter(
+            boss_account_id=obj.job.boss_account_id,
+            action=RpaTask.Action.SYNC_CONVERSATIONS,
+        ).order_by("-created_at")[:30]:
+            payload = task.request_payload if isinstance(task.request_payload, dict) else {}
+            scopes = payload.get("passive_plan_scopes")
+            scope = scopes.get(str(obj.job_id)) if isinstance(scopes, dict) else None
+            direct_match = (
+                task.automation_plan_revision_id == obj.current_revision_id
+                and task.automation_generation == obj.control_generation
+            )
+            scoped_match = False
+            if isinstance(scope, dict):
+                try:
+                    scoped_match = (
+                        int(scope.get("revision_id")) == obj.current_revision_id
+                        and int(scope.get("generation")) == obj.control_generation
+                    )
+                except (TypeError, ValueError):
+                    scoped_match = False
+            if direct_match or scoped_match:
+                latest = task
+                break
+        if latest is None:
+            return None
+        sync = latest.result.get("sync") if isinstance(latest.result, dict) else None
+        sync = sync if isinstance(sync, dict) else {}
+        return {
+            "last_checked_at": latest.completed_at or latest.updated_at,
+            "status": latest.status,
+            "discovered_count": int(sync.get("discovered_count", 0) or 0),
+            "synced_count": int(sync.get("synced", 0) or 0),
+            "message_failed_count": int(sync.get("message_failed_count", 0) or 0),
+            "attachment_failed_count": int(sync.get("attachment_failed_count", 0) or 0),
+            "error_code": latest.error_code,
+        }
 
 
 class RecruitmentAutomationPlanStartSerializer(serializers.Serializer):

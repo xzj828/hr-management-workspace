@@ -472,32 +472,38 @@ class BossCliRunner:
 
     def _enrich_candidate_rows(self, account, source, rows):
         """Attach DOM stable IDs only when the CLI and browser snapshots align by index and name."""
-        try:
-            response = self._run_chat_bridge(
-                account,
-                "candidate_list",
-                {"source": str(source)},
-                timeout_seconds=45,
-            )
-        except (BossCliError, BossCliTimeout):
-            return rows
-        browser_rows = response.get("rows") if isinstance(response, dict) else None
-        if not isinstance(browser_rows, list) or len(browser_rows) != len(rows):
-            return rows
-        enriched = []
-        seen_ids = set()
-        for parsed, observed in zip(rows, browser_rows):
-            parsed_name = str(parsed.get("display_name", "")).strip()
-            observed_name = str(observed.get("display_name", "")).strip()
-            external_id = str(observed.get("external_id", "")).strip()
-            if parsed_name != observed_name:
-                return rows
-            if external_id:
-                if external_id in seen_ids:
-                    return rows
-                seen_ids.add(external_id)
-            enriched.append({**parsed, "external_id": external_id})
-        return enriched
+        # boss-cli can return parsed text just before the search iframe finishes
+        # replacing its candidate cards. Retry the read-only DOM snapshot briefly;
+        # never accept a partial/empty ID set and never align by name alone.
+        for attempt in range(4):
+            try:
+                response = self._run_chat_bridge(
+                    account,
+                    "candidate_list",
+                    {"source": str(source)},
+                    timeout_seconds=45,
+                )
+            except (BossCliError, BossCliTimeout):
+                response = None
+            browser_rows = response.get("rows") if isinstance(response, dict) else None
+            if isinstance(browser_rows, list) and len(browser_rows) == len(rows):
+                enriched = []
+                seen_ids = set()
+                aligned = True
+                for parsed, observed in zip(rows, browser_rows):
+                    parsed_name = str(parsed.get("display_name", "")).strip()
+                    observed_name = str(observed.get("display_name", "")).strip()
+                    external_id = str(observed.get("external_id", "")).strip()
+                    if parsed_name != observed_name or not external_id or external_id in seen_ids:
+                        aligned = False
+                        break
+                    seen_ids.add(external_id)
+                    enriched.append({**parsed, "external_id": external_id})
+                if aligned and len(enriched) == len(rows):
+                    return enriched
+            if attempt < 3:
+                time.sleep(0.35 * (attempt + 1))
+        return rows
 
     def recommend(self, account, job_keyword=""):
         keyword = str(job_keyword or "").strip()
@@ -604,6 +610,27 @@ class BossCliRunner:
         ):
             raise BossCliError("未能确认已向稳定 ID 对应的候选人打招呼")
         return receipt
+
+    def preview_by_external_id(self, account, external_id):
+        normalized_id = str(external_id or "").strip()
+        if not normalized_id or len(normalized_id) > 160:
+            raise BossCliError("候选人平台稳定 ID 无效")
+        response = self._run_chat_bridge(
+            account,
+            "preview_candidate",
+            {"external_id": normalized_id},
+            timeout_seconds=90,
+        )
+        receipt = response.get("receipt") if isinstance(response, dict) else None
+        output = str(response.get("output", "")) if isinstance(response, dict) else ""
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("verified") is not True
+            or str(receipt.get("observed_external_id", "")).strip() != normalized_id
+            or not output.strip()
+        ):
+            raise BossCliError("未能确认稳定 ID 对应候选人的在线简历预览")
+        return CliResult(returncode=0, stdout=output, stderr="")
 
     def request_resume(self, account, name, *, message="", first_contact=False):
         self.open_chat(account, name)

@@ -111,8 +111,9 @@ class CandidateRunnerTests(SimpleTestCase):
         )
 
     @patch.object(BossCliRunner, "_run_chat_bridge")
+    @patch("recruitment.rpa.cli.time.sleep")
     @patch("recruitment.rpa.cli.subprocess.run")
-    def test_candidate_enrichment_refuses_misaligned_browser_snapshot(self, run, bridge):
+    def test_candidate_enrichment_refuses_misaligned_browser_snapshot(self, run, sleep, bridge):
         run.return_value = subprocess.CompletedProcess([], 0, RECOMMEND_OUTPUT.encode("utf-8"), b"")
         bridge.return_value = {
             "ok": True,
@@ -122,6 +123,24 @@ class CandidateRunnerTests(SimpleTestCase):
         rows = BossCliRunner(cli_path="C:/tools/boss.exe").recommend(self.account, "前端工程师")
 
         self.assertEqual(rows[0]["external_id"], "")
+        self.assertEqual(bridge.call_count, 4)
+        self.assertEqual(sleep.call_count, 3)
+
+    @patch.object(BossCliRunner, "_run_chat_bridge")
+    @patch("recruitment.rpa.cli.time.sleep")
+    @patch("recruitment.rpa.cli.subprocess.run")
+    def test_candidate_enrichment_retries_until_stable_ids_are_ready(self, run, sleep, bridge):
+        run.return_value = subprocess.CompletedProcess([], 0, RECOMMEND_OUTPUT.encode("utf-8"), b"")
+        bridge.side_effect = [
+            {"ok": True, "rows": [{"index": 1, "display_name": "林晓", "external_id": ""}]},
+            {"ok": True, "rows": [{"index": 1, "display_name": "林晓", "external_id": "geek-101"}]},
+        ]
+
+        rows = BossCliRunner(cli_path="C:/tools/boss.exe").recommend(self.account, "前端工程师")
+
+        self.assertEqual(rows[0]["external_id"], "geek-101")
+        self.assertEqual(bridge.call_count, 2)
+        sleep.assert_called_once()
 
     def test_runner_rejects_control_characters(self):
         runner = BossCliRunner(cli_path="C:/tools/boss.exe")

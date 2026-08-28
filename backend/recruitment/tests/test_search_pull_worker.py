@@ -153,6 +153,45 @@ class SearchPullWorkerTests(SimpleTestCase):
             self.assertEqual(identity["observed_external_id"], row["external_id"])
             self.assertEqual(runner.previewed, [row["external_id"]])
 
+    def test_partial_verified_previews_succeed_when_a_later_candidate_disappears(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.png"
+            source.write_bytes(b"\x89PNG\r\n\x1a\ncontent")
+            runner = FakeRunner(source)
+            rows = [
+                {"display_name": "陈月", "external_id": "stable-1", "current_title": "Python"},
+                {"display_name": "林河", "external_id": "stable-2", "current_title": "Django"},
+            ]
+            calls = 0
+
+            def search(account, keyword):
+                nonlocal calls
+                calls += 1
+                return rows if calls < 3 else rows[:1]
+
+            runner.search = search
+            runner.preview_by_external_id = lambda account, external_id: (
+                runner.previewed.append(external_id)
+                or SimpleNamespace(stdout=f"简历预览截图：{source}\n")
+            )
+            task = {"request_payload": {
+                "source": "search", "criteria": {"keyword": "Python"},
+                "target_resume_count": 1, "max_scan_count": 2,
+                "resume_view_budget": 2, "boss_account_id": 7,
+            }}
+
+            with override_settings(MEDIA_ROOT=Path(root) / "media"):
+                outcome = execute_search_pull_resumes(
+                    task,
+                    CliAccountConfig("edge", str(Path(root) / "profile"), 53990),
+                    runner,
+                )
+
+            self.assertEqual(outcome["status"], "succeeded")
+            self.assertEqual(len(outcome["result"]["resumes"]), 1)
+            self.assertEqual(runner.previewed, ["stable-1"])
+            self.assertEqual(outcome["result"]["attempts"][1]["outcome"], "identity_ambiguous")
+
     def test_same_name_candidates_are_never_opened_by_display_name(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "source.png"
@@ -172,7 +211,8 @@ class SearchPullWorkerTests(SimpleTestCase):
             with override_settings(MEDIA_ROOT=Path(root) / "media"):
                 outcome = execute_search_pull_resumes(task, account, runner)
 
-            self.assertEqual(outcome["status"], "succeeded")
+            self.assertEqual(outcome["status"], "waiting_human")
+            self.assertEqual(outcome["error_code"], "target_identity_unverifiable")
             self.assertEqual(outcome["result"]["resumes"], [])
             self.assertEqual(outcome["result"]["view_attempt_count"], 0)
             self.assertEqual(runner.previewed, [])

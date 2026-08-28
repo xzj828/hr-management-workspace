@@ -320,8 +320,34 @@ class WorkerEngineTests(SimpleTestCase):
             runner,
         )
 
-        self.assertEqual(runner.stable_ids, [("conversation-safe", "产品经理", True)])
+        self.assertEqual(runner.stable_ids, [("conversation-safe", "产品经理", False)])
         self.assertEqual(outcome["result"]["conversations"][0]["messages"][0]["content"], "你好")
+
+    def test_attachment_failure_preserves_verified_messages_and_reports_unknown_state(self):
+        class Runner:
+            def conversations(self, account, unread=False, job_title=""):
+                return "1. 新候选人｜产品经理｜external_id:conversation-safe｜未读 1"
+
+            def open_chat_by_external_id(self, account, external_id, *, job_title="", unread=False):
+                return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 2026-08-27 09:00 你好")
+
+            def download_resume_attachments(
+                self, account, external_id, expected_name, output_dir, *, job_title=""
+            ):
+                raise BossCliError("Protocol error (DOM.resolveNode): stale document")
+
+        outcome = execute_sync_conversations(
+            {"request_payload": {"job": 7, "job_title": "产品经理"}},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            Runner(),
+        )
+
+        row = outcome["result"]["conversations"][0]
+        self.assertEqual(row["messages"][0]["content"], "你好")
+        self.assertEqual(row["attachment_sync_state"], "unknown")
+        self.assertNotIn("sync_error", row)
+        self.assertEqual(outcome["result"]["opened_count"], 1)
+        self.assertEqual(outcome["result"]["attachment_failed_count"], 1)
 
     @patch("recruitment.management.commands.run_rpa_worker.inspect_boss_status")
     def test_status_observer_checks_all_accounts_outside_task_queue(self, inspect):

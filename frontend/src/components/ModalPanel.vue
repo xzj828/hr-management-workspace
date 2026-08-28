@@ -2,7 +2,13 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 
-const props = defineProps({ title: String, wide: Boolean, dismissible: { type: Boolean, default: true }, initialFocus: String })
+const props = defineProps({
+  title: String,
+  wide: Boolean,
+  dismissible: { type: Boolean, default: true },
+  initialFocus: String,
+  panelClass: { type: [String, Array, Object], default: '' },
+})
 const emit = defineEmits(['close'])
 const panel = ref(null)
 const titleId = `modal-title-${useId()}`
@@ -55,7 +61,7 @@ onBeforeUnmount(() => previousFocus?.focus?.())
 <template>
   <teleport to="body">
     <div class="modal-mask" @mousedown.self="requestClose">
-      <section ref="panel" class="modal-panel" :class="{ 'modal-panel--wide': wide }" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1" @keydown="handleKeydown">
+      <section ref="panel" class="modal-panel" :class="[{ 'modal-panel--wide': wide }, panelClass]" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1" @keydown="handleKeydown">
         <header><h2 :id="titleId">{{ title }}</h2><button class="icon-button" type="button" aria-label="关闭" :disabled="!dismissible" @click="requestClose"><AppIcon name="close" :size="18" /></button></header>
         <div class="modal-panel__body"><slot /></div>
         <footer v-if="$slots.footer"><slot name="footer" /></footer>

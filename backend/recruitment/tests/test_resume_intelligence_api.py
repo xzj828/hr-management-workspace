@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from django.contrib.auth.models import User
@@ -433,6 +434,10 @@ class ResumeAssessmentServiceTests(TestCase):
         self.assertNotIn("candidate@example.com", prompt)
         self.assertNotIn("林然", prompt)
         self.assertNotIn("性别 女", prompt)
+        payload = json.loads(prompt)
+        self.assertIn("dimension_scores", payload["output_schema"])
+        self.assertIn("hard_requirement_results", payload["output_schema"])
+        self.assertIn("verification_questions", payload["output_schema"])
 
     def test_model_not_met_without_deterministic_rule_does_not_auto_reject(self):
         criteria = scoring_criteria()

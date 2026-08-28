@@ -11,17 +11,15 @@ from rest_framework.test import APIClient
 
 from attendance.models import AccountProfile
 from recruitment.models import (
-    AutomationApproval,
     BossAccount,
+    JobStandardVersion,
     RecruitmentAutomationPlan,
     RecruitmentJob,
     RpaTask,
     RpaWorker,
     SearchCampaign,
 )
-from recruitment.services.approvals import approve
 from recruitment.services.automation_plans import AutomationPlanConflict, start_plan, stop_plan
-from recruitment.services.search_campaigns import start_search_campaign
 from recruitment.services.sqlite_lifecycle import sqlite_lifecycle_serialized
 
 
@@ -46,6 +44,15 @@ class AutomationPlanSqliteConcurrencyTests(TransactionTestCase):
             external_id="sqlite-concurrent-job",
             title="SQLite 并发职位",
             owner=self.user,
+        )
+        JobStandardVersion.objects.create(
+            job=self.job,
+            version=1,
+            status=JobStandardVersion.Status.PUBLISHED,
+            criteria={"dimensions": [{"key": "fit", "name": "匹配", "weight": 100, "description": "匹配"}]},
+            created_by=self.user,
+            published_by=self.user,
+            published_at=timezone.now(),
         )
 
     @staticmethod
@@ -117,17 +124,11 @@ class AutomationPlanSqliteConcurrencyTests(TransactionTestCase):
         plan = started.plan
         plan.refresh_from_db()
         node = plan.current_run.node_runs.get(node_key="search_pull")
-        approval = AutomationApproval.objects.get(pk=node.output["approval_id"])
-        approve(approval=approval, actor=self.user)
         campaign = SearchCampaign.objects.get(
             automation_plan_revision=plan.current_revision,
             workflow_run=plan.current_run,
         )
-        task = start_search_campaign(
-            campaign=campaign,
-            actor=self.user,
-            approval=approval,
-        )
+        task = RpaTask.objects.get(workflow_node_run=node)
         worker = RpaWorker.objects.create(
             key="sqlite-plan-worker",
             hostname="localhost",

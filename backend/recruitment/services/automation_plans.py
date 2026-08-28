@@ -28,6 +28,7 @@ from recruitment.models import (
 )
 from recruitment.rpa.tasks import append_event
 from recruitment.services.standard_workflows import create_standard_workflow
+from recruitment.services.job_standards import resolve_workbench_standard
 from recruitment.services.sqlite_lifecycle import serialize_sqlite_lifecycle
 from recruitment.services.workflow_nodes import execute_workflow_node
 from recruitment.services.workflow_runtime import (
@@ -161,9 +162,9 @@ def normalize_plan_config(kind, config):
         target = int(raw.get("target_resume_count", 0))
         maximum = int(raw.get("max_scan_count", 0))
     except (TypeError, ValueError) as exc:
-        raise ValidationError({"config": "目标简历数和最大扫描人数必须是整数"}) from exc
+        raise ValidationError({"config": "目标合格简历数和 AI 最大分析份数必须是整数"}) from exc
     if target < 1 or maximum < target or maximum > 100:
-        raise ValidationError({"config": "目标简历数至少为 1，最大扫描人数须不小于目标且不超过 100"})
+        raise ValidationError({"config": "目标合格简历数至少为 1，AI 最大分析份数须不小于目标且不超过 100"})
     source = str(raw.get("source", "search")).strip()
     if source not in SearchCampaign.Source.values:
         raise ValidationError({"config": "主动寻访来源无效"})
@@ -534,6 +535,22 @@ def start_plan(
             raise AutomationPlanConflict("同一启动请求标识对应的执行方案不一致")
         return PlanCommandResult(existing_revision.plan, idempotent=True)
 
+    if kind == RecruitmentAutomationPlan.Kind.ACTIVE_RESUME_SEARCH:
+        try:
+            standard = resolve_workbench_standard(
+                job=job,
+                core=normalized.get("core", []),
+                bonus=normalized.get("bonus", []),
+                actor=actor,
+            )
+        except ValueError as exc:
+            raise ValidationError({"config": str(exc)}) from exc
+        normalized = {
+            **normalized,
+            "standard_id": standard.pk,
+            "standard_version": standard.version,
+        }
+
     if not account.active or account.archived_at is not None:
         raise ValidationError("BOSS 账号已停用或归档")
     if account.login_status != BossAccount.LoginStatus.READY:
@@ -601,13 +618,29 @@ def start_plan(
             })
 
     next_revision = (plan.revisions.aggregate(value=Max("revision"))["value"] or 0) + 1
+    revision_config = dict(normalized)
+    if kind == RecruitmentAutomationPlan.Kind.PASSIVE_RESUME:
+        revision_config["execution_authorization"] = {
+            "source": "plan_start",
+            "actor_id": actor.pk,
+            "actions": [ConversationAction.Action.REQUEST_RESUME],
+        }
+    elif (
+        kind == RecruitmentAutomationPlan.Kind.ACTIVE_RESUME_SEARCH
+        and workflow_version_id is None
+    ):
+        revision_config["execution_authorization"] = {
+            "source": "plan_start",
+            "actor_id": actor.pk,
+            "actions": [AutomationApproval.Action.SEARCH_AND_PULL_RESUMES],
+        }
     revision = RecruitmentAutomationPlanRevision.objects.create(
         plan=plan,
         revision=next_revision,
         kind=kind,
         request_id=request_id,
         request_hash=incoming_hash,
-        config_snapshot=normalized,
+        config_snapshot=revision_config,
         workflow_version=workflow_version,
         created_by=actor,
     )
@@ -630,7 +663,7 @@ def start_plan(
         actor=actor,
         mode=WorkflowRun.Mode.FORMAL,
         idempotency_key=f"automation-plan:{plan.pk}:revision:{revision.revision}",
-        input_snapshot={"scheme": kind, **normalized},
+        input_snapshot={"scheme": kind, **revision_config},
         job=job,
         automation_plan_revision=revision,
         automation_generation=next_generation,
@@ -651,6 +684,7 @@ def start_plan(
             "revision": revision.revision,
             "generation": next_generation,
             "workflow_version_id": workflow_version.pk,
+            "authorized_actions": revision_config.get("execution_authorization", {}).get("actions", []),
         },
     )
     return PlanCommandResult(plan, created=created)

@@ -454,7 +454,7 @@ onUnmounted(() => {
           </button>
           <button class="automation-scheme-card is-active" type="button" @click="openScheme('active_resume_search')">
             <i><AppIcon name="search" :size="22" /></i>
-            <span><small>主动寻访</small><strong>搜索并拉取在线简历</strong><em>按目标数与扫描上限执行，结果交给 HR 确认</em></span>
+            <span><small>主动寻访</small><strong>搜索、拉取并 AI 初筛</strong><em>按合格目标与 AI 分析上限执行，合格结果交给 HR 批量确认</em></span>
             <AppIcon name="arrow-right" :size="18" />
           </button>
         </div>
@@ -472,9 +472,9 @@ onUnmounted(() => {
     </section>
     <section v-if="campaigns.length" class="automation-campaign-strip" aria-label="主动寻访运行记录">
       <article v-for="campaign in campaigns.slice(0, 4)" :key="campaign.id">
-        <div class="automation-campaign-title"><i :class="`is-${campaign.status}`"></i><span><strong>{{ campaign.name }}</strong><small>{{ campaign.job_title }} · 目标 {{ campaign.target_resume_count }} 份</small></span></div>
-        <div class="automation-campaign-meter"><span><i :style="{ width: `${campaignProgress(campaign)}%` }"></i></span><small>已扫描 {{ campaign.scanned_count }}/{{ campaign.max_scan_count }} · 已拉取 {{ campaign.pulled_resume_count }}</small></div>
-        <button v-if="campaign.status !== 'succeeded'" type="button" @click="disposeCampaign(campaign)">{{ ['queued','running','paused'].includes(campaign.status) ? '停止' : '删除' }}</button>
+        <div class="automation-campaign-title"><i :class="`is-${campaign.status}`"></i><span><strong>{{ campaign.name }}</strong><small>{{ campaign.job_title }} · 目标合格 {{ campaign.target_resume_count }} 份</small></span></div>
+        <div class="automation-campaign-meter"><span><i :style="{ width: `${campaignProgress(campaign)}%` }"></i></span><small>AI 已分析 {{ campaign.scanned_count }}/{{ campaign.max_scan_count }} · 合格 {{ campaign.qualified_resume_count || 0 }} · 已拉取 {{ campaign.pulled_resume_count }}</small></div>
+        <button v-if="campaign.status !== 'succeeded'" type="button" @click="disposeCampaign(campaign)">{{ ['queued','running','analyzing','paused'].includes(campaign.status) ? '停止' : '删除' }}</button>
         <span v-else class="recruitment-chip">已完成</span>
       </article>
     </section>
@@ -593,7 +593,7 @@ onUnmounted(() => {
     </ModalPanel>
     <ModalPanel v-if="schemeModal" :title="schemeModal === 'passive_resume' ? '运行被动咨询方案' : '运行主动寻访方案'" @close="schemeModal = ''">
       <form id="standard-scheme-form" class="form-grid automation-scheme-form" @submit.prevent="saveAndRunScheme">
-        <div class="automation-scheme-note field-label--full"><AppIcon :name="schemeModal === 'passive_resume' ? 'workflow' : 'search'" :size="20" /><p><strong>{{ schemeModal === 'passive_resume' ? '完整消息同步 → 意图规则 → 原生求简历' : '搜索候选人 → 拉取在线简历 → HR 打招呼待办' }}</strong><span>系统会保存一份可追溯的流程版本，并立即按该版本运行。</span></p></div>
+        <div class="automation-scheme-note field-label--full"><AppIcon :name="schemeModal === 'passive_resume' ? 'workflow' : 'search'" :size="20" /><p><strong>{{ schemeModal === 'passive_resume' ? '完整消息同步 → 意图规则 → 原生求简历' : '搜索候选人 → 拉取在线简历 → AI 初筛 → HR 批量打招呼' }}</strong><span>系统会保存一份可追溯的流程版本，并立即按该版本运行。</span></p></div>
         <label class="field-label">执行账号<select v-model="schemeForm.accountId" required @change="schemeForm.jobId = schemeJobs[0]?.id || ''"><option value="">请选择</option><option v-for="account in accounts" :key="account.id" :value="account.id" :disabled="account.login_status !== 'ready'">{{ account.name }}{{ account.login_status === 'ready' ? '' : '（未登录）' }}</option></select></label>
         <label class="field-label">执行职位<select v-model="schemeForm.jobId" required><option value="">请选择</option><option v-for="job in schemeJobs" :key="job.id" :value="job.id">{{ job.title }}</option></select></label>
         <template v-if="schemeModal === 'passive_resume'">
@@ -602,8 +602,8 @@ onUnmounted(() => {
         <template v-else>
           <label class="field-label">搜索来源<select v-model="schemeForm.source"><option value="search">常规搜索</option><option value="recommend">推荐牛人</option><option value="deep_search">深度搜索</option></select></label>
           <label class="field-label">搜索关键词<input v-model.trim="schemeForm.keyword" maxlength="20" placeholder="例如：Python" /></label>
-          <label class="field-label">目标简历数<input v-model.number="schemeForm.target" type="number" min="1" max="100" /></label>
-          <label class="field-label">最大扫描人数<input v-model.number="schemeForm.maxScan" type="number" :min="schemeForm.target" max="100" /></label>
+          <label class="field-label">目标合格简历数<input v-model.number="schemeForm.target" type="number" min="1" max="100" /></label>
+          <label class="field-label">AI 最大分析份数<input v-model.number="schemeForm.maxScan" type="number" :min="schemeForm.target" max="100" /></label>
         </template>
       </form>
       <template #footer><button class="secondary-button" type="button" @click="schemeModal = ''">取消</button><button class="primary-button" type="submit" form="standard-scheme-form" :disabled="schemeSaving || !schemeForm.jobId">{{ schemeSaving ? '正在创建并运行…' : '确认运行' }}</button></template>

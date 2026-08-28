@@ -95,6 +95,18 @@ class ApprovalServiceTests(TestCase):
         usage.refresh_from_db()
         self.assertEqual(usage.used, 2)
 
+    def test_zero_limit_records_usage_without_a_local_cap(self):
+        self.account.daily_resume_view_limit = 0
+        self.account.save(update_fields=["daily_resume_view_limit"])
+
+        usage = consume(
+            account=self.account,
+            metric=AutomationUsage.Metric.RESUME_VIEW,
+            amount=100,
+        )
+
+        self.assertEqual(usage.used, 100)
+
     def test_zero_amount_is_rejected(self):
         with self.assertRaises(ValidationError):
             consume(account=self.account, metric=AutomationUsage.Metric.SEARCH, amount=0)

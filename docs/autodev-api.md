@@ -40,7 +40,7 @@
 
 | 实体 | 核心字段 | 关系/约束 |
 |---|---|---|
-| BossAccount | name, browser/profile/port, login/status, daily limits, active, archived_at | name/profile/port 唯一；authorized_users M:N |
+| BossAccount | name, browser/profile/port, login/status, daily limits, active, archived_at | name/profile/port 唯一；authorized_users M:N；`daily_resume_view_limit=0` 表示仅记录用量、不设工作台本地上限 |
 | RecruitmentJob | external_id, title, department, jd, owner, headcount, status | account+external_id 唯一 |
 | Candidate | identity_key, external_id, name, phone/email, title/city | identity_key 唯一 |
 | JobApplication | candidate, job, source, stage, owner, priority, last_interaction | candidate+job 唯一；13 个阶段 |
@@ -74,7 +74,7 @@
 | RecruitmentAutomationPlan | 岗位级招聘自动化控制面 | job 唯一；desired_state、control_version、control_generation、current revision/run |
 | RecruitmentAutomationPlanRevision | 每次正式开启的不可变方案 | plan+revision 唯一；冻结 kind、config、workflow version 和请求哈希 |
 
-对抗审查补充约束（2026-08-25）：`request_resume` 必须绑定已批准的不可变动作快照；主动搜索只产生候选摘要，打开/归档在线简历必须逐份计入 `resume_view`。外部动作只能由适配器在同一次原子调用中按平台稳定 ID（或平台原生等价标识）定位、复核并执行；组合指纹、展示名唯一或“先核验 ID、再按姓名执行”均不满足动作身份契约。缺少该能力时必须转人工提醒。批量任务的审批快照必须冻结候选集合或确定性搜索条件、最大数量和额度预算。
+对抗审查补充约束（2026-08-25，2026-08-27 更新）：`request_resume` 必须绑定已批准的不可变动作快照。标准被动计划的 `POST /automation-plans/start/` 是当前 Plan 修订/代际的显式授权来源，服务端据此自动批准并物化求简历 Approval，不再要求 HR 二次点击；普通沟通和其他动作不能复用该授权。系统托管的标准主动计划同样可在该原子命令中冻结 `search_and_pull_resumes` 授权，服务端仍需生成不可变 Approval，并调用既有审批与 Campaign 启动服务校验权限、Revision/Generation、快照和额度后才创建 RPA Task；直接 Campaign、自定义流程和后续批量打招呼不继承该授权。主动搜索打开/归档在线简历必须逐份计入 `resume_view`。外部动作只能由适配器在同一次原子调用中按平台稳定 ID（或平台原生等价标识）定位、复核并执行；组合指纹、展示名唯一或“先核验 ID、再按姓名执行”均不满足动作身份契约。缺少该能力时必须转人工提醒。批量任务的审批快照必须冻结候选集合或确定性搜索条件、最大数量和额度预算。
 
 任务级自动化证据必须覆盖批量在线简历的每次尝试（目标稳定身份、核验结果、动作结果、错误与时间），并关联 `RpaTask`；额度记录需区分批准预算/预留值与实际尝试数。批量完成回写若任一身份、路径或归档失败，候选导入、简历归档、Campaign 统计等业务写入必须整体回滚，再单独写入 Task/Campaign 的失败终态。
 
@@ -254,7 +254,7 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - 服务端重新检查账号授权和候选人归属，创建 draft approval，不直接发送。
 - 批准后按候选人生成独立步骤；部分失败不得重复成功项。
 
-周期被动同步产生的 `request_resume` 审批必须绑定当前 `automation_plan_revision` 与 `automation_generation`。招聘作业台只能显示当前岗位、当前修订和当前代际的 `draft` 审批；旧代审批即使仍可查询也不得批准。每次有效同步应幂等恢复已处理但未形成有效求简历动作的候选人来信，已有简历以及 `approved/pending/running/waiting_human/succeeded` 动作不得重新排队。
+周期被动同步产生的 `request_resume` 审批必须绑定当前 `automation_plan_revision` 与 `automation_generation`。若修订快照包含 `execution_authorization.source=plan_start` 且授权动作含 `request_resume`，服务端以启动人身份自动批准 Approval、物化 ExecutionBatch/Step 并写审计；任务详情不再加载二次确认收件箱。旧版或自定义流程的 `draft` 审批仍只能在当前岗位、修订和代际显示，旧代审批即使仍可查询也不得批准。每次有效同步应幂等恢复已处理但未形成有效求简历动作的候选人来信，已有简历以及 `approved/pending/running/waiting_human/succeeded` 动作不得重新排队。
 
 ### GET `/api/recruitment/screening-results/?job=<id>`
 
@@ -315,7 +315,7 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - 作业台只有在确认接口返回沟通批次且批次中至少存在一个 `pending` 执行步骤时，才能提示动作已排队；审批提交期间禁止同时停止或重启岗位计划，计划控制期间也禁止提交审批。
 - Worker 的目标职位会话适配器必须在一次调用中按“精确职位 → 未读/全部 → stable ID”定位并点击，返回选中会话消息；不得先通过 CLI 切换账号级列表，也不得把 CLI 序号作为跨筛选快照的动作目标。同步调用必须把原始 `unread` 范围传到打开动作。
 - 首次 `request_resume` 必须把文字发送和原生求简历拆开：发送后以选中 stable ID 下新增的精确己方消息作为成功回执，随后才允许求简历。缺少新增消息回执时任务进入 `waiting_human/external_result_uncertain`，不得自动重试或继续求简历。消息方向类既可能位于 `.message-item` 自身也可能位于后代，解析和回执必须兼容两种 DOM 形态。
-- 会话读取、打开、发送、消息回执、原生求简历和附件下载由本地 `boss_chat_bridge.mjs` 通过固定 CLI 包内的 `puppeteer-core` 执行；bridge 输入为 JSON stdin，Node/脚本/包根均为固定 argv，继承最小账号环境。bridge 只能断开自身 CDP 连接，不得关闭受管浏览器。`request_resume` 成功回执必须明确包含 `greeting_verified`（首次联系时）、`resume_requested`、`request_acknowledged` 及与批准目标一致的 `observed_external_id`；`request_acknowledged` 只接受原生求简历确认后的 BOSS 非遥测 2xx 响应或明确成功提示。
+- 会话读取、打开、发送、消息回执、原生求简历和附件下载由本地 `boss_chat_bridge.mjs` 通过固定 CLI 包内的 `puppeteer-core` 执行；bridge 输入为 JSON stdin，Node/脚本/包根均为固定 argv，继承最小账号环境。bridge 只能断开自身 CDP 连接，不得关闭受管浏览器。`request_resume` 成功回执必须明确包含 `greeting_verified`（首次联系时）、`resume_requested`、`request_acknowledged` 及与批准目标一致的 `observed_external_id`；`request_acknowledged` 只接受原生求简历确认后的 BOSS 非遥测 2xx 响应、明确成功提示，或同一 stable ID/岗位聊天区新增的精确默认求简历话术。
 
 ### 独立招聘任务详情与可恢复删除（W16，2026-08-27）
 
@@ -327,9 +327,17 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - `RecruitmentAutomationPlanSerializer` 增加 `archived_at`。`WorkflowRunSerializer` 增加只读 `automation_plan` 与 `automation_plan_archived_at`，从 `automation_plan_revision.plan` 投影，供结果中心生成稳定任务详情链接和已删除过滤。
 - 归档与恢复使用现有 `RecruitmentWritePermission` 和授权账号查询；其他用户的 Plan 继续返回 404。
 
+### 招聘任务 Run 读模型与单次归档（W16 修订，2026-08-27）
+
+- `WorkflowRun` 增加可空、索引字段 `archived_at`，只表示该次招聘任务卡是否从当前集合移除。
+- `GET /api/recruitment/workflow-runs/?automation_plan=1` 只返回正式、Plan 管理的 Run；默认返回未归档 Run，`archived=1` 返回已归档 Run，并可按现有账号授权范围读取。
+- Run 序列化补充岗位标题、Plan ID、修订摘要、是否为 Plan 当前 Run 以及当前 Run 的 Plan 有效状态，供任务集合和历史详情使用。
+- `POST /api/recruitment/workflow-runs/<id>/archive/` 只允许归档 `succeeded/failed/cancelled` 终态 Run；`restore/?archived=1` 只清除 `archived_at`。两者均不修改或重启 Plan。
+- 既有 Plan 归档接口保留兼容，但结果中心“删除任务”改用 Run 归档语义；其他用户的 Run 继续返回 404。
+
 ### 主动寻访结果批量打招呼（W17，2026-08-27）
 
-状态：`[x]` 读模型、准备/批准、顺序执行和完成回执契约已通过自动测试；真实 BOSS 外发回执需 HR 人工验收。
+状态：`[x]` 读模型、开始执行自动授权、顺序执行和完成回执契约已通过自动测试；2026-08-27 已用单个真实目标会话取得 BOSS 原生 `/wapi/zpchat/exchange/test` 成功回执并完成数据库全链路验收。
 
 本功能不新增数据表和公开端点，复用现有沟通准备与审批 API，并扩展候选结果读模型。
 
@@ -394,3 +402,52 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 - Worker 必须在同一受管 CDP 原子动作中恢复来源和职位范围、刷新候选列表、按 stable ID 唯一定位并复核展示名后执行。姓名、组合指纹和列表序号都不能代替 stable ID。
 - `greeting_verified` 缺失、stable ID 不一致、验证码/风控或点击后结果未知均不得回写成功；其中结果未知使用 `external_result_uncertain` 并创建人工核查事项。
 - 核验成功后服务端推进应聘阶段为 `greeted`，并只解决同一应聘、同一岗位、同一 BOSS 账号当前开放的 `greeting_required` 人工事项；其他人工事项不受影响。
+
+### 主动寻访 AI 合格目标（W18，2026-08-27）
+
+`SearchCampaign` 增加以下持久化口径：
+
+- `standard`：启动时冻结的岗位评分标准版本；
+- `scanned_count`：AI 已完成评分的简历数；
+- `pulled_resume_count`：本 Campaign 已归档候选简历数；
+- `qualified_resume_count`：评分建议为 `advance` 的简历数；
+- `analysis_failed_count`：当前 AI 链路失败的候选项数。
+
+新增 `SearchCampaignItem`，至少记录 `campaign/application/resume/sequence/status`、结构化任务、评分任务、评分结果、错误与分析完成时间。`campaign + resume` 和 `campaign + sequence` 唯一；已完成资格结果不得因岗位标准换版而漂移。
+
+`GET /api/recruitment/search-campaigns/` 在既有字段外返回：
+
+```json
+{
+  "standard": 12,
+  "standard_version": 3,
+  "qualified_resume_count": 3,
+  "analysis_failed_count": 0,
+  "stop_reason_label": "达到合格简历目标"
+}
+```
+
+- `target_resume_count` 的兼容字段名保留，但业务含义改为“目标 AI 合格简历数”。
+- `max_scan_count` 的兼容字段名保留，但业务含义改为“AI 最大分析份数”，同时继续作为本轮在线简历查看额度的保守上限。
+- 主动 Campaign 准备审批时必须存在已发布岗位标准并冻结其 ID；没有标准时返回字段错误，不创建 RPA 任务或消耗查看额度。
+- `POST /api/recruitment/automation-plans/start/` 接收工作台现有 `config.core/config.bonus`，服务端将其解析为岗位标准来源；若两者为空，则使用与当前岗位文档版本一致的已生成标准。服务端把解析后的 `standard_id` 写入 Revision/Run 快照并用于 Campaign，客户端不能指定或覆盖该 ID。文档仍在生成时返回可恢复字段错误，且不创建 Plan、Campaign 或 RPA 任务。
+- RPA 回写允许归档最多 `max_scan_count` 份简历，不再用 `target_resume_count` 截断拉取结果。归档成功后 Campaign 进入 AI 分析态，工作流节点保持非终态。
+- AI Worker 每次完成/失败/重试结构化或评分任务后幂等协调关联 Campaign；达到 `qualified_resume_count >= target_resume_count` 时结束，全部可分析项完成仍未达标时按实际范围返回 AI 分析上限或候选池不足。
+- 工作流成功输出的 `application_ids` 仅包含本 Campaign 的 AI 合格项；后续批量打招呼继续使用 W17 的 prepare/approve 接口，不新增外发旁路。
+
+### 已保存简历原文件清理（W19，2026-08-27）
+
+#### POST `/api/recruitment/resumes/<id>/purge/`
+
+- 使用现有 `RecruitmentWritePermission` 与可访问职位查询；无权访问的简历返回 404。
+- 若简历存在 `extracting/ocr/model` 状态的在途 AI 任务，返回 409；尚未开始的 `waiting_config/pending` 任务原子标记为 `failed/source_file_deleted`，避免配置恢复或 Worker 稍后读取已删除文件。
+- 成功时服务端锁定简历记录，显式删除 `FileField` 对应存储对象，把 `file` 清空、`file_size` 置零并写入 `archived_at`；响应为 200，返回 `released_bytes`。
+- 清理后简历退出当前列表、筛选排名和候选人当前简历计数，原文件预览/下载返回 404。
+- 不物理删除 `Resume` 记录、结构化版本、历史评分、人工筛选结论或自动化审计引用；写入 `resume_file_purged` 审计动作，详情仅记录候选人 ID、简历版本和释放字节数，不记录文件正文、文件路径或候选人身份秘密。
+- 已清理记录再次调用保持幂等，返回 200 且 `released_bytes=0`；存储删除失败返回可读错误且不得把数据库状态标记为已清理。
+
+### 被动监听运行投影（2026-08-27）
+
+- `RecruitmentAutomationPlan` 读模型为标准被动计划增加 `monitoring` 投影，来源是当前岗位 scope 最近一次 `sync_conversations` 任务，不新增可写端点。
+- 投影至少包含 `last_checked_at/status/discovered_count/synced_count/message_failed_count/attachment_failed_count/error_code`；只返回受控错误码和计数，不返回候选人姓名、消息正文、原始 stable ID 或附件路径。
+- 初始化 WorkflowRun 成功但最近轮询部分失败时，Plan 仍由 `desired_state` 控制是否持续监听；页面使用 `monitoring` 解释本轮状态，不能把一次性 Run 的最后节点当作持续监听游标。

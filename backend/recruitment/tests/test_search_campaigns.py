@@ -5,7 +5,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from attendance.models import AccountProfile
-from recruitment.models import AutomationApproval, AutomationEvidence, AutomationUsage, BossAccount, RecruitmentJob, RpaTask, SearchCampaign
+from recruitment.models import AutomationApproval, AutomationEvidence, AutomationUsage, BossAccount, JobStandardVersion, RecruitmentJob, RpaTask, SearchCampaign
 
 
 class SearchCampaignApiTests(APITestCase):
@@ -17,6 +17,15 @@ class SearchCampaignApiTests(APITestCase):
         self.account.authorized_users.add(self.user)
         self.job = RecruitmentJob.objects.create(
             boss_account=self.account, external_id="campaign-job", title="Python 工程师", owner=self.user,
+        )
+        self.standard = JobStandardVersion.objects.create(
+            job=self.job,
+            version=1,
+            status=JobStandardVersion.Status.PUBLISHED,
+            criteria={"dimensions": [{"key": "fit", "name": "匹配", "weight": 100, "description": "匹配"}]},
+            created_by=self.user,
+            published_by=self.user,
+            published_at=timezone.now(),
         )
 
     def test_start_prepares_snapshot_and_approval_atomically_reserves_view_budget(self):
@@ -32,9 +41,14 @@ class SearchCampaignApiTests(APITestCase):
         campaign = SearchCampaign.objects.get(pk=response.data["id"])
         approval = AutomationApproval.objects.get(pk=started.data["approval_id"])
         self.assertEqual(campaign.status, SearchCampaign.Status.DRAFT)
+        self.assertEqual(campaign.standard, self.standard)
+        detail = self.client.get(f"/api/recruitment/search-campaigns/{campaign.pk}/")
+        self.assertEqual(detail.data["standard"], self.standard.pk)
+        self.assertEqual(detail.data["standard_version"], 1)
         self.assertEqual(approval.status, AutomationApproval.Status.DRAFT)
         self.assertEqual(approval.payload["criteria"], {"keyword": "Python"})
         self.assertEqual(approval.payload["resume_view_budget"], 20)
+        self.assertEqual(approval.payload["job_standard_id"], self.standard.pk)
         self.assertFalse(RpaTask.objects.exists())
 
         approved = self.client.post(

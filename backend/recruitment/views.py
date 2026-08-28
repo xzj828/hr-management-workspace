@@ -79,6 +79,7 @@ from .serializers import (
     RecruitmentAutomationPlanControlSerializer,
     RecruitmentAutomationPlanSerializer,
     RecruitmentAutomationPlanStartSerializer,
+    RecruitmentTaskRunSerializer,
     ResumeSerializer,
     ResumeAssessmentSerializer,
     RejectionNoticePrepareSerializer,
@@ -109,6 +110,7 @@ from .services.ai_tasks import (
 )
 from .services.job_standards import publish_standard, update_standard_draft
 from .services.human_attention import archive_attention, resolve_attention
+from .services.resumes import ResumePurgeConflict, ResumePurgeStorageError, purge_resume_file
 from .services.standard_workflows import create_standard_workflow
 from .services.workflow_nodes import execute_workflow_node
 from .services.workflow_runtime import HUMAN_NODE_TYPES, WorkflowConflict, advance_run, cancel_run, create_run, decide_node, pause_run, resume_run, retry_node
@@ -710,6 +712,29 @@ class HumanAttentionViewSet(viewsets.ReadOnlyModelViewSet):
     def archive(self, request, pk=None):
         return Response(self.get_serializer(archive_attention(attention=self.get_object())).data)
 
+    @action(detail=False, methods=["post"], url_path="bulk-archive")
+    def bulk_archive(self, request):
+        raw_ids = request.data.get("attention_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise ValidationError({"attention_ids": "请选择至少一项需要清除的人工事项"})
+        if len(raw_ids) > 500:
+            raise ValidationError({"attention_ids": "单次最多清除 500 项人工事项"})
+        try:
+            attention_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+        except (TypeError, ValueError):
+            raise ValidationError({"attention_ids": "人工事项 ID 格式不正确"})
+
+        attentions = list(self.get_queryset().filter(pk__in=attention_ids))
+        archived_ids = []
+        for attention in attentions:
+            archive_attention(attention=attention)
+            archived_ids.append(attention.pk)
+        return Response({
+            "archived_count": len(archived_ids),
+            "archived_ids": archived_ids,
+            "skipped_count": len(attention_ids) - len(archived_ids),
+        })
+
 
 class CandidateViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Candidate.objects.prefetch_related(
@@ -1231,14 +1256,32 @@ class WorkflowVersionViewSet(viewsets.ModelViewSet):
 
 class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = WorkflowRun.objects.select_related(
-        "version__template", "boss_account", "job", "actor", "automation_plan_revision__plan"
+        "version__template", "boss_account", "job", "actor",
+        "automation_plan_revision__plan__current_run",
     ).prefetch_related("node_runs", "events")
     serializer_class = WorkflowRunSerializer
     permission_classes = [RecruitmentWritePermission]
 
+    def get_serializer_class(self):
+        if self.action == "list" and self.request.query_params.get("automation_plan") == "1":
+            return RecruitmentTaskRunSerializer
+        return super().get_serializer_class()
+
     def get_queryset(self):
         queryset = super().get_queryset()
-        return queryset if self.request.user.is_superuser else queryset.filter(boss_account__authorized_users=self.request.user)
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(boss_account__authorized_users=self.request.user)
+        if self.request.query_params.get("automation_plan") == "1":
+            queryset = queryset.filter(
+                automation_plan_revision__isnull=False,
+                automation_plan_revision__plan__archived_at__isnull=True,
+                mode=WorkflowRun.Mode.FORMAL,
+            )
+            if self.request.query_params.get("archived") == "1":
+                queryset = queryset.filter(archived_at__isnull=False)
+            else:
+                queryset = queryset.filter(archived_at__isnull=True)
+        return queryset.distinct()
 
 
     def retrieve(self, request, *args, **kwargs):
@@ -1246,6 +1289,68 @@ class WorkflowRunViewSet(viewsets.ReadOnlyModelViewSet):
         if run.status not in {WorkflowRun.Status.SUCCEEDED, WorkflowRun.Status.FAILED, WorkflowRun.Status.CANCELLED, WorkflowRun.Status.PAUSED}:
             run = advance_run(run, executor=execute_workflow_node)
         return Response(self.get_serializer(run).data)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        run = self.get_object()
+        if run.automation_plan_revision_id is None:
+            raise ValidationError({"detail": "只有招聘作业台创建的任务可以删除"})
+        if run.status not in {
+            WorkflowRun.Status.SUCCEEDED,
+            WorkflowRun.Status.FAILED,
+            WorkflowRun.Status.CANCELLED,
+        }:
+            return Response(
+                {"detail": "任务仍在运行，请先停止并等待安全收尾后再删除"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if run.archived_at is None:
+            run.archived_at = timezone.now()
+            run.save(update_fields=["archived_at", "updated_at"])
+        return Response(self.get_serializer(run).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        run = self.get_object()
+        if run.automation_plan_revision_id is None:
+            raise ValidationError({"detail": "只有招聘作业台创建的任务可以恢复"})
+        if run.archived_at is not None:
+            run.archived_at = None
+            run.save(update_fields=["archived_at", "updated_at"])
+        return Response(self.get_serializer(run).data)
+
+    @action(detail=False, methods=["post"], url_path="bulk-archive")
+    def bulk_archive(self, request):
+        raw_ids = request.data.get("run_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise ValidationError({"run_ids": "请选择至少一项需要清除的任务结果"})
+        if len(raw_ids) > 500:
+            raise ValidationError({"run_ids": "单次最多清除 500 项任务结果"})
+        try:
+            run_ids = list(dict.fromkeys(uuid.UUID(str(value)) for value in raw_ids))
+        except (AttributeError, TypeError, ValueError):
+            raise ValidationError({"run_ids": "任务运行 ID 格式不正确"})
+
+        runs = list(self.get_queryset().filter(pk__in=run_ids))
+        terminal_statuses = {
+            WorkflowRun.Status.SUCCEEDED,
+            WorkflowRun.Status.FAILED,
+            WorkflowRun.Status.CANCELLED,
+        }
+        eligible_ids = [
+            run.pk for run in runs
+            if run.automation_plan_revision_id is not None
+            and run.status in terminal_statuses
+            and run.archived_at is None
+        ]
+        now = timezone.now()
+        if eligible_ids:
+            WorkflowRun.objects.filter(pk__in=eligible_ids).update(archived_at=now, updated_at=now)
+        return Response({
+            "archived_count": len(eligible_ids),
+            "archived_ids": [str(run_id) for run_id in eligible_ids],
+            "skipped_count": len(run_ids) - len(eligible_ids),
+        })
 
     @staticmethod
     def _assert_direct_control_allowed(run):
@@ -1448,7 +1553,7 @@ class RecruitmentAutomationPlanViewSet(ArchivableViewSetMixin, viewsets.ReadOnly
 
 
 class SearchCampaignViewSet(viewsets.ModelViewSet):
-    queryset = SearchCampaign.objects.select_related("boss_account", "job", "created_by")
+    queryset = SearchCampaign.objects.select_related("boss_account", "job", "created_by", "standard")
     serializer_class = SearchCampaignSerializer
     permission_classes = [RecruitmentWritePermission]
 
@@ -1507,6 +1612,68 @@ class ResumeViewSet(ArchivableViewSetMixin, viewsets.ReadOnlyModelViewSet):
         if job:
             queryset = queryset.filter(application__job=job)
         return queryset.distinct()
+
+    @action(detail=True, methods=["post"])
+    def purge(self, request, pk=None):
+        resume = (
+            Resume.objects.select_related("candidate", "application__job__boss_account")
+            .filter(pk=pk, application__job__in=accessible_jobs(request.user))
+            .first()
+        )
+        if resume is None:
+            raise NotFound("简历不存在或不可访问")
+        try:
+            released_bytes = purge_resume_file(resume=resume, actor=request.user)
+        except ResumePurgeConflict as exc:
+            return Response(
+                {"detail": str(exc), "code": "resume_processing"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except ResumePurgeStorageError as exc:
+            return Response(
+                {"detail": str(exc), "code": "resume_storage_delete_failed"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({"released_bytes": released_bytes})
+
+    @action(detail=False, methods=["post"], url_path="bulk-purge")
+    def bulk_purge(self, request):
+        raw_ids = request.data.get("resume_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise ValidationError({"resume_ids": "请选择至少一份需要清除的简历"})
+        if len(raw_ids) > 500:
+            raise ValidationError({"resume_ids": "单次最多清除 500 份简历"})
+        try:
+            resume_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+        except (TypeError, ValueError):
+            raise ValidationError({"resume_ids": "简历 ID 格式不正确"})
+
+        resumes = {
+            resume.pk: resume
+            for resume in self.get_queryset().filter(pk__in=resume_ids)
+        }
+        released_bytes = 0
+        purged_ids = []
+        failures = []
+        for resume_id in resume_ids:
+            resume = resumes.get(resume_id)
+            if resume is None:
+                failures.append({"id": resume_id, "code": "unavailable", "detail": "简历不存在或不可访问"})
+                continue
+            try:
+                released_bytes += purge_resume_file(resume=resume, actor=request.user)
+                purged_ids.append(resume_id)
+            except ResumePurgeConflict as exc:
+                failures.append({"id": resume_id, "code": "resume_processing", "detail": str(exc)})
+            except ResumePurgeStorageError as exc:
+                failures.append({"id": resume_id, "code": "resume_storage_delete_failed", "detail": str(exc)})
+        return Response({
+            "purged_count": len(purged_ids),
+            "purged_ids": purged_ids,
+            "released_bytes": released_bytes,
+            "failed_count": len(failures),
+            "failures": failures,
+        })
 
     @action(detail=True, methods=["get"])
     def file(self, request, pk=None):

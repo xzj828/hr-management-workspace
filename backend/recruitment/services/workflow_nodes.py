@@ -8,16 +8,24 @@ from recruitment.models import (
     BossAccount,
     ExecutionBatch,
     JobApplication,
+    JobStandardVersion,
     RecruitmentAutomationPlan,
     RpaTask,
     Resume,
     SearchCampaign,
+    SearchCampaignItem,
     WorkflowNodeRun,
     WorkflowRun,
 )
 from recruitment.rpa.tasks import create_task
-from recruitment.services.communications import prepare_communication
-from recruitment.services.search_campaigns import prepare_search_campaign
+from recruitment.services.communications import (
+    materialize_plan_start_authorized_resume_request,
+    prepare_communication,
+)
+from recruitment.services.search_campaigns import (
+    prepare_search_campaign,
+    start_plan_authorized_search_campaign,
+)
 from recruitment.services.conversation_ingestion import process_pending_messages
 from recruitment.services.human_attention import ensure_attention
 
@@ -40,6 +48,37 @@ def _task_outcome(task):
     if task.status == RpaTask.Status.CANCELLED:
         return WorkflowNodeRun.Status.CANCELLED, {"task_id": str(task.pk), "reason": task.error_code or task.status}
     return WorkflowNodeRun.Status.RUNNING, {"task_id": str(task.pk)}
+
+
+def _search_campaign_outcome(task, campaign):
+    if task.status != RpaTask.Status.SUCCEEDED:
+        return _task_outcome(task)
+    qualified_application_ids = list(
+        SearchCampaignItem.objects.filter(
+            campaign=campaign,
+            status=SearchCampaignItem.Status.QUALIFIED,
+        ).order_by("sequence", "id").values_list("application_id", flat=True)
+    )
+    output = {
+        "task_id": str(task.pk),
+        "campaign_id": campaign.pk,
+        "application_ids": qualified_application_ids,
+        "scanned_count": campaign.scanned_count,
+        "pulled_resume_count": campaign.pulled_resume_count,
+        "qualified_resume_count": campaign.qualified_resume_count,
+        "target_resume_count": campaign.target_resume_count,
+        "max_scan_count": campaign.max_scan_count,
+        "stop_reason": campaign.stop_reason,
+    }
+    if campaign.status == SearchCampaign.Status.SUCCEEDED:
+        return WorkflowNodeRun.Status.SUCCEEDED, output
+    if campaign.status == SearchCampaign.Status.FAILED:
+        return WorkflowNodeRun.Status.FAILED, {**output, "error": campaign.error_message}
+    if campaign.status == SearchCampaign.Status.CANCELLED:
+        return WorkflowNodeRun.Status.CANCELLED, output
+    if campaign.status == SearchCampaign.Status.PAUSED:
+        return WorkflowNodeRun.Status.WAITING_HUMAN, {**output, "reason": campaign.error_message or "ai_analysis_paused"}
+    return WorkflowNodeRun.Status.RUNNING, output
 
 
 def _parent_outputs(node):
@@ -192,12 +231,24 @@ def execute_workflow_node(node):
 
     if node.node_type == "search_and_pull_resumes":
         task = RpaTask.objects.filter(workflow_node_run=node).order_by("-created_at").first()
-        if task is not None:
-            return _task_outcome(task)
         campaign_id = node.output.get("campaign_id")
         campaign = SearchCampaign.objects.filter(pk=campaign_id, workflow_run=run).first()
+        if task is not None and campaign is not None:
+            return _search_campaign_outcome(task, campaign)
+        if task is not None:
+            return _task_outcome(task)
         if campaign is None:
             config = node.config_snapshot
+            standard_id = config.get("standard_id") or run.input_snapshot.get("standard_id")
+            standard = None
+            if standard_id is not None:
+                standard = JobStandardVersion.objects.filter(
+                    pk=standard_id,
+                    job=run.job,
+                    status=JobStandardVersion.Status.PUBLISHED,
+                ).first()
+                if standard is None:
+                    raise ValueError("本次主动寻访冻结的岗位标准不可用")
             criteria = {
                 "keyword": str(config.get("keyword", "")),
                 "candidate_filters": (
@@ -218,6 +269,7 @@ def execute_workflow_node(node):
                 target_resume_count=int(config.get("target_resume_count", 1)),
                 max_scan_count=int(config.get("max_scan_count", 20)),
                 criteria=criteria,
+                standard=standard,
                 created_by=run.actor,
                 automation_plan_revision=run.automation_plan_revision,
                 automation_generation=run.automation_generation,
@@ -236,6 +288,26 @@ def execute_workflow_node(node):
                 actor=run.actor,
                 workflow_node_run=node,
             )
+        authorization = run.input_snapshot.get("execution_authorization") or {}
+        if (
+            run.automation_plan_revision_id is not None
+            and authorization.get("source") == "plan_start"
+            and AutomationApproval.Action.SEARCH_AND_PULL_RESUMES
+            in authorization.get("actions", [])
+            and authorization.get("actor_id") == run.actor_id
+        ):
+            task = start_plan_authorized_search_campaign(
+                campaign=campaign,
+                approval=approval,
+                actor=run.actor,
+            )
+            return WorkflowNodeRun.Status.RUNNING, {
+                "campaign_id": campaign.pk,
+                "approval_id": str(approval.pk),
+                "task_id": str(task.pk),
+                "resume_view_budget": approval.item_count,
+                "authorization": "plan_start",
+            }
         return WorkflowNodeRun.Status.WAITING_HUMAN, {
             "campaign_id": campaign.pk,
             "approval_id": str(approval.pk),
@@ -290,6 +362,20 @@ def execute_workflow_node(node):
         )
         approval.payload["workflow_node_run_id"] = node.pk
         approval.save(update_fields=["payload"])
+        if (
+            node.node_type == "request_resume"
+            and run.automation_plan_revision_id is not None
+            and (run.input_snapshot.get("execution_authorization") or {}).get("source") == "plan_start"
+        ):
+            batch = materialize_plan_start_authorized_resume_request(
+                approval=approval,
+                actor=run.actor,
+            )
+            return WorkflowNodeRun.Status.RUNNING, {
+                "approval_id": str(approval.pk),
+                "batch_id": str(batch.pk),
+                "authorization": "plan_start",
+            }
         return WorkflowNodeRun.Status.WAITING_HUMAN, {"approval_id": str(approval.pk)}
 
     if node.node_type in {"wait_reply", "wait_resume"}:
@@ -324,7 +410,10 @@ def resume_workflow_for_task(task):
     node = WorkflowNodeRun.objects.select_for_update().select_related("run").get(
         pk=task.workflow_node_run_id
     )
-    status, output = _task_outcome(task)
+    if task.action == RpaTask.Action.SEARCH_AND_PULL_RESUMES:
+        status, output = execute_workflow_node(node)
+    else:
+        status, output = _task_outcome(task)
     node.status = status
     node.output = output
     node.error_code = task.error_code

@@ -23,6 +23,17 @@ NODE_TERMINAL_STATES = SUCCESS_STATES | {WorkflowNodeRun.Status.FAILED, Workflow
 RUN_TERMINAL_STATES = {WorkflowRun.Status.SUCCEEDED, WorkflowRun.Status.FAILED, WorkflowRun.Status.CANCELLED}
 
 
+def _authorized_by_plan_start(run, node):
+    return (
+        run.automation_plan_revision_id is not None
+        and node.node_type == "human_approval"
+        and node.config_snapshot.get("authorization") == "plan_start"
+        and node.config_snapshot.get("action") == "request_resume"
+        and (run.input_snapshot.get("execution_authorization") or {}).get("source") == "plan_start"
+        and "request_resume" in (run.input_snapshot.get("execution_authorization") or {}).get("actions", [])
+    )
+
+
 class WorkflowConflict(APIException):
     status_code = 409
     default_code = "workflow_state_conflict"
@@ -198,10 +209,27 @@ def advance_run(run, *, executor=None):
             if node.status != WorkflowNodeRun.Status.READY:
                 continue
             if node.node_type in HUMAN_NODE_TYPES:
-                node.status = WorkflowNodeRun.Status.WAITING_HUMAN
                 node.started_at = node.started_at or timezone.now()
-                node.save(update_fields=["status", "started_at", "updated_at"])
-                _event(locked, "node.waiting_human", f"节点 {key} 等待人工决定", node=node)
+                if _authorized_by_plan_start(locked, node):
+                    node.status = WorkflowNodeRun.Status.SUCCEEDED
+                    node.output = {
+                        "approved": True,
+                        "authorization": "plan_start",
+                        "actor_id": locked.actor_id,
+                    }
+                    node.completed_at = timezone.now()
+                    node.save(update_fields=["status", "output", "started_at", "completed_at", "updated_at"])
+                    _event(
+                        locked,
+                        "node.authorized_at_plan_start",
+                        f"节点 {key} 已复用开始执行授权",
+                        node=node,
+                        data=node.output,
+                    )
+                else:
+                    node.status = WorkflowNodeRun.Status.WAITING_HUMAN
+                    node.save(update_fields=["status", "started_at", "updated_at"])
+                    _event(locked, "node.waiting_human", f"节点 {key} 等待人工决定", node=node)
                 changed = True
                 continue
             if executor is not None:

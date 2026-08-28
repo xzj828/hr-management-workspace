@@ -22,6 +22,7 @@ const run = (overrides = {}) => ({
   node_runs: [
     { id: 1, node_key: 'search', status: 'succeeded' },
     { id: 2, node_key: 'hr-review', status: 'waiting_human' },
+    { id: 3, node_key: 'unused-branch', status: 'skipped' },
   ],
   events: [{ id: 101, message: '已进入人工确认节点', created_at: '2026-08-25T08:05:00Z' }],
   ...overrides,
@@ -29,7 +30,7 @@ const run = (overrides = {}) => ({
 
 const campaign = {
   id: 9, name: '产品经理主动寻访', job: 1, workflow_run: 'run-1000', source: 'search', status: 'running',
-  pulled_resume_count: 3, target_resume_count: 8, scanned_count: 12, max_scan_count: 40,
+  pulled_resume_count: 3, qualified_resume_count: 3, target_resume_count: 8, scanned_count: 12, max_scan_count: 40,
   created_at: '2026-08-25T08:00:00Z', updated_at: '2026-08-25T08:05:00Z',
 }
 
@@ -128,6 +129,7 @@ function mockCompletePayload() {
 
 describe('RecruitmentResultsView', () => {
   beforeEach(() => {
+    document.body.innerHTML = ''
     window.history.replaceState({}, '', '/recruitment/results')
     apiMock.mockReset()
     installContext()
@@ -159,6 +161,7 @@ describe('RecruitmentResultsView', () => {
 
     await wrapper.get('[data-test="results-tab-tasks"]').trigger('click')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('主动寻访标准方案')
+    expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('2/3')
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('3/8')
     expect(wrapper.get('[data-test="manage-run-run-1000"]').text()).toBe('处理待办')
     expect(wrapper.get('[data-test="tasks-view"]').text()).not.toContain('hr-review')
@@ -168,6 +171,11 @@ describe('RecruitmentResultsView', () => {
     expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('林溪')
     expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('86 分')
     expect(wrapper.get('[data-test="candidates-view"]').text()).toContain('AI 建议通过')
+    expect(wrapper.get('[data-test="candidates-view"]').text()).not.toContain('高级产品经理')
+    expect(wrapper.get('[data-test="candidates-view"]').text()).not.toContain('原件与报告已就绪')
+    expect(wrapper.get('.candidate-rank svg').attributes('width')).toBe('18')
+    expect(wrapper.get('.candidate-action-heading').text()).toBe('操作')
+    expect(wrapper.findAll('.candidate-action-cell > div > button')).toHaveLength(2)
 
     await wrapper.get('[data-test="results-tab-pipeline"]').trigger('click')
     expect(wrapper.get('[data-test="pipeline-view"]').text()).toContain('招聘阶段分布')
@@ -291,6 +299,8 @@ describe('RecruitmentResultsView', () => {
     const { wrapper } = await mountView({ job: '1', view: 'tasks' })
     await flushPromises()
 
+    expect(wrapper.get('.results-center').classes()).toContain('results-center--business-results-typography')
+
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('当前任务')
     expect(wrapper.get('[data-test="tasks-view"]').text()).not.toContain('已删除任务')
     const taskLink = wrapper.findAllComponents(RouterLinkStub).find((link) => link.text().includes('查看任务'))
@@ -300,6 +310,15 @@ describe('RecruitmentResultsView', () => {
     await flushPromises()
     expect(wrapper.get('[data-test="tasks-view"]').text()).toContain('已删除任务')
     expect(wrapper.get('[data-test="tasks-view"]').text()).not.toContain('当前任务')
+  })
+
+  it('does not apply business-result typography when embedded in a recruitment task', async () => {
+    mockCompletePayload()
+    const { wrapper } = await mountView()
+    await wrapper.setProps({ embedded: true })
+    await flushPromises()
+
+    expect(wrapper.get('.results-center').classes()).not.toContain('results-center--business-results-typography')
   })
 
   it('recovers the job from a run-only legacy URL', async () => {
@@ -424,6 +443,84 @@ describe('RecruitmentResultsView', () => {
     expect(wrapper.find('[data-test="resolve-attention-7"]').exists()).toBe(false)
   })
 
+  it('bulk clears human attentions from the current list after confirmation', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    let cleared = false
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/human-attentions/bulk-archive/') {
+        cleared = true
+        return Promise.resolve({ archived_count: 1, archived_ids: [7], skipped_count: 0 })
+      }
+      if (path === 'recruitment/human-attentions/' && cleared) return Promise.resolve({ results: [] })
+      return baseImplementation(path, options)
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'attention' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="clear-attentions"]').trigger('click')
+    expect(document.body.textContent).toContain('一键清除人工事项')
+    document.body.querySelector('[data-test="confirm-archive"]').click()
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/human-attentions/bulk-archive/', {
+      method: 'POST', body: JSON.stringify({ attention_ids: [7] }),
+    })
+    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('已清除 1 项人工事项')
+    expect(wrapper.get('[data-test="attention-view"]').text()).toContain('当前范围没有需要人工处理的事项')
+  })
+
+  it('bulk clears terminal task results while reporting protected active tasks', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/workflow-runs/bulk-archive/') {
+        return Promise.resolve({ archived_count: 0, archived_ids: [], skipped_count: 1 })
+      }
+      return baseImplementation(path, options)
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'tasks' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="clear-tasks"]').trigger('click')
+    document.body.querySelector('[data-test="confirm-archive"]').click()
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/workflow-runs/bulk-archive/', {
+      method: 'POST', body: JSON.stringify({ run_ids: ['run-1000'] }),
+    })
+    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('1 个运行中或受保护任务已保留')
+  })
+
+  it('bulk clears saved resume files and refreshes the ranking', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    let cleared = false
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/resumes/bulk-purge/') {
+        cleared = true
+        return Promise.resolve({ purged_count: 1, purged_ids: [31], released_bytes: 4096, failed_count: 0, failures: [] })
+      }
+      if (path === 'recruitment/screening-results/?job=1' && cleared) {
+        return Promise.resolve(screeningPayload([{ ...screeningRow, resume: null, structure: null, assessment: null }]))
+      }
+      return baseImplementation(path, options)
+    })
+    const { wrapper } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="clear-resumes"]').trigger('click')
+    expect(document.body.textContent).toContain('物理删除当前岗位所有已保存的简历原文件')
+    document.body.querySelector('[data-test="confirm-archive"]').click()
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/resumes/bulk-purge/', {
+      method: 'POST', body: JSON.stringify({ resume_ids: [31] }),
+    })
+    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('释放 4.0 KB 本地空间')
+    expect(wrapper.get('tr[data-application-id="11"]').text()).toContain('暂无简历')
+  })
+
   it('restores application, candidate, account, and resume-filter context from a legacy deep link', async () => {
     mockCompletePayload()
     const { wrapper, router } = await mountView({
@@ -527,11 +624,11 @@ describe('RecruitmentResultsView', () => {
     ]))
     expect(router.currentRoute.value.query.application).toBe('11')
     expect(router.currentRoute.value.query.resume).toBe('31')
-    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('林溪')
-    await wrapper.get('[data-test="tab-structured"]').trigger('click')
-    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('用户研究')
-    await wrapper.get('[data-test="tab-evidence"]').trigger('click')
-    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('有完整研究项目')
+    const evidenceCard = wrapper.get('[role="dialog"][aria-label="证据详情"]')
+    expect(evidenceCard.text()).toContain('林溪')
+    expect(evidenceCard.text()).toContain('用户研究')
+    expect(evidenceCard.text()).toContain('有完整研究项目')
+    expect(evidenceCard.find('nav').exists()).toBe(false)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
     expect(router.currentRoute.value.query.application).toBeUndefined()
@@ -541,7 +638,63 @@ describe('RecruitmentResultsView', () => {
     await flushPromises()
     router.back()
     await flushPromises()
-    expect(wrapper.find('[role="dialog"][aria-label="简历智能分析"]').exists()).toBe(false)
+    expect(wrapper.find('[role="dialog"][aria-label="证据详情"]').exists()).toBe(false)
+  })
+
+  it('confirms resume file deletion, refreshes results, and reports released space', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    let purged = false
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/resumes/31/purge/') {
+        purged = true
+        return Promise.resolve({ released_bytes: 2048 })
+      }
+      if (path === 'recruitment/screening-results/?job=1' && purged) {
+        return Promise.resolve(screeningPayload([{ ...screeningRow, resume: null, structure: null, assessment: null }]))
+      }
+      return baseImplementation(path, options)
+    })
+    const { wrapper, router } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="view-candidate-11"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="purge-resume-11"]').trigger('click')
+
+    expect(wrapper.find('[role="dialog"][aria-label="证据详情"]').exists()).toBe(false)
+    expect(document.body.textContent).toContain('物理删除本地原文件')
+    expect(document.body.textContent).toContain('历史结构化结果、评分、HR 结论和审计记录仍会保留')
+
+    document.body.querySelector('[data-test="confirm-archive"]').click()
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/resumes/31/purge/', { method: 'POST' })
+    expect(router.currentRoute.value.query.resume).toBeUndefined()
+    expect(document.body.querySelector('[data-test="confirm-archive"]')).toBeNull()
+    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('释放 2.0 KB 本地空间')
+    expect(wrapper.get('tr[data-application-id="11"]').text()).toContain('暂无简历')
+  })
+
+  it('keeps the resume deletion confirmation open when the API rejects the purge', async () => {
+    mockCompletePayload()
+    const baseImplementation = apiMock.getMockImplementation()
+    apiMock.mockImplementation((path, options) => {
+      if (path === 'recruitment/resumes/31/purge/') return Promise.reject(new Error('简历正在处理中，请稍后重试'))
+      return baseImplementation(path, options)
+    })
+    const { wrapper, router } = await mountView({ job: '1', view: 'candidates' })
+    await flushPromises()
+
+    await wrapper.get('[data-test="view-candidate-11"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="purge-resume-11"]').trigger('click')
+    document.body.querySelector('[data-test="confirm-archive"]').click()
+    await flushPromises()
+
+    expect(document.body.querySelector('[role="alert"]').textContent).toContain('简历正在处理中')
+    expect(document.body.querySelector('[data-test="confirm-archive"]')).not.toBeNull()
+    expect(router.currentRoute.value.query.resume).toBe('31')
   })
 
   it('submits only eligible selected candidates with one shared greeting snapshot', async () => {
@@ -702,14 +855,13 @@ describe('RecruitmentResultsView', () => {
     await Promise.resolve()
     await wrapper.get('[data-test="view-candidate-12"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[data-test="tab-structured"]').trigger('click')
-    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('快速切换后的新详情')
+    expect(wrapper.get('[role="dialog"][aria-label="证据详情"]').text()).toContain('快速切换后的新详情')
 
     resolveOldStructure({ results: [{ ...structure, data: { ...structure.data, summary: '不应覆盖的新旧冲突详情' } }] })
     resolveOldAssessments({ results: [assessment] })
     resolveOldTasks({ results: [] })
     await flushPromises()
-    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).toContain('快速切换后的新详情')
-    expect(wrapper.get('[role="dialog"][aria-label="简历智能分析"]').text()).not.toContain('不应覆盖的新旧冲突详情')
+    expect(wrapper.get('[role="dialog"][aria-label="证据详情"]').text()).toContain('快速切换后的新详情')
+    expect(wrapper.get('[role="dialog"][aria-label="证据详情"]').text()).not.toContain('不应覆盖的新旧冲突详情')
   })
 })

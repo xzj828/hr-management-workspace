@@ -3,12 +3,12 @@ import { computed, inject, onUnmounted, ref, watch } from 'vue'
 import { routeLocationKey } from 'vue-router'
 import { api, listItems } from '@/api'
 import { useRecruitmentContextStore } from '@/stores/recruitmentContext'
-import RecruitmentDetailDrawer from '@/components/RecruitmentDetailDrawer.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { formatFileSize, formatRecruitmentDate } from '@/recruitment'
 import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import JobStandardDrawer from '@/components/JobStandardDrawer.vue'
 import ResumeIntelligencePanel from '@/components/ResumeIntelligencePanel.vue'
+import ResumeDocumentViewer from '@/components/ResumeDocumentViewer.vue'
 
 const context = useRecruitmentContextStore()
 const route = inject(routeLocationKey, { query: {} })
@@ -34,7 +34,6 @@ const scoring = ref(false)
 const wordInput = ref(null)
 const wordCategory = ref('persona')
 const wordUploading = ref(false)
-const selectedVersions = computed(() => selected.value ? resumes.value.filter((item) => item.candidate === selected.value.candidate || item.candidate_name === selected.value.candidate_name) : [])
 const fileStatusLabel = (resume) => resume.file_available ? '已入库' : '文件不可用'
 const currentStandard = computed(() => standards.value.find((item) => item.status === 'draft') || standards.value.find((item) => item.status === 'published') || standards.value[0] || null)
 let loadSequence = 0
@@ -346,28 +345,7 @@ async function toggleArchiveView() {
       <div v-if="!showArchived && selectedResumeIds.length" class="resume-batch-bar" data-test="resume-batch-bar"><span>已选择 <strong>{{ selectedResumeIds.length }}</strong> 份简历</span><small>使用当前已启用的 V{{ currentStandard?.version || '—' }} 标准</small><button class="ghost-button" data-test="clear-resume-selection" @click="selectedResumeIds = []">清除</button><button class="primary-button" data-test="batch-score" :disabled="scoring || currentStandard?.status !== 'published'" @click="scoreSelected">{{ scoring ? '提交中…' : '批量评分' }}</button></div>
     </Transition>
 
-    <RecruitmentDetailDrawer v-if="selected" :title="`${selected.candidate_name}的简历`" @close="selected = null">
-      <dl class="recruitment-detail-grid recruitment-detail-grid--resume">
-        <div><dt>应聘职位</dt><dd>{{ selected.job_title || '—' }}</dd></div>
-        <div><dt>文件大小</dt><dd>{{ formatFileSize(selected.file_size) }}</dd></div>
-        <div><dt>数据来源</dt><dd>{{ selected.source_label }}</dd></div>
-        <div><dt>文件状态</dt><dd>{{ fileStatusLabel(selected) }}</dd></div>
-        <div><dt>版本</dt><dd>V{{ selected.version || 1 }}</dd></div>
-        <div><dt>文件指纹</dt><dd class="resume-hash">{{ selected.sha256 ? selected.sha256.slice(0, 12) : '历史文件' }}</dd></div>
-      </dl>
-      <section v-if="selectedVersions.length > 1" class="resume-version-list"><span>历史版本</span><button v-for="version in selectedVersions" :key="version.id" type="button" :class="{ active: version.id === selected.id }" @click="selected = version"><strong>V{{ version.version || 1 }}</strong><small>{{ formatRecruitmentDate(version.acquired_at || version.updated_at) }}</small></button></section>
-      <img v-if="selected.file_available && selected.content_type === 'image/png'" class="recruitment-image-preview" :src="selected.preview_url" :alt="`${selected.candidate_name}的在线简历`" />
-      <iframe
-        v-else-if="selected.file_available"
-        class="recruitment-pdf-preview"
-        :src="selected.preview_url"
-        :title="`${selected.candidate_name}的简历`"
-      ></iframe>
-      <div v-else class="recruitment-file-unavailable">简历文件不可用</div>
-      <template #footer>
-        <a class="secondary-button recruitment-download-link button-with-icon" :href="selected.download_url"><AppIcon name="download" :size="16" /><span>下载{{ selected.content_type === 'image/png' ? '在线简历' : ' PDF' }}</span></a>
-      </template>
-    </RecruitmentDetailDrawer>
+    <ResumeDocumentViewer v-if="selected" :resume="selected" :candidate-name="selected.candidate_name" @close="selected = null" />
     <ArchiveConfirmModal v-if="lifecycleTarget" title="归档简历" :name="lifecycleTarget.original_name" description="简历会从当前简历中心移除，文件与访问审计暂时保留，可从归档记录恢复。" action-label="确认归档" :saving="lifecycleSaving" @close="lifecycleTarget = null" @confirm="archiveResume" />
     <JobStandardDrawer v-if="standardDrawerOpen" :job="currentJob" :standard="currentStandard" :documents="jobDocuments" @close="standardDrawerOpen = false" @saved="replaceStandard" @published="replaceStandard" @retry="generateStandard" />
     <ResumeIntelligencePanel v-if="intelligenceTarget" :resume="intelligenceTarget" :structure="structureFor(intelligenceTarget)" :assessment="assessmentFor(intelligenceTarget)" :assessments="assessmentsFor(intelligenceTarget)" :tasks="tasksFor(intelligenceTarget)" @close="intelligenceTarget = null" @retry-structure="retryStructure(intelligenceTarget)" @score="scoreResumes([intelligenceTarget.id])" @rescore="rescore(intelligenceTarget)" />

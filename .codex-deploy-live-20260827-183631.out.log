@@ -1,0 +1,17 @@
+Operations to perform:
+  Apply all migrations: accounts, admin, attendance, auth, contenttypes, recruitment, sessions
+Running migrations:
+  No migrations to apply.
+
+0 static files copied to 'C:\Users\Administrator\Desktop\hr-management-workspace-master\backend\staticfiles', 205 unmodified, 549 post-processed.
+============================================================
+  XM HR is starting
+============================================================
+Web service: healthy
+RPA Worker: running
+AI Worker: running
+Local access: http://127.0.0.1:8000
+LAN access: http://172.25.16.1:8000
+LAN access: http://192.168.4.79:8000
+
+Keep this terminal open. Close it or press Ctrl+C to stop both services.

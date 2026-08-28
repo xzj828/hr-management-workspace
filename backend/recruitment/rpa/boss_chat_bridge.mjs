@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import { isTransientDocumentError } from "./boss_chat_retry.mjs";
 
 const CHAT_URL = "https://www.zhipin.com/web/chat/index";
 const MIN_PORT = 53470;
@@ -172,7 +173,7 @@ async function selectScope(page, jobTitle, unread) {
         return true;
       }, filterLabel);
     } catch (error) {
-      if (!/detached|context|navigation/i.test(String(error)) || attempt === 4) throw error;
+      if (!isTransientDocumentError(error) || attempt === 4) throw error;
     }
     if (!filterApplied) await new Promise((resolve) => setTimeout(resolve, 300));
   }
@@ -228,6 +229,25 @@ async function conversationRows(page) {
       };
     }).filter((row) => row.external_id && row.name);
   });
+}
+
+async function listConversations(page, browser, request) {
+  let currentPage = page;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      if (request.job_title) {
+        await selectScope(currentPage, request.job_title, Boolean(request.unread));
+      }
+      const rows = await conversationRows(currentPage);
+      assertUniqueIds(rows);
+      return rows;
+    } catch (error) {
+      if (!isTransientDocumentError(error) || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      currentPage = await chatPage(browser);
+    }
+  }
+  throw new Error("BOSS 沟通列表读取失败");
 }
 
 async function currentMessages(page) {
@@ -308,8 +328,20 @@ async function openConversation(page, request) {
     && current.detail_name === target.name
     && current.editor_ready;
   if (!alreadyOpen) {
-    const handles = await page.$$(".geek-item");
-    await handles[target.index - 1].click();
+    // The BOSS SPA can replace the list DOM immediately after a scope change.
+    // Re-query by the frozen identity inside one page evaluation instead of
+    // retaining an ElementHandle that may become stale before `.click()` runs.
+    const clicked = await page.evaluate(({ externalId: expectedId, jobTitle }) => {
+      const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
+      const matches = Array.from(document.querySelectorAll(".geek-item")).filter((element) => (
+        norm(element.getAttribute("data-id")) === expectedId
+        && norm(element.querySelector(".source-job")?.textContent) === jobTitle
+      ));
+      if (matches.length !== 1) return false;
+      matches[0].click();
+      return true;
+    }, { externalId, jobTitle: expectedJob });
+    if (!clicked) throw new Error("点击前无法唯一定位批准的 BOSS 会话");
   }
   await page.waitForFunction(
     `(target) => {
@@ -425,6 +457,10 @@ async function sendText(page, request) {
 
 async function requestResume(page, request) {
   await verifySelected(page, request);
+  const defaultRequestMessage = "方便发一份你的简历过来吗？";
+  const previousDefaultMessageCount = (await currentMessages(page)).filter((message) => (
+    message.direction === "hr" && normalize(message.content) === defaultRequestMessage
+  )).length;
   const modalAlreadyOpen = await page.evaluate(() => {
     const visible = (element) => {
       if (!(element instanceof HTMLElement)) return false;
@@ -470,25 +506,6 @@ async function requestResume(page, request) {
     }`,
     { timeout: 12_000 },
   );
-  const tips = await page.$$(".exchange-tooltip");
-  let confirmButton = null;
-  for (const tip of tips) {
-    const matches = await tip.evaluate((element) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
-      return style.display !== "none" && style.visibility !== "hidden"
-        && rect.width > 0 && rect.height > 0 && norm(element.textContent).includes("索取简历");
-    });
-    if (!matches) continue;
-    const candidates = await tip.$$(".btn-box .boss-btn-primary");
-    if (candidates.length === 1) {
-      const candidate = candidates[0];
-      confirmButton = candidate;
-      break;
-    }
-  }
-  if (!confirmButton) throw new Error("BOSS 求简历确认弹窗未能确认");
   const responseTasks = [];
   const onResponse = (response) => {
     if (response.request().method() !== "POST") return;
@@ -522,8 +539,42 @@ async function requestResume(page, request) {
     });
     window.__ximingResumeObserver.observe(document.body, { childList: true, subtree: true });
   });
-  await confirmButton.click();
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const confirmed = await page.evaluate(() => {
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
+    const tips = Array.from(document.querySelectorAll(".exchange-tooltip"))
+      .filter((tip) => visible(tip) && norm(tip.textContent).includes("索取简历"));
+    if (tips.length !== 1) return false;
+    const primary = tips[0].querySelector(
+      ".btn-box .boss-btn-primary.boss-btn, .btn-box .boss-btn-primary",
+    );
+    if (!(primary instanceof HTMLElement) || !norm(primary.textContent).includes("确定")) return false;
+    primary.scrollIntoView({ block: "center", inline: "nearest" });
+    primary.click();
+    return true;
+  });
+  if (!confirmed) {
+    page.off("response", onResponse);
+    throw new Error("点击前无法唯一定位 BOSS 求简历确认按钮");
+  }
+  let outgoingReceipt = null;
+  try {
+    outgoingReceipt = await waitForOutgoing(page, {
+      ...request,
+      message: defaultRequestMessage,
+      previous_count: previousDefaultMessageCount,
+    });
+  } catch {
+    // Some BOSS builds confirm through a native response or a success toast
+    // without rendering the default message immediately. Those independent
+    // acknowledgement paths are evaluated below.
+  }
   page.off("response", onResponse);
   const observedResponses = await Promise.all(responseTasks);
   const signals = await page.evaluate(() => {
@@ -539,7 +590,7 @@ async function requestResume(page, request) {
   if (failedResponse) throw new Error("BOSS 求简历接口返回失败");
   const acknowledgement = nativeResponses.find((item) =>
     item.status >= 200 && item.status < 300 && (item.code === null || [0, "0"].includes(item.code)));
-  if (!positiveSignal && !acknowledgement) {
+  if (!positiveSignal && !acknowledgement && !outgoingReceipt) {
     const observed = observedResponses.map((item) => `${item.path}:${item.status}`).join(",") || "none";
     throw new Error(`BOSS 求简历未返回可验证回执（POST=${observed}）`);
   }
@@ -563,7 +614,7 @@ async function requestResume(page, request) {
     resume_requested: true,
     request_acknowledged: true,
     response_status: acknowledgement?.status ?? 0,
-    response_path: acknowledgement?.path ?? "ui-signal",
+    response_path: acknowledgement?.path ?? (outgoingReceipt ? "chat-dom" : "ui-signal"),
     verified: true,
   };
 }
@@ -601,43 +652,62 @@ async function downloadAttachments(page, browser, request) {
   const directory = path.join(outputRoot, `bridge-${randomUUID()}`);
   await mkdir(directory, { recursive: true });
   const session = await page.createCDPSession();
-  await session.send("Browser.setDownloadBehavior", {
-    behavior: "allow",
-    downloadPath: directory,
-    eventsEnabled: true,
-  });
-  const visibleList = await page.evaluateHandle(() => {
-    const lists = Array.from(document.querySelectorAll(".chat-message-list")).filter((element) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+  try {
+    await session.send("Browser.setDownloadBehavior", {
+      behavior: "allow",
+      downloadPath: directory,
+      eventsEnabled: true,
     });
-    return lists[lists.length - 1] ?? null;
-  });
-  const visibleListElement = visibleList.asElement();
-  if (!visibleListElement) throw new Error("未找到当前 BOSS 聊天消息区");
-  const cards = await visibleListElement.$$(
-    ".message-item.item-friend .resume-icon, .message-item .item-friend .resume-icon",
-  );
-  const downloaded = [];
-  for (const card of cards.slice(0, 10)) {
-    const messageItem = await card.evaluateHandle((element) => element.closest(".message-item"));
-    const button = await messageItem.asElement()?.$(".message-card-buttons .card-btn");
-    if (!button) continue;
-    const previousNames = new Set(await readdir(directory));
-    await button.click();
-    try {
-      const filename = await waitForDownloadedPdf(directory, previousNames, 8_000);
-      const filePath = path.join(directory, filename);
-      const details = await stat(filePath);
-      downloaded.push({ path: filePath, filename: path.basename(filename), file_size: details.size });
-    } catch {
-      // A non-download card or an already unavailable attachment is skipped;
-      // the caller can continue polling for a later candidate response.
+    const cardCount = await page.evaluate(() => {
+      const lists = Array.from(document.querySelectorAll(".chat-message-list")).filter((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      });
+      const list = lists[lists.length - 1];
+      if (!list) return -1;
+      return list.querySelectorAll(
+        ".message-item.item-friend .resume-icon, .message-item .item-friend .resume-icon",
+      ).length;
+    });
+    if (cardCount < 0) throw new Error("未找到当前 BOSS 聊天消息区");
+    const downloaded = [];
+    for (let index = 0; index < Math.min(cardCount, 10); index += 1) {
+      const previousNames = new Set(await readdir(directory));
+      // Re-query the live message DOM for each click. BOSS may replace the
+      // whole chat list after a card action, invalidating retained handles.
+      const clicked = await page.evaluate((targetIndex) => {
+        const lists = Array.from(document.querySelectorAll(".chat-message-list")).filter((element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+        });
+        const list = lists[lists.length - 1];
+        if (!list) return false;
+        const cards = Array.from(list.querySelectorAll(
+          ".message-item.item-friend .resume-icon, .message-item .item-friend .resume-icon",
+        ));
+        const messageItem = cards[targetIndex]?.closest(".message-item");
+        const button = messageItem?.querySelector(".message-card-buttons .card-btn");
+        if (!(button instanceof HTMLElement)) return false;
+        button.click();
+        return true;
+      }, index);
+      if (!clicked) continue;
+      try {
+        const filename = await waitForDownloadedPdf(directory, previousNames, 8_000);
+        const filePath = path.join(directory, filename);
+        const details = await stat(filePath);
+        downloaded.push({ path: filePath, filename: path.basename(filename), file_size: details.size });
+      } catch {
+        // A non-download card or an already unavailable attachment is skipped;
+        // the caller can continue polling for a later candidate response.
+      }
     }
+    return downloaded;
+  } finally {
+    await session.detach().catch(() => {});
   }
-  await session.detach().catch(() => {});
-  return downloaded;
 }
 
 const CANDIDATE_SOURCES = {
@@ -648,6 +718,8 @@ const CANDIDATE_SOURCES = {
     cardSelector: ".candidate-card-wrap, .card-list .card-item, .geek-list .geek-card",
     nameSelector: ".name-wrap .name, .name",
     actionSelector: ".button-chat-wrap .btn.btn-greet",
+    previewSelector: ".name-wrap .name, .name",
+    stableIdAttributes: ["data-geekid", "data-geek"],
   },
   search: {
     pagePath: "/web/chat/search",
@@ -656,6 +728,12 @@ const CANDIDATE_SOURCES = {
     cardSelector: ".geek-info-card",
     nameSelector: ".name-label",
     actionSelector: ".btn-getcontact",
+    previewSelector: ".name-label",
+    // `data-lid` is only a transient list-render token and changes on every
+    // search. `data-expect` remains attached to the same candidate expectation
+    // across refreshed result sets, so it is the identity used for verification
+    // and the subsequent exact-card action.
+    stableIdAttributes: ["data-expect", "data-geekid", "data-geek", "data-lid"],
   },
   deep_search: {
     pagePath: "/web/chat/aiform",
@@ -664,6 +742,8 @@ const CANDIDATE_SOURCES = {
     cardSelector: ".geeks-box .geek-card-item, .geek-card-list .geek-card-item",
     nameSelector: ".geek-name",
     actionSelector: ".geek-chat .btn-ai-v2, .geek-chat span[class*='btn-ai']",
+    previewSelector: ".geek-name",
+    stableIdAttributes: ["data-geekid", "data-geek", "data-lid"],
   },
 };
 
@@ -693,10 +773,12 @@ async function candidateRowsFromContext(context, config) {
   return context.$$eval(config.cardSelector, (cards, selectors) => {
     const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
     const stableId = (card) => {
-      const preferred = card.querySelector(".card-inner[data-geekid], .card-inner[data-geek], [data-geekid], [data-geek]");
-      const holder = preferred || card;
-      return norm(holder.getAttribute("data-geekid")
-        || holder.getAttribute("data-geek"));
+      for (const attribute of selectors.stableIds) {
+        const holder = card.hasAttribute(attribute) ? card : card.querySelector(`[${attribute}]`);
+        const value = norm(holder?.getAttribute(attribute));
+        if (value) return value;
+      }
+      return "";
     };
     return cards.map((card, index) => {
       const action = card.querySelector(selectors.action);
@@ -710,7 +792,96 @@ async function candidateRowsFromContext(context, config) {
           || action.getAttribute("disabled") !== null,
       };
     }).filter((row) => row.display_name);
-  }, { name: config.nameSelector, action: config.actionSelector });
+  }, {
+    name: config.nameSelector,
+    action: config.actionSelector,
+    stableIds: config.stableIdAttributes,
+  });
+}
+
+function candidateSourceForPage(page) {
+  const currentPath = new URL(page.url()).pathname.replace(/\/+$/, "");
+  const matches = Object.entries(CANDIDATE_SOURCES)
+    .filter(([, config]) => config.pagePath === currentPath);
+  if (matches.length !== 1) {
+    throw new Error("当前不在可查看在线简历的候选人列表页");
+  }
+  return matches[0][0];
+}
+
+async function loadStablePreviewTools(packageRoot) {
+  const module = async (relativePath) => import(pathToFileURL(path.join(packageRoot, relativePath)).href);
+  const [browserTools, popupTools, captureTools, configTools] = await Promise.all([
+    module("dist/browser/index.js"),
+    module("dist/common/boss_paywall_popup.js"),
+    module("dist/common/c_resume_capture.js"),
+    module("dist/config.js"),
+  ]);
+  return { ...browserTools, ...popupTools, ...captureTools, ...configTools };
+}
+
+async function previewCandidate(page, request, packageRoot) {
+  const externalId = requireText(request.external_id, "候选人平台稳定 ID", 160);
+  const source = candidateSourceForPage(page);
+  const { config, context } = await candidateContext(page, { ...request, source });
+  const before = await candidateRowsFromContext(context, config);
+  const matches = before.filter((row) => row.external_id === externalId);
+  if (matches.length !== 1) throw new Error("刷新后无法按稳定 ID 唯一确认候选人");
+
+  const tools = await loadStablePreviewTools(packageRoot);
+  const savedOriginal = await tools.snapshotBossPageViewport(page);
+  const clicked = await context.evaluate((expectedId, selectors) => {
+    const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
+    const stableId = (card) => {
+      for (const attribute of selectors.stableIds) {
+        const holder = card.hasAttribute(attribute) ? card : card.querySelector(`[${attribute}]`);
+        const value = norm(holder?.getAttribute(attribute));
+        if (value) return value;
+      }
+      return "";
+    };
+    const cards = Array.from(document.querySelectorAll(selectors.card));
+    const exact = cards.filter((card) => stableId(card) === expectedId);
+    if (exact.length !== 1) return false;
+    const target = exact[0].querySelector(selectors.preview);
+    if (!(target instanceof HTMLElement)) return false;
+    target.scrollIntoView({ block: "center", inline: "nearest" });
+    target.click();
+    return true;
+  }, externalId, {
+    card: config.cardSelector,
+    preview: config.previewSelector,
+    stableIds: config.stableIdAttributes,
+  });
+  if (!clicked) throw new Error("稳定 ID 对应候选人的在线简历入口不可用");
+
+  try {
+    const outcome = await tools.waitForCResumeIframeOrPaywall(page, 15_000);
+    if (outcome !== "iframe") {
+      const paywall = await tools.describeBossPaywallPopupIfPresent(page);
+      await tools.closeBossPaywallPopupIfPresent(page);
+      if (paywall) throw new Error(paywall);
+      throw new Error("点击后未出现在线简历 iframe（c-resume）");
+    }
+    const ready = await tools.waitForVisibleCResumeIframeReady(page);
+    if (!ready) throw new Error("在线简历 iframe 已出现，但内容未渲染完成");
+    tools.ensureAppDataLayout();
+    const absPath = path.join(tools.RESUME_SCREENSHOTS_DIR, `preview-stable-${randomUUID()}.png`);
+    const captured = await tools.captureCResumeIframeToFile(page, savedOriginal, absPath);
+    if (!captured) throw new Error("在线简历 iframe 截图失败");
+    return {
+      output: `简历预览截图：${absPath}`,
+      receipt: {
+        verified: true,
+        source,
+        expected_external_id: externalId,
+        observed_external_id: externalId,
+      },
+    };
+  } catch (error) {
+    await tools.closeCResumePanel(page);
+    throw error;
+  }
 }
 
 async function listCandidateRows(page, request) {
@@ -745,10 +916,12 @@ async function greetCandidate(page, request) {
   const clicked = await context.evaluate((expected, selectors) => {
     const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
     const stableId = (card) => {
-      const preferred = card.querySelector(".card-inner[data-geekid], .card-inner[data-geek], [data-geekid], [data-geek]");
-      const holder = preferred || card;
-      return norm(holder.getAttribute("data-geekid")
-        || holder.getAttribute("data-geek"));
+      for (const attribute of selectors.stableIds) {
+        const holder = card.hasAttribute(attribute) ? card : card.querySelector(`[${attribute}]`);
+        const value = norm(holder?.getAttribute(attribute));
+        if (value) return value;
+      }
+      return "";
     };
     const cards = Array.from(document.querySelectorAll(selectors.card));
     const matches = cards.filter((card) => stableId(card) === expected.externalId
@@ -767,6 +940,7 @@ async function greetCandidate(page, request) {
     card: config.cardSelector,
     name: config.nameSelector,
     action: config.actionSelector,
+    stableIds: config.stableIdAttributes,
   });
   if (!clicked) {
     page.off("response", onResponse);
@@ -796,17 +970,16 @@ async function greetCandidate(page, request) {
   };
 }
 
-async function execute(page, browser, request) {
+async function execute(page, browser, request, packageRoot) {
   switch (request.operation) {
     case "candidate_list":
       return { rows: await listCandidateRows(page, request) };
     case "greet_candidate":
       return { receipt: await greetCandidate(page, request) };
+    case "preview_candidate":
+      return await previewCandidate(page, request, packageRoot);
     case "list": {
-      if (request.job_title) await selectScope(page, request.job_title, Boolean(request.unread));
-      const rows = await conversationRows(page);
-      assertUniqueIds(rows);
-      return { rows };
+      return { rows: await listConversations(page, browser, request) };
     }
     case "open":
       return { conversation: await openConversation(page, request) };
@@ -855,10 +1028,10 @@ try {
     process.stdout.write(JSON.stringify({ ok: true, connected: true }));
     process.exitCode = 0;
   } else {
-    const page = ["candidate_list", "greet_candidate"].includes(request.operation)
+    const page = ["candidate_list", "greet_candidate", "preview_candidate"].includes(request.operation)
       ? await existingBossPage(browser)
       : await chatPage(browser);
-    const result = await execute(page, browser, request);
+    const result = await execute(page, browser, request, packageRoot);
     process.stdout.write(JSON.stringify({ ok: true, ...result }));
   }
 } catch (error) {

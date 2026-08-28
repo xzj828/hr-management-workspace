@@ -3,14 +3,20 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api, listItems } from '@/api'
 import AppIcon from '@/components/AppIcon.vue'
+import ArchiveConfirmModal from '@/components/ArchiveConfirmModal.vue'
 import RecruitmentResultsNavigation from '@/components/RecruitmentResultsNavigation.vue'
+import RecruitmentTaskExecutionModal from '@/components/RecruitmentTaskExecutionModal.vue'
 
-const plans = ref([])
+const tasks = ref([])
 const loading = ref(true)
 const loadError = ref('')
 const search = ref('')
 const stateFilter = ref('all')
 const kindFilter = ref('all')
+const archiveTarget = ref(null)
+const archiveBusyId = ref('')
+const archiveError = ref('')
+const selectedTask = ref(null)
 let loadSequence = 0
 let pollTimer = null
 let componentAlive = true
@@ -19,21 +25,21 @@ let pollInFlight = false
 const activeStates = new Set(['starting', 'running', 'pausing', 'stopping'])
 const terminalStates = new Set(['stopped', 'failed', 'completed'])
 
-function planState(plan, { preserveArchived = true } = {}) {
-  if (preserveArchived && plan?.archived_at) return 'archived'
-  const value = String(plan?.effective_state || plan?.actual_state || plan?.current_run?.status || plan?.desired_state || '')
+function taskState(task, { preserveArchived = true } = {}) {
+  if (preserveArchived && task?.archived_at) return 'archived'
+  const value = String(task?.automation_plan_effective_state || task?.status || '')
   return { queued: 'starting', pending: 'starting', succeeded: 'completed', cancelled: 'stopped' }[value] || value || 'stopped'
 }
 
-function stateLabel(plan) {
+function stateLabel(task) {
   return {
     starting: '正在开启', running: '运行中', waiting_human: '等待人工', paused: '已暂停', pausing: '正在暂停',
     stopping: '正在停止', stopped: '已停止', failed: '运行失败', completed: '本轮完成', archived: '已删除',
-  }[planState(plan)] || '状态同步中'
+  }[taskState(task)] || '状态同步中'
 }
 
-function stateGroup(plan) {
-  const state = planState(plan, { preserveArchived: false })
+function stateGroup(task) {
+  const state = taskState(task, { preserveArchived: false })
   if (activeStates.has(state)) return 'active'
   if (state === 'waiting_human') return 'waiting'
   if (state === 'paused') return 'paused'
@@ -41,17 +47,21 @@ function stateGroup(plan) {
   return state
 }
 
-function kindLabel(plan) {
-  return plan?.kind === 'passive_resume' ? '被动咨询与简历获取' : '主动搜索并拉取简历'
+function canArchiveTask(task) {
+  return terminalStates.has(taskState(task, { preserveArchived: false }))
 }
 
-function revisionLabel(plan) {
-  const revision = plan?.current_revision?.revision
+function kindLabel(task) {
+  return task?.automation_plan_kind === 'passive_resume' ? '被动咨询与简历获取' : '主动搜索并拉取简历'
+}
+
+function revisionLabel(task) {
+  const revision = task?.automation_plan_revision_number
   return revision ? `方案 V${revision}` : '暂无方案版本'
 }
 
-function runLabel(plan) {
-  return plan?.current_run?.id ? `运行 #${String(plan.current_run.id).slice(0, 8)}` : '暂无运行编号'
+function runLabel(task) {
+  return task?.id ? `运行 #${String(task.id).slice(0, 8)}` : '暂无运行编号'
 }
 
 function formatDateTime(value) {
@@ -60,45 +70,41 @@ function formatDateTime(value) {
   return parsed.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-function taskTo(plan) {
-  return {
-    name: 'recruitment-task-detail',
-    params: { planId: String(plan.id) },
-    query: {
-      job: String(plan.job),
-      run: plan.current_run?.id ? String(plan.current_run.id) : undefined,
-      view: 'tasks',
-      status: plan.archived_at ? 'archived' : undefined,
-    },
-  }
+function openTask(task) {
+  if (archiveTarget.value) return
+  selectedTask.value = task
 }
 
-const sortedPlans = computed(() => [...plans.value].sort((left, right) => {
+function closeTask() {
+  selectedTask.value = null
+}
+
+const sortedTasks = computed(() => [...tasks.value].sort((left, right) => {
   const priority = { waiting: 0, active: 1, paused: 2, ended: 3 }
   const stateDelta = (priority[stateGroup(left)] ?? 4) - (priority[stateGroup(right)] ?? 4)
   return stateDelta || new Date(right.updated_at || 0).getTime() - new Date(left.updated_at || 0).getTime()
 }))
 
-const filteredPlans = computed(() => {
+const filteredTasks = computed(() => {
   const keyword = search.value.trim().toLocaleLowerCase('zh-CN')
-  return sortedPlans.value.filter((plan) => {
-    if (kindFilter.value !== 'all' && plan.kind !== kindFilter.value) return false
-    if (stateFilter.value !== 'all' && stateGroup(plan) !== stateFilter.value) return false
+  return sortedTasks.value.filter((task) => {
+    if (kindFilter.value !== 'all' && task.automation_plan_kind !== kindFilter.value) return false
+    if (stateFilter.value !== 'all' && stateGroup(task) !== stateFilter.value) return false
     if (!keyword) return true
-    return [plan.job_title, kindLabel(plan), revisionLabel(plan), runLabel(plan)]
+    return [task.job_title, kindLabel(task), revisionLabel(task), runLabel(task)]
       .some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(keyword))
   })
 })
 
-async function loadPlans({ silent = false } = {}) {
+async function loadTasks({ silent = false } = {}) {
   if (silent && pollInFlight) return
   const sequence = ++loadSequence
   if (!silent) loading.value = true
   if (silent) pollInFlight = true
   try {
-    const payload = await api('recruitment/automation-plans/')
+    const payload = await api('recruitment/workflow-runs/?automation_plan=1')
     if (!componentAlive || sequence !== loadSequence) return
-    plans.value = listItems(payload)
+    tasks.value = listItems(payload)
     loadError.value = ''
   } catch (error) {
     if (sequence === loadSequence) loadError.value = error.message || '招聘任务读取失败'
@@ -108,9 +114,38 @@ async function loadPlans({ silent = false } = {}) {
   }
 }
 
+function requestArchive(task) {
+  if (!canArchiveTask(task) || archiveBusyId.value) return
+  archiveTarget.value = task
+  archiveError.value = ''
+}
+
+function closeArchive() {
+  if (archiveBusyId.value) return
+  archiveTarget.value = null
+  archiveError.value = ''
+}
+
+async function archiveTask() {
+  const target = archiveTarget.value
+  if (!target?.id || archiveBusyId.value) return
+  archiveBusyId.value = String(target.id)
+  archiveError.value = ''
+  try {
+    await api(`recruitment/workflow-runs/${encodeURIComponent(target.id)}/archive/`, { method: 'POST' })
+    tasks.value = tasks.value.filter((task) => String(task.id) !== String(target.id))
+    archiveTarget.value = null
+  } catch (error) {
+    if (error.status === 409) await loadTasks({ silent: true })
+    archiveError.value = error.message || '任务删除失败，请刷新后重试'
+  } finally {
+    archiveBusyId.value = ''
+  }
+}
+
 onMounted(() => {
-  loadPlans()
-  pollTimer = globalThis.setInterval(() => loadPlans({ silent: true }), 5000)
+  loadTasks()
+  pollTimer = globalThis.setInterval(() => loadTasks({ silent: true }), 5000)
 })
 
 onUnmounted(() => {
@@ -137,43 +172,79 @@ onUnmounted(() => {
       </div>
 
       <div v-if="loading" class="tasks-state tasks-state--loading" data-test="tasks-loading" aria-live="polite"><span></span><span></span><span></span><p>正在同步招聘任务…</p></div>
-      <div v-else-if="loadError && !plans.length" class="tasks-state is-error" data-test="tasks-error" role="alert"><AppIcon name="alert-circle" :size="24" /><div><strong>招聘任务暂时无法加载</strong><p>{{ loadError }}</p></div><button type="button" @click="loadPlans()">重新加载</button></div>
+      <div v-else-if="loadError && !tasks.length" class="tasks-state is-error" data-test="tasks-error" role="alert"><AppIcon name="alert-circle" :size="24" /><div><strong>招聘任务暂时无法加载</strong><p>{{ loadError }}</p></div><button type="button" @click="loadTasks()">重新加载</button></div>
 
       <template v-else>
-        <p v-if="loadError" class="tasks-sync-warning" role="status">同步失败，当前展示上次成功结果。<button type="button" @click="loadPlans()">重试</button></p>
-        <div v-if="filteredPlans.length" class="tasks-card-grid" role="list" aria-label="招聘任务列表">
-          <article v-for="plan in filteredPlans" :key="plan.id" :class="['tasks-card', `is-${plan.kind}`]" role="listitem" :data-test="`task-row-${plan.id}`">
+        <p v-if="loadError" class="tasks-sync-warning" role="status">同步失败，当前展示上次成功结果。<button type="button" @click="loadTasks()">重试</button></p>
+        <div v-if="filteredTasks.length" class="tasks-card-grid" role="list" aria-label="招聘任务列表" data-test="task-scroll-region" tabindex="0">
+          <article
+            v-for="task in filteredTasks"
+            :key="task.id"
+            :class="['tasks-card', `is-${task.automation_plan_kind}`]"
+            role="listitem"
+            tabindex="0"
+            :aria-label="`查看${task.job_title || `职位 #${task.job}`}任务详情`"
+            :data-test="`task-row-${task.id}`"
+            @click="openTask(task)"
+            @keydown.enter.prevent="openTask(task)"
+            @keydown.space.prevent="openTask(task)"
+          >
             <div class="tasks-card__cover">
-              <span class="tasks-card__cover-icon"><AppIcon :name="plan.kind === 'passive_resume' ? 'headset' : 'search'" :size="30" /></span>
-              <div><small>招聘方案</small><strong>{{ plan.kind === 'passive_resume' ? '被动咨询' : '主动寻访' }}</strong></div>
-              <span :class="['tasks-status', `is-${planState(plan)}`]"><i></i>{{ stateLabel(plan) }}</span>
+              <span class="tasks-card__cover-icon"><AppIcon :name="task.automation_plan_kind === 'passive_resume' ? 'headset' : 'search'" :size="30" /></span>
+              <div><small>招聘方案</small><strong>{{ task.automation_plan_kind === 'passive_resume' ? '被动咨询' : '主动寻访' }}</strong></div>
+              <span :class="['tasks-status', `is-${taskState(task)}`]"><i></i>{{ stateLabel(task) }}</span>
             </div>
             <div class="tasks-card__body">
-              <div class="tasks-card__title"><span>招聘岗位</span><h3>{{ plan.job_title || `职位 #${plan.job}` }}</h3></div>
-              <p>{{ kindLabel(plan) }}</p>
+              <div class="tasks-card__title"><span>招聘岗位</span><h3>{{ task.job_title || `职位 #${task.job}` }}</h3></div>
+              <p>{{ kindLabel(task) }}</p>
               <dl>
-                <div><dt>方案版本</dt><dd>{{ revisionLabel(plan) }}</dd></div>
-                <div><dt>运行编号</dt><dd>{{ runLabel(plan) }}</dd></div>
+                <div><dt>方案版本</dt><dd>{{ revisionLabel(task) }}</dd></div>
+                <div><dt>运行编号</dt><dd>{{ runLabel(task) }}</dd></div>
               </dl>
             </div>
             <footer class="tasks-card__footer">
-              <time><AppIcon name="clock" :size="14" />更新于 {{ formatDateTime(plan.updated_at) }}</time>
-              <RouterLink class="tasks-card__link" :to="taskTo(plan)" :data-test="`open-task-${plan.id}`">查看与维护<AppIcon name="chevron-right" :size="13" /></RouterLink>
+              <time><AppIcon name="clock" :size="14" />更新于 {{ formatDateTime(task.updated_at) }}</time>
+              <div class="tasks-card__actions">
+                <button
+                  class="tasks-card__delete"
+                  type="button"
+                  :disabled="!canArchiveTask(task) || Boolean(archiveBusyId)"
+                  :title="canArchiveTask(task) ? '删除任务' : '任务仍在运行，请先停止并等待安全收尾'"
+                  :data-test="`archive-task-${task.id}`"
+                  @click.stop="requestArchive(task)"
+                >{{ archiveBusyId === String(task.id) ? '删除中…' : '删除' }}</button>
+                <AppIcon class="tasks-card__chevron" name="chevron-right" :size="18" aria-hidden="true" />
+              </div>
             </footer>
           </article>
         </div>
         <div v-else class="tasks-state" data-test="tasks-empty">
           <AppIcon name="briefcase" :size="25" />
-          <div><strong>{{ plans.length ? '没有符合筛选条件的任务' : '还没有招聘任务' }}</strong><p v-if="plans.length">换个搜索词或筛选条件试试</p></div>
-          <RouterLink v-if="!plans.length" :to="{ name: 'recruitment-workbench', query: { new: '1' } }">创建任务</RouterLink>
+          <div><strong>{{ tasks.length ? '没有符合筛选条件的任务' : '还没有招聘任务' }}</strong><p v-if="tasks.length">换个搜索词或筛选条件试试</p></div>
+          <RouterLink v-if="!tasks.length" :to="{ name: 'recruitment-workbench', query: { new: '1' } }">创建任务</RouterLink>
         </div>
       </template>
     </section>
+
+    <RecruitmentTaskExecutionModal v-if="selectedTask" :task="selectedTask" @close="closeTask" />
+
+    <ArchiveConfirmModal
+      v-if="archiveTarget"
+      title="删除招聘任务"
+      :name="`${archiveTarget.job_title || `职位 #${archiveTarget.job}`} · ${revisionLabel(archiveTarget)}`"
+      description="仅这一次任务会从当前列表移除；其他任务卡、方案版本、运行结果、候选人、简历和审计证据都会保留。"
+      action-label="确认删除任务"
+      note="恢复这次任务只会让卡片重新可见，不会自动重新启动。"
+      :saving="archiveBusyId === String(archiveTarget.id)"
+      :error="archiveError"
+      @close="closeArchive"
+      @confirm="archiveTask"
+    />
   </div>
 </template>
 
 <style scoped>
-.recruitment-tasks { --ink: #0f172a; --slate: #334155; --muted: #64748b; --line: #dfe7e6; --brand: #0f9f8f; --brand-dark: #087f73; --brand-soft: #eaf8f6; --danger: #dc4a4a; --warning: #d97706; --task-body: clamp(14px, .35rem + .55cqi, 18px); --task-detail: clamp(13px, .35rem + .45cqi, 16px); --task-meta: clamp(12px, .38rem + .34cqi, 14px); --task-control-height: clamp(44px, 2.25rem + .8cqi, 52px); --task-radius-control: clamp(10px, .45rem + .25cqi, 13px); --task-radius-panel: clamp(16px, .75rem + .4cqi, 21px); width: 100%; max-width: 100%; gap: clamp(18px, 1rem + .45cqi, 28px); color: var(--ink); font-family: var(--app-font-family); container-type: inline-size; }
+.recruitment-tasks { --ink: #0f172a; --slate: #334155; --muted: #64748b; --line: #dfe7e6; --brand: #0f9f8f; --brand-dark: #087f73; --brand-soft: #eaf8f6; --danger: #dc4a4a; --warning: #d97706; --task-body: clamp(14px, .35rem + .55cqi, 18px); --task-detail: clamp(13px, .35rem + .45cqi, 16px); --task-meta: clamp(12px, .38rem + .34cqi, 14px); --task-control-height: clamp(44px, 2.25rem + .8cqi, 52px); --task-radius-control: clamp(10px, .45rem + .25cqi, 13px); --task-radius-panel: clamp(16px, .75rem + .4cqi, 21px); width: 100%; max-width: 100%; height: 100%; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr); gap: clamp(18px, 1rem + .45cqi, 28px); overflow: hidden; color: var(--ink); font-family: var(--app-font-family); container-type: inline-size; }
 .recruitment-tasks *, .recruitment-tasks *::before, .recruitment-tasks *::after { box-sizing: border-box; }
 .tasks-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: clamp(20px, 2cqi, 32px); }
 .tasks-hero > div { display: grid; gap: 6px; }
@@ -181,7 +252,7 @@ onUnmounted(() => {
 .tasks-hero p { margin: 0; color: var(--muted); font-size: var(--task-body); }
 .tasks-primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: var(--task-control-height); padding: 0 clamp(18px, 1rem + .45cqi, 24px); border: 1px solid var(--brand); border-radius: var(--task-radius-control); color: #fff; background: var(--brand); box-shadow: 0 8px 18px rgba(15, 159, 143, .16); font-size: var(--task-detail); font-weight: 800; text-decoration: none; transition: 160ms ease; }
 .tasks-primary-button:hover { background: var(--brand-dark); border-color: var(--brand-dark); transform: translateY(-1px); }
-.tasks-panel { overflow: hidden; border: 1px solid var(--line); border-radius: var(--task-radius-panel); background: #fff; box-shadow: 0 4px 18px rgba(15, 23, 42, .035); }
+.tasks-panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: var(--task-radius-panel); background: #fff; box-shadow: 0 4px 18px rgba(15, 23, 42, .035); }
 .tasks-filters { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(190px, .34fr) minmax(200px, .36fr); gap: clamp(12px, .7rem + .3cqi, 18px); padding: clamp(18px, 1rem + .45cqi, 24px) clamp(18px, 1rem + .55cqi, 28px); border-bottom: 1px solid var(--line); background: #f8fbfa; }
 .tasks-filters label { display: grid; gap: 8px; min-width: 0; }
 .tasks-filters label > span:first-child { color: var(--muted); font-size: var(--task-meta); font-weight: 800; }
@@ -193,9 +264,11 @@ onUnmounted(() => {
 .tasks-filters select { appearance: none; padding: 0 42px 0 15px; cursor: pointer; }
 .tasks-filters input:hover, .tasks-filters select:hover { border-color: #9fbfba; }
 .tasks-filters input:focus, .tasks-filters select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(15, 159, 143, .12); }
-.tasks-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(18px, 1.2rem + .45cqi, 28px); padding: clamp(20px, 1.2rem + .55cqi, 30px); background: #f4f8f7; }
-.tasks-card { position: relative; display: grid; grid-template-rows: auto 1fr auto; min-width: 0; overflow: hidden; border: 1px solid #dce8e6; border-radius: clamp(16px, .8rem + .35cqi, 21px); background: #fff; box-shadow: 0 10px 28px rgba(15, 23, 42, .075); transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
+.tasks-card-grid { display: grid; min-height: 0; flex: 1 1 auto; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: clamp(18px, 1.2rem + .45cqi, 28px); overflow-y: auto; overscroll-behavior: contain; scrollbar-color: #a9c5c1 #eef4f3; scrollbar-gutter: stable; padding: clamp(20px, 1.2rem + .55cqi, 30px); background: #f4f8f7; }
+.tasks-card-grid:focus-visible { outline: 2px solid var(--brand); outline-offset: -3px; }
+.tasks-card { position: relative; display: grid; grid-template-rows: auto 1fr auto; min-width: 0; overflow: hidden; border: 1px solid #dce8e6; border-radius: clamp(16px, .8rem + .35cqi, 21px); background: #fff; box-shadow: 0 10px 28px rgba(15, 23, 42, .075); cursor: pointer; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
 .tasks-card:hover { border-color: #b6d7d2; box-shadow: 0 18px 38px rgba(15, 23, 42, .11); transform: translateY(-3px); }
+.tasks-card:focus-visible { outline: 3px solid rgba(15, 159, 143, .24); outline-offset: 3px; }
 .tasks-card__cover { position: relative; display: flex; align-items: center; gap: 13px; min-height: clamp(112px, 7rem + 1.7cqi, 148px); overflow: hidden; padding: clamp(18px, 1rem + .5cqi, 26px); color: #fff; background: linear-gradient(135deg, #0b766e 0%, #12a594 56%, #4bc4ad 100%); }
 .tasks-card__cover::before, .tasks-card__cover::after { position: absolute; content: ''; border-radius: 50%; background: rgba(255, 255, 255, .12); }
 .tasks-card__cover::before { width: 170px; height: 170px; right: -58px; bottom: -105px; }
@@ -225,9 +298,14 @@ onUnmounted(() => {
 .tasks-card dd { overflow: hidden; margin: 0; color: var(--slate); font-size: var(--task-detail); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .tasks-card__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px clamp(20px, 1.1rem + .45cqi, 27px); border-top: 1px solid #e6eeec; }
 .tasks-card__footer time { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: var(--task-meta); }
-.tasks-card__link { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 13px; border: 1px solid #b8d8d4; border-radius: 10px; color: var(--brand-dark); background: #fff; font-size: var(--task-meta); font-weight: 800; text-decoration: none; }
-.tasks-card__link:hover { border-color: var(--brand); background: var(--brand-soft); }
+.tasks-card__actions { display: inline-flex; flex: none; align-items: center; gap: 8px; }
+.tasks-card__delete { min-height: 40px; padding: 0 12px; border: 1px solid #f1cbd0; border-radius: 10px; color: var(--danger); background: #fff; font-size: var(--task-meta); font-weight: 800; transition: 150ms ease; }
+.tasks-card__delete:not(:disabled):hover { border-color: var(--danger); background: #fff0f2; }
+.tasks-card__delete:disabled { color: #9aa6b5; border-color: #dbe3e8; background: #f6f8f9; cursor: not-allowed; }
+.tasks-card__chevron { color: #748380; transition: transform 150ms ease, color 150ms ease; }
+.tasks-card:hover .tasks-card__chevron { color: var(--brand-dark); transform: translateX(2px); }
 .tasks-state { display: flex; align-items: center; justify-content: center; gap: 14px; min-height: clamp(230px, 16cqi, 320px); padding: 34px; color: var(--muted); text-align: left; }
+.tasks-panel > .tasks-state { min-height: 0; flex: 1 1 auto; }
 .tasks-state > div { display: grid; gap: 4px; }
 .tasks-state strong { color: var(--slate); font-size: var(--task-body); }
 .tasks-state p { margin: 0; font-size: var(--task-detail); }
@@ -247,7 +325,6 @@ onUnmounted(() => {
   .tasks-primary-button { align-self: stretch; }
   .tasks-filters { grid-template-columns: 1fr; }
   .tasks-card-grid { grid-template-columns: minmax(0, 1fr); padding: 16px; }
-  .tasks-card__link { min-height: 44px; }
   .tasks-state { align-items: center; flex-direction: column; text-align: center; }
 }
 @container (max-width: 480px) {
@@ -255,6 +332,6 @@ onUnmounted(() => {
   .tasks-card__cover > .tasks-status { position: absolute; right: 16px; bottom: 14px; }
   .tasks-card dl { grid-template-columns: minmax(0, 1fr); }
   .tasks-card__footer { align-items: stretch; flex-direction: column; }
-  .tasks-card__link { width: 100%; }
+  .tasks-card__actions { display: flex; justify-content: flex-end; }
 }
 </style>

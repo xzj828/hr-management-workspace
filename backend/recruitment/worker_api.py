@@ -15,7 +15,7 @@ from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import AutomationApproval, AutomationEvidence, BossAccount, CandidateDiscovery, ConversationAction, ExecutionBatch, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentAutomationPlan, RecruitmentJob, Resume, RpaTask, RpaWorker, SearchCampaign, StepExecution, WorkflowNodeRun, WorkflowRun
+from .models import AutomationApproval, AutomationEvidence, BossAccount, CandidateDiscovery, ConversationAction, ExecutionBatch, JobApplication, MessageAttachment, RecruitmentAuditLog, RecruitmentAutomationPlan, RecruitmentJob, Resume, RpaTask, RpaWorker, SearchCampaign, SearchCampaignItem, StepExecution, WorkflowNodeRun, WorkflowRun
 from .rpa.tasks import append_event
 from .rpa.sync import sync_positions
 from .services.discovery import _fingerprint, import_discoveries, sync_discoveries
@@ -554,7 +554,7 @@ def _validate_search_pull_result(*, task, campaign, result):
         or scanned_count != len(rows)
         or view_attempt_count < 0
         or view_attempt_count > resume_view_budget
-        or len(pulled_rows) > target_resume_count
+        or len(pulled_rows) > max_scan_count
         or len(raw_attempts) > max_scan_count
     ):
         raise SearchPullResultError("主动寻访结果超出已确认的搜索或简历查看范围")
@@ -867,9 +867,8 @@ def _complete_search_pull_success(*, task, campaign, context, user_stopped=False
                 criteria=campaign.criteria,
                 rows=context["rows"],
             )
-            archived = 0
             application_ids = []
-            for item in context["prepared_resumes"]:
+            for sequence, item in enumerate(context["prepared_resumes"], start=1):
                 discovery = CandidateDiscovery.objects.get(
                     boss_account=task.boss_account,
                     job=campaign.job,
@@ -888,38 +887,51 @@ def _complete_search_pull_success(*, task, campaign, context, user_stopped=False
                     content=item["content"],
                     external_id=discovery.external_id,
                     actor=task.created_by,
+                    enqueue_intelligence=False,
                 )
                 if created and resume.file.name:
                     created_files.append((resume.file.storage, resume.file.name))
-                archived += int(created)
+                SearchCampaignItem.objects.update_or_create(
+                    campaign=campaign,
+                    resume=resume,
+                    defaults={
+                        "application": application,
+                        "sequence": sequence,
+                        "status": (
+                            SearchCampaignItem.Status.SKIPPED
+                            if user_stopped
+                            else SearchCampaignItem.Status.PENDING
+                        ),
+                    },
+                )
                 incoming_paths.append(item["path"])
 
-            campaign.scanned_count = context["scanned_count"]
-            campaign.pulled_resume_count = archived
+            campaign.scanned_count = 0
+            campaign.pulled_resume_count = len(application_ids)
+            campaign.qualified_resume_count = 0
+            campaign.analysis_failed_count = 0
             campaign.status = (
                 SearchCampaign.Status.CANCELLED
                 if user_stopped
-                else SearchCampaign.Status.SUCCEEDED
+                else SearchCampaign.Status.ANALYZING
             )
             campaign.stop_reason = (
                 SearchCampaign.StopReason.USER_STOPPED
                 if user_stopped
-                else (
-                    SearchCampaign.StopReason.TARGET_REACHED
-                    if archived >= campaign.target_resume_count
-                    else SearchCampaign.StopReason.SCAN_LIMIT
-                )
+                else SearchCampaign.StopReason.NONE
             )
             campaign.error_message = ""
-            campaign.completed_at = timezone.now()
+            campaign.completed_at = timezone.now() if user_stopped else None
             campaign.save(update_fields=[
                 "scanned_count", "pulled_resume_count", "status", "stop_reason",
-                "error_message", "completed_at", "updated_at",
+                "qualified_resume_count", "analysis_failed_count", "error_message",
+                "completed_at", "updated_at",
             ])
             normalized_result = {
                 "campaign_id": campaign.pk,
                 "scanned_count": campaign.scanned_count,
-                "pulled_resume_count": archived,
+                "pulled_resume_count": campaign.pulled_resume_count,
+                "qualified_resume_count": campaign.qualified_resume_count,
                 "stop_reason": campaign.stop_reason,
                 "application_ids": application_ids,
                 "resume_view_usage": {
@@ -965,6 +977,9 @@ def _complete_search_pull_success(*, task, campaign, context, user_stopped=False
             )
             if not user_stopped:
                 _schedule_workflow_resume(task)
+                from recruitment.services.search_campaign_intelligence import reconcile_search_campaign
+
+                transaction.on_commit(lambda: reconcile_search_campaign(campaign.pk))
             for path in incoming_paths:
                 transaction.on_commit(lambda resolved=path: resolved.unlink(missing_ok=True))
             return normalized_result
@@ -988,8 +1003,9 @@ def _fail_search_pull_completion(
     campaign.stop_reason = SearchCampaign.StopReason.ERROR
     campaign.error_message = message
     campaign.pulled_resume_count = 0
-    if context.get("scanned_count") is not None:
-        campaign.scanned_count = context["scanned_count"]
+    # Campaign.scanned_count is the number of resumes fully analyzed by AI.
+    # Candidate-page scanning remains in the RPA task evidence/result only.
+    campaign.scanned_count = 0
     campaign.completed_at = timezone.now()
     campaign.save(update_fields=[
         "status", "stop_reason", "error_message", "scanned_count",
@@ -1087,7 +1103,8 @@ def _complete_search_pull_waiting_human(*, task, campaign, context, error_code, 
             criteria=campaign.criteria,
             rows=context["rows"],
         )
-        campaign.scanned_count = context["scanned_count"]
+        # No resume has reached AI analysis while the RPA step is waiting for HR.
+        campaign.scanned_count = 0
         campaign.pulled_resume_count = 0
         campaign.status = SearchCampaign.Status.PAUSED
         campaign.stop_reason = SearchCampaign.StopReason.NONE
@@ -1392,6 +1409,35 @@ def complete_task_view(request, task_id):
             })
     if task.action == RpaTask.Action.SYNC_CONVERSATIONS and completed_status == RpaTask.Status.SUCCEEDED:
         rows = result.get("conversations")
+        if not isinstance(rows, list):
+            return Response({"detail": "消息同步结果无效"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            eligible_count = int(result.get("eligible_count", 0) or 0)
+        except (TypeError, ValueError):
+            return Response({"detail": "消息同步 eligible_count 无效"}, status=status.HTTP_400_BAD_REQUEST)
+        sync_metrics = {
+            "discovered_count": len(rows),
+            "eligible_count": max(0, min(eligible_count, len(rows))),
+            "opened_count": sum(
+                1 for row in rows
+                if isinstance(row, dict)
+                and not row.get("sync_error")
+                and isinstance(row.get("messages"), list)
+            ),
+            "message_failed_count": sum(
+                1 for row in rows
+                if isinstance(row, dict)
+                and row.get("sync_error_code") in {
+                    "conversation_message_read_failed",
+                    "conversation_identity_ambiguous",
+                }
+            ),
+            "attachment_failed_count": sum(
+                1 for row in rows
+                if isinstance(row, dict)
+                and row.get("attachment_sync_state") == "unknown"
+            ),
+        }
         sync_checkpoint_stopped = result.get("checkpoint_stopped") is True
         cleanup_paths = set()
         if isinstance(rows, list):
@@ -1449,6 +1495,13 @@ def complete_task_view(request, task_id):
                 if allowed_job_ids is not None and application.job_id not in allowed_job_ids:
                     continue
                 messages = [dict(item) for item in row.get("messages", []) if isinstance(item, dict)]
+                attachment_sync_state = (
+                    "unknown" if row.get("attachment_sync_state") == "unknown" else "ready"
+                )
+                for message in messages:
+                    message["attachment_sync_state"] = attachment_sync_state
+                    if attachment_sync_state == "unknown":
+                        message["attachment_error_code"] = "conversation_attachment_read_failed"
                 attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else []
                 if attachments:
                     target_message = next(
@@ -1526,11 +1579,23 @@ def complete_task_view(request, task_id):
                 )
             sync_result["attachments_archived"] = archived
             sync_result["resume_approvals_recovered"] = recovered_approvals
+            sync_result.update(sync_metrics)
             result = {"sync": sync_result}
             if scope_stopped:
                 completed_status = RpaTask.Status.CANCELLED
                 completion_error_code = "automation_plan_stopped"
                 completion_error_message = "消息同步在安全检查点停止，未处理已停止岗位的数据"
+            elif (
+                sync_metrics["eligible_count"] > 0
+                and sync_metrics["opened_count"] == 0
+                and sync_metrics["message_failed_count"] > 0
+            ):
+                completed_status = RpaTask.Status.FAILED
+                completion_error_code = "conversation_message_read_failed"
+                completion_error_message = "发现候选人会话，但消息读取失败，未进入意图判断"
+            elif sync_metrics["attachment_failed_count"] > 0:
+                completion_error_code = "conversation_attachment_read_incomplete"
+                completion_error_message = "候选人消息已保留，但附件状态未核验，已禁止自动求简历"
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     if task.action == RpaTask.Action.VIEW_ONLINE_RESUME and completed_status == RpaTask.Status.SUCCEEDED:

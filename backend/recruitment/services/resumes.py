@@ -6,8 +6,78 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from recruitment.models import RecruitmentAuditLog, Resume
+from recruitment.models import AiProcessingTask, RecruitmentAuditLog, Resume
 from recruitment.services.stages import advance_for_event
+
+
+class ResumePurgeConflict(Exception):
+    """The resume cannot be purged while file processing is in flight."""
+
+
+class ResumePurgeStorageError(Exception):
+    """The stored resume file could not be removed safely."""
+
+
+@transaction.atomic
+def purge_resume_file(*, resume, actor):
+    locked = (
+        Resume.objects.select_for_update()
+        .select_related("application__job__boss_account")
+        .get(pk=resume.pk)
+    )
+    if locked.archived_at is not None and not locked.file:
+        return 0
+
+    tasks = locked.ai_tasks.select_for_update()
+    in_flight_statuses = [
+        AiProcessingTask.Status.EXTRACTING,
+        AiProcessingTask.Status.OCR,
+        AiProcessingTask.Status.MODEL,
+    ]
+    if tasks.filter(status__in=in_flight_statuses).exists():
+        raise ResumePurgeConflict("简历正在处理中，请等待当前 AI 任务结束后再删除")
+
+    now = timezone.now()
+    tasks.filter(
+        status__in=[AiProcessingTask.Status.WAITING_CONFIG, AiProcessingTask.Status.PENDING]
+    ).update(
+        status=AiProcessingTask.Status.FAILED,
+        error_code="source_file_deleted",
+        error_message="原始简历已由 HR 删除，任务已终止",
+        leased_at=None,
+        lease_expires_at=None,
+        lease_token=None,
+        updated_at=now,
+    )
+
+    released_bytes = locked.file_size if locked.file else 0
+    if locked.file:
+        storage = locked.file.storage
+        stored_name = locked.file.name
+        try:
+            storage.delete(stored_name)
+            if storage.exists(stored_name):
+                raise OSError("stored file still exists")
+        except Exception as exc:
+            raise ResumePurgeStorageError("简历原文件删除失败，请检查本地存储后重试") from exc
+
+    locked.file = ""
+    locked.file_size = 0
+    locked.processing_status = Resume.ProcessingStatus.ERROR
+    locked.archived_at = now
+    locked.save(update_fields=["file", "file_size", "processing_status", "archived_at", "updated_at"])
+    RecruitmentAuditLog.objects.create(
+        actor=actor,
+        boss_account=locked.application.job.boss_account if locked.application_id else None,
+        action="resume_file_purged",
+        target_id=str(locked.pk),
+        detail={
+            "candidate_id": locked.candidate_id,
+            "version": locked.version,
+            "released_bytes": released_bytes,
+        },
+    )
+    return released_bytes
 
 
 @transaction.atomic
@@ -65,7 +135,9 @@ def archive_pdf(*, application, filename, content, source=Resume.Source.BOSS, ex
 
 
 @transaction.atomic
-def archive_online_resume_image(*, application, filename, content, external_id="", actor=None):
+def archive_online_resume_image(
+    *, application, filename, content, external_id="", actor=None, enqueue_intelligence=True
+):
     data = bytes(content or b"")
     if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 25 * 1024 * 1024:
         raise ValueError("在线简历必须是有效且不超过 25MB 的 PNG 文件")
@@ -114,7 +186,7 @@ def archive_online_resume_image(*, application, filename, content, external_id="
         from recruitment.services.ai_tasks import enqueue_resume_structure
 
         requested_by = actor or application.job.owner or application.job.boss_account.authorized_users.order_by("id").first()
-        if requested_by:
+        if requested_by and enqueue_intelligence:
             transaction.on_commit(lambda: enqueue_resume_structure(resume=resume, requested_by=requested_by))
         return resume, True
     except Exception:

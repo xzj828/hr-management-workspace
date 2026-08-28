@@ -24,8 +24,11 @@ const accounts = ref([])
 const workflowTemplates = ref([])
 const workflowVersions = ref([])
 const documents = ref([])
+const jobStandards = ref([])
 const loading = ref(true)
 const documentsLoading = ref(false)
+const standardsLoading = ref(false)
+const standardError = ref('')
 const loadError = ref('')
 const documentError = ref('')
 const submitError = ref('')
@@ -74,6 +77,7 @@ const editBase = reactive({
 const summary = reactive({ worker: null, cli_available: false })
 const startRequest = reactive({ id: '', signature: '' })
 let documentLoadSequence = 0
+let standardLoadSequence = 0
 let planLoadSequence = 0
 let planPollTimer = null
 let planPollInFlight = false
@@ -99,6 +103,38 @@ const selectedJobValue = computed({
 })
 const coreItems = computed(() => requirementLines(coreText.value))
 const bonusItems = computed(() => requirementLines(bonusText.value))
+const publishedStandard = computed(() => jobStandards.value.find((standard) => standard.status === 'published') || null)
+const currentDocumentVersionIds = computed(() => documents.value
+  .map((document) => Number(document.current_version?.id))
+  .filter(Number.isInteger)
+  .sort((left, right) => left - right))
+function standardMatchesCurrentDocuments(standard) {
+  if (!currentDocumentVersionIds.value.length) return true
+  const sourceIds = (standard?.source_document_versions || [])
+    .map((version) => Number(version.id))
+    .filter(Number.isInteger)
+    .sort((left, right) => left - right)
+  return sourceIds.length === currentDocumentVersionIds.value.length
+    && sourceIds.every((id, index) => id === currentDocumentVersionIds.value[index])
+}
+const usablePublishedStandard = computed(() => (
+  currentDocumentVersionIds.value.length
+    ? jobStandards.value.find((standard) => standard.status === 'published' && standardMatchesCurrentDocuments(standard)) || null
+    : publishedStandard.value
+))
+const draftStandard = computed(() => (
+  jobStandards.value.find((standard) => standard.status === 'draft' && standardMatchesCurrentDocuments(standard)) || null
+))
+const draftStandardPublishable = computed(() => {
+  const dimensions = draftStandard.value?.criteria?.dimensions
+  if (!Array.isArray(dimensions) || !dimensions.length) return false
+  const total = dimensions.reduce((sum, item) => sum + Number(item?.weight || 0), 0)
+  return Math.abs(total - 100) < 0.001
+})
+const hasManualStandard = computed(() => Boolean(coreItems.value.length || bonusItems.value.length))
+const activeStandardReady = computed(() => (
+  hasManualStandard.value || Boolean(usablePublishedStandard.value) || draftStandardPublishable.value
+))
 const activeCountValid = computed(() => {
   const target = Number(targetResumeCount.value)
   const maximum = Number(maxScanCount.value)
@@ -106,7 +142,7 @@ const activeCountValid = computed(() => {
 })
 const activeQueryValid = computed(() => {
   if (schemeKind.value !== 'active_resume_search') return true
-  if (!coreItems.value.length) return false
+  if (!activeStandardReady.value) return false
   return source.value !== 'search' || Boolean(keyword.value.trim())
 })
 const passiveIntervalValid = computed(() => Number(interval.value) >= 1 && Number(interval.value) <= 1440)
@@ -231,13 +267,36 @@ const checks = computed(() => [
       : (selectedCustomWorkflow.value ? `高级流程：${selectedCustomWorkflow.value.label}` : '所选高级流程已停用或不属于当前账号'),
   },
   {
+    key: 'ai-standard',
+    label: '本次招聘标准',
+    ok: schemeKind.value === 'passive_resume' || activeStandardReady.value,
+    detail: schemeKind.value === 'passive_resume'
+      ? '被动咨询方案无需 AI 初筛标准'
+      : (standardsLoading.value
+          ? '正在读取工作台招聘标准'
+          : (hasManualStandard.value
+              ? `将按本页 ${coreItems.value.length} 项核心要求和 ${bonusItems.value.length} 项加分项生成并冻结标准`
+              : (standardError.value
+                  ? `岗位标准读取失败：${standardError.value}`
+                  : (usablePublishedStandard.value
+                  ? `将冻结工作台已有的 V${usablePublishedStandard.value.version} 岗位标准`
+                  : (draftStandardPublishable.value
+                      ? `将确认并冻结工作台文档生成的 V${draftStandard.value.version} 标准`
+                      : (documents.value.length
+                          ? '上传的 Word/Excel 正在生成标准，请稍后重试；不需要重新上传'
+                          : '请在招聘标准步骤上传 Word/Excel，或填写核心要求/加分项')))))),
+    link: schemeKind.value === 'active_resume_search' && !activeStandardReady.value && !standardsLoading.value
+      ? { name: 'recruitment-workbench', query: { ...route.query, job: String(selectedJob.value?.id || ''), step: 'standard' } }
+      : null,
+  },
+  {
     key: 'parameters',
     label: '运行参数',
     ok: schemeKind.value === 'passive_resume'
       ? passiveIntervalValid.value
       : activeCountValid.value && activeQueryValid.value,
     detail: parameterCheckMessage(),
-    link: schemeKind.value === 'active_resume_search' && !coreItems.value.length
+    link: schemeKind.value === 'active_resume_search' && !activeStandardReady.value
       ? { name: 'recruitment-workbench', query: { ...route.query, job: String(selectedJob.value?.id || ''), step: 'standard' } }
       : null,
   },
@@ -285,10 +344,14 @@ function parameterCheckMessage() {
   if (schemeKind.value === 'passive_resume') {
     return passiveIntervalValid.value ? `每 ${interval.value} 分钟同步一次消息` : '同步间隔必须为 1–1440 分钟'
   }
-  if (!coreItems.value.length) return '主动寻访至少填写一项核心要求'
+  if (!activeStandardReady.value) {
+    return documents.value.length
+      ? '上传的 Word/Excel 正在生成招聘标准，请稍后重试'
+      : '请上传 Word/Excel，或填写至少一项核心要求/加分项'
+  }
   if (source.value === 'search' && !keyword.value.trim()) return '常规搜索需要填写搜索关键词'
-  if (!activeCountValid.value) return '目标简历数为 1–100，最大扫描人数须不少于目标数且不超过 100'
-  return `目标 ${targetResumeCount.value} 份，最多扫描 ${maxScanCount.value} 人`
+  if (!activeCountValid.value) return '目标合格简历数为 1–100，AI 最大分析份数须不少于目标数且不超过 100'
+  return `目标 AI 合格 ${targetResumeCount.value} 份，最多由 AI 分析 ${maxScanCount.value} 份完整简历`
 }
 
 function requestId() {
@@ -1140,7 +1203,7 @@ async function handleDocumentFiles(files) {
         uploadProgress.completed += 1
       }
     }
-    if (succeeded) await loadDocuments(jobId)
+    if (succeeded) await Promise.all([loadDocuments(jobId), loadJobStandards(jobId)])
     if (failedFiles.length) documentError.value = `部分文件未上传：${failedFiles.join('；')}`
   } finally {
     uploading.value = false
@@ -1242,13 +1305,7 @@ async function startExecution() {
     scheduleFreshWorkbench()
     try {
       await router.replace({
-        name: 'recruitment-task-detail',
-        params: { planId: String(plan.id) },
-        query: {
-          job: String(snapshot.job.id),
-          run: plan.current_run?.id ? String(plan.current_run.id) : undefined,
-          view: 'tasks',
-        },
+        name: 'recruitment-tasks',
       })
     } catch {
       submitError.value = '任务已经创建，但结果中心任务页未能打开；请从顶部“结果中心”的任务运行中进入。'
@@ -1264,6 +1321,25 @@ async function startExecution() {
     submitting.value = false
     if (activeExecutionSnapshot === snapshot) activeExecutionSnapshot = null
     submitStage.value = ''
+  }
+}
+
+async function loadJobStandards(jobId) {
+  if (!jobId) {
+    jobStandards.value = []
+    return
+  }
+  const sequence = ++standardLoadSequence
+  standardsLoading.value = true
+  standardError.value = ''
+  try {
+    const payload = await api(`recruitment/job-standards/?job=${encodeURIComponent(jobId)}`)
+    if (sequence === standardLoadSequence) jobStandards.value = listItems(payload)
+  } catch (error) {
+    if (sequence === standardLoadSequence) jobStandards.value = []
+    if (sequence === standardLoadSequence) standardError.value = error.message || '无法读取，请刷新重试'
+  } finally {
+    if (sequence === standardLoadSequence) standardsLoading.value = false
   }
 }
 
@@ -1304,8 +1380,11 @@ watch(
     }
     wizardHydrating.value = true
     documentLoadSequence += 1
+    standardLoadSequence += 1
     planLoadSequence += 1
     documents.value = []
+    jobStandards.value = []
+    standardError.value = ''
     currentPlan.value = null
     archivedPlan.value = null
     planError.value = ''
@@ -1318,6 +1397,7 @@ watch(
       routeJobError.value = ''
       selectedAccountId.value = job?.boss_account ? String(job.boss_account) : ''
       loadDocuments(jobId)
+      loadJobStandards(jobId)
       restoreWizardDraft(jobId)
       if (wizardReady.value) refreshCurrentPlan({ jobId, hydrateDraft: false })
     }
@@ -1374,6 +1454,9 @@ onMounted(async () => {
   if (!componentAlive) return
   planPollTimer = globalThis.setInterval(() => {
     refreshCurrentPlan({ silent: true, poll: true })
+    if (selectedJob.value?.id && documents.value.length && !activeStandardReady.value) {
+      loadJobStandards(selectedJob.value.id)
+    }
   }, 5000)
 })
 
@@ -1381,6 +1464,7 @@ onUnmounted(() => {
   componentAlive = false
   planLoadSequence += 1
   documentLoadSequence += 1
+  standardLoadSequence += 1
   if (planPollTimer) globalThis.clearInterval(planPollTimer)
   planPollTimer = null
 })
@@ -1578,12 +1662,12 @@ onUnmounted(() => {
                   <span><strong>{{ document.title }}</strong><small>{{ document.category_label }} · V{{ document.current_version.version }}</small></span>
                 </a>
               </template>
-              <p v-else class="sr-only">尚未上传岗位参考资料；不影响本次自动化，生成评分标准前可继续补充。</p>
+              <p v-else>尚未上传岗位参考资料；也可以直接填写下面的核心要求或加分项。</p>
             </div>
 
             <div class="workbench-requirements">
               <label>
-                <span><b>核心要求 <em>主动寻访必填</em></b><small>{{ coreItems.length }} 项</small></span>
+                <span><b>核心要求 <em>与文件二选一</em></b><small>{{ coreItems.length }} 项</small></span>
                 <textarea v-model="coreText" data-test="core-requirements" rows="5" maxlength="2000" :placeholder="'例如：\n3 年以上 Python 开发经验\n熟悉 Django 与关系型数据库'"></textarea>
                 <small class="sr-only">已识别 {{ coreItems.length }}/10 项；每项最多 200 字。</small>
               </label>
@@ -1673,14 +1757,14 @@ onUnmounted(() => {
               </label>
               <CandidateFilterPanel v-model="candidateFilters" :disabled="submitting" />
               <label>
-                <span>目标简历数</span>
+                <span>目标合格简历数</span>
                 <input v-model.number="targetResumeCount" data-test="target-resume-count" type="number" min="1" max="100" />
-                <small>达到目标后自动停止继续拉取。</small>
+                <small>AI 判断为“建议通过”的简历达到此数量后停止继续分析。</small>
               </label>
               <label>
-                <span>最大扫描人数</span>
+                <span>AI 最大分析份数</span>
                 <input v-model.number="maxScanCount" data-test="max-scan-count" type="number" :min="targetResumeCount || 1" max="100" />
-                <small>必须不少于目标简历数，最多 100 人。</small>
+                <small>最多拉取并交给 AI 完整分析的简历数；必须不少于目标合格数，最多 100 份。</small>
               </label>
             </div>
 
@@ -1717,7 +1801,7 @@ onUnmounted(() => {
                 </div>
                 <div>
                   <AppIcon name="search" :size="26" />
-                  <span><strong>{{ schemeKind === 'passive_resume' ? '被动咨询' : `主动寻访 ${targetResumeCount} 份` }}</strong><small>{{ schemeKind === 'passive_resume' ? '消息同步' : '目标简历数' }}</small></span>
+                  <span><strong>{{ schemeKind === 'passive_resume' ? '被动咨询' : `主动寻访 ${targetResumeCount} 份合格简历` }}</strong><small>{{ schemeKind === 'passive_resume' ? '消息同步' : `AI 最多分析 ${maxScanCount} 份` }}</small></span>
                 </div>
               </div>
 
@@ -1744,7 +1828,7 @@ onUnmounted(() => {
                 {{ firstBlockingCheck ? `请先处理：${firstBlockingCheck.label}` : (startDisabledReason || '点击后将以一个原子命令创建方案版本并开启任务。') }}
               </small>
 
-              <p class="workbench-safety"><AppIcon name="shield" :size="15" /> 外发、身份复核、额度与人工确认继续由服务端安全门控制。</p>
+              <p class="workbench-safety"><AppIcon name="shield" :size="15" /> {{ schemeKind === 'passive_resume' ? '点击开始执行即授权本方案按冻结话术求简历；后续不再重复确认，身份复核、额度与风控仍由服务端控制。' : `点击开始执行即授权本方案按冻结条件搜索，并最多查看 ${maxScanCount} 份在线简历；后续不再重复确认，身份复核、额度与风控仍由服务端控制。` }}</p>
               <footer class="workbench-step-actions workbench-review-actions">
                 <button class="secondary-button workbench-previous" data-test="previous-step" type="button" :disabled="submitting" @click="previousStep">
                   上一步

@@ -158,6 +158,8 @@ describe('AppLayout navigation hierarchy', () => {
     })
 
     expect(wrapper.get('.shell').classes()).toContain('shell--results')
+    expect(wrapper.get('.shell').classes()).toContain('shell--task-list')
+    expect(wrapper.get('.page-container').classes()).toContain('page-container--task-list')
     const resultLink = wrapper.findAll('.top-navigation__link').find((link) => link.text().includes('结果中心'))
     expect(resultLink.classes()).toContain('top-navigation__link--active')
   })

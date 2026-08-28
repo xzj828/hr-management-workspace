@@ -114,6 +114,66 @@ class BossCliRunnerTests(SimpleTestCase):
         self.assertNotIn("RPA_WORKER_TOKEN", run.call_args.kwargs["env"])
         self.assertTrue(result["ok"])
 
+    def test_chat_bridge_classifies_stale_document_errors_as_read_only_retryable(self):
+        node = shutil.which("node.exe") or shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is required for the bridge retry classifier test")
+        retry_module = Path(__file__).parents[1] / "rpa" / "boss_chat_retry.mjs"
+        script = """
+const { isTransientDocumentError } = await import(process.argv.at(-1));
+process.stdout.write(JSON.stringify({
+  stale: isTransientDocumentError('Protocol error (DOM.resolveNode): Node with given id does not belong to the document'),
+  navigation: isTransientDocumentError('Execution context was destroyed, most likely because of a navigation'),
+  uncertainWrite: isTransientDocumentError('external_result_uncertain'),
+}));
+"""
+
+        completed = subprocess.run(
+            [node, "--input-type=module", "-e", script, retry_module.as_uri()],
+            shell=False,
+            capture_output=True,
+            timeout=20,
+            check=True,
+        )
+
+        payload = json.loads(completed.stdout.decode("utf-8"))
+        self.assertTrue(payload["stale"])
+        self.assertTrue(payload["navigation"])
+        self.assertFalse(payload["uncertainWrite"])
+
+    def test_stable_id_preview_requires_verified_bridge_receipt(self):
+        runner = BossCliRunner(cli_path="C:/tools/boss.exe")
+        bridge_response = {
+            "receipt": {
+                "verified": True,
+                "expected_external_id": "stable-candidate-1",
+                "observed_external_id": "stable-candidate-1",
+            },
+            "output": "简历预览截图：C:/safe/preview.png",
+        }
+
+        with patch.object(runner, "_run_chat_bridge", return_value=bridge_response) as bridge:
+            result = runner.preview_by_external_id(self.account, "stable-candidate-1")
+
+        self.assertIn("preview.png", result.stdout)
+        bridge.assert_called_once_with(
+            self.account,
+            "preview_candidate",
+            {"external_id": "stable-candidate-1"},
+            timeout_seconds=90,
+        )
+
+    def test_stable_id_preview_rejects_changed_identity_receipt(self):
+        runner = BossCliRunner(cli_path="C:/tools/boss.exe")
+        bridge_response = {
+            "receipt": {"verified": True, "observed_external_id": "different-candidate"},
+            "output": "简历预览截图：C:/safe/preview.png",
+        }
+
+        with patch.object(runner, "_run_chat_bridge", return_value=bridge_response):
+            with self.assertRaises(BossCliError):
+                runner.preview_by_external_id(self.account, "stable-candidate-1")
+
     @patch("recruitment.rpa.cli.subprocess.Popen")
     def test_login_launcher_uses_fixed_argv_minimal_env_and_no_pipes(self, popen):
         runner = BossCliRunner(cli_path=["C:/Program Files/nodejs/node.exe", "C:/safe/boss-cli.js"])

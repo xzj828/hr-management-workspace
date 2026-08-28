@@ -289,6 +289,152 @@ def publish_standard(*, standard, actor) -> JobStandardVersion:
     return locked
 
 
+def _workbench_manual_criteria(*, core, bonus) -> dict:
+    core = [str(item).strip() for item in core or [] if str(item).strip()]
+    bonus = [str(item).strip() for item in bonus or [] if str(item).strip()]
+    dimensions = [
+        {
+            "key": f"core_{index}",
+            "name": text[:120],
+            "weight": 2,
+            "description": text,
+            "evidence_block_ids": [],
+        }
+        for index, text in enumerate(core, start=1)
+    ] + [
+        {
+            "key": f"bonus_{index}",
+            "name": text[:120],
+            "weight": 1,
+            "description": text,
+            "evidence_block_ids": [],
+        }
+        for index, text in enumerate(bonus, start=1)
+    ]
+    weights = normalize_priority_scoring_weights(dimensions, [])
+    for dimension, weight in zip(dimensions, weights):
+        dimension["weight"] = weight
+    return validate_criteria(
+        {
+            "summary": "由 HR 在招聘作业台确认的本次招聘标准",
+            "dimensions": dimensions,
+            "hard_requirements": [],
+            "required": [{"text": text, "evidence_block_ids": []} for text in core],
+            "preferred": [{"text": text, "evidence_block_ids": []} for text in bonus],
+            "risks": [],
+        },
+        allowed_evidence_ids=set(),
+        require_publishable=True,
+    )
+
+
+def _standard_uses_document_versions(standard, version_ids) -> bool:
+    return set(standard.source_document_versions.values_list("id", flat=True)) == set(version_ids)
+
+
+@transaction.atomic
+def resolve_workbench_standard(*, job, core, bonus, actor) -> JobStandardVersion:
+    """Resolve and publish the immutable standard accepted by a workbench start command."""
+    job = RecruitmentJob.objects.select_for_update().get(pk=job.pk)
+    core = [str(item).strip() for item in core or [] if str(item).strip()]
+    bonus = [str(item).strip() for item in bonus or [] if str(item).strip()]
+    if core or bonus:
+        criteria = _workbench_manual_criteria(core=core, bonus=bonus)
+        published = (
+            JobStandardVersion.objects.select_for_update()
+            .filter(job=job, status=JobStandardVersion.Status.PUBLISHED)
+            .first()
+        )
+        if (
+            published is not None
+            and published.prompt_version == "workbench-input-v1"
+            and published.criteria == criteria
+        ):
+            return published
+        next_version = (
+            JobStandardVersion.objects.filter(job=job).aggregate(value=Max("version"))["value"] or 0
+        ) + 1
+        standard = JobStandardVersion.objects.create(
+            job=job,
+            version=next_version,
+            criteria=criteria,
+            prompt_version="workbench-input-v1",
+            created_by=actor,
+        )
+        published = publish_standard(standard=standard, actor=actor)
+        RecruitmentAuditLog.objects.create(
+            actor=actor,
+            boss_account=job.boss_account,
+            action="workbench_standard_compiled",
+            target_id=str(published.pk),
+            detail={"version": published.version, "core_count": len(core), "bonus_count": len(bonus)},
+        )
+        return published
+
+    versions = list(
+        JobRequirementDocument.objects.filter(
+            job=job,
+            archived_at__isnull=True,
+            current_version__isnull=False,
+        )
+        .select_related("current_version")
+        .order_by("id")
+        .values_list("current_version_id", flat=True)
+    )
+    if not versions:
+        published = (
+            JobStandardVersion.objects.filter(
+                job=job,
+                status=JobStandardVersion.Status.PUBLISHED,
+            )
+            .order_by("-version", "-id")
+            .first()
+        )
+        if published is not None:
+            return published
+        raise ValueError("请在招聘标准步骤上传 Word/Excel，或填写至少一项核心要求/加分项")
+
+    candidates = JobStandardVersion.objects.filter(job=job).prefetch_related("source_document_versions")
+    published = next(
+        (
+            standard
+            for standard in candidates.filter(status=JobStandardVersion.Status.PUBLISHED)
+            if _standard_uses_document_versions(standard, versions)
+        ),
+        None,
+    )
+    if published is not None:
+        return published
+    draft = next(
+        (
+            standard
+            for standard in candidates.filter(status=JobStandardVersion.Status.DRAFT)
+            if _standard_uses_document_versions(standard, versions)
+        ),
+        None,
+    )
+    if draft is not None:
+        try:
+            return publish_standard(standard=draft, actor=actor)
+        except ValueError as exc:
+            raise ValueError(f"工作台文档已生成标准草稿，但内容尚不能启用：{exc}") from exc
+
+    latest_task = (
+        AiProcessingTask.objects.filter(
+            job=job,
+            kind=AiProcessingTask.Kind.JOB_STANDARD,
+            document_version_id__in=versions,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if latest_task is not None and latest_task.status == AiProcessingTask.Status.FAILED:
+        raise ValueError("工作台文档的标准生成失败，请检查模型配置后重试；不需要重新上传文档")
+    if latest_task is not None and latest_task.status == AiProcessingTask.Status.WAITING_CONFIG:
+        raise ValueError("工作台文档正在等待 AI 模型配置，配置完成后会继续生成标准；不需要重新上传文档")
+    raise ValueError("工作台文档正在生成招聘标准，请稍后重试；不需要重新上传文档")
+
+
 def _extract_document_version(version):
     extraction, _ = FileTextExtraction.objects.get_or_create(
         source_kind=FileTextExtraction.SourceKind.JOB_DOCUMENT,

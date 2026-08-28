@@ -217,7 +217,7 @@ describe('RecruitmentAutomationView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('同步消息并获取简历')
-    expect(wrapper.text()).toContain('搜索并拉取在线简历')
+    expect(wrapper.text()).toContain('搜索、拉取并 AI 初筛')
     expect(wrapper.text()).toContain('当前没有人工介入事项')
     await wrapper.get('.automation-scheme-card.is-passive').trigger('click')
     expect(wrapper.text()).toContain('运行被动咨询方案')

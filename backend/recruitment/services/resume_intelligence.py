@@ -392,9 +392,41 @@ def build_assessment_prompt(*, standard, structured):
     system = (
         "你是招聘简历初筛助手。只能按已确认评分标准和简历证据评分。"
         "没有原文证据必须标记 information_missing 且得分为 0；结论仅供 HR 复核。"
+        "只能返回符合 output_schema 的单个 JSON 对象，不得改名、删减字段或添加解释文字。"
     )
+    output_schema = {
+        "dimension_scores": [
+            {
+                "criterion_key": "必须逐一使用 criteria.dimensions 中的 key",
+                "score": "0 到该维度 weight 之间的数字",
+                "max_score": "该维度的 weight",
+                "status": "supported | not_supported | information_missing",
+                "reason": "简短中文理由",
+                "resume_evidence_block_ids": ["只能引用 resume_blocks 中存在的 id"],
+            }
+        ],
+        "hard_requirement_results": [
+            {
+                "criterion_key": "必须逐一使用 hard_requirements 中的 key；没有硬性项时返回空数组",
+                "status": "met | not_met | information_missing",
+                "reason": "简短中文理由",
+                "resume_evidence_block_ids": ["只能引用 resume_blocks 中存在的 id"],
+            }
+        ],
+        "evidence": [
+            {
+                "criterion_key": "评分维度 key",
+                "block_ids": ["支持结论的 resume_blocks.id"],
+            }
+        ],
+        "gaps": ["信息缺口；没有时返回空数组"],
+        "verification_questions": ["建议 HR 核实的问题；没有时返回空数组"],
+        "confidence": "0 到 1 之间的数字",
+        "recommendation": "advance | review | hold",
+    }
     user = json.dumps(
         {
+            "output_schema": output_schema,
             "criteria": standard.criteria,
             "structured_resume": _redact_for_scoring(structured.data),
             "resume_blocks": _redact_for_scoring(structured.extraction.blocks),

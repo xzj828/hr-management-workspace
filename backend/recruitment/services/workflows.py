@@ -37,7 +37,7 @@ def validate_graph(*, nodes, edges, boss_account):
             raise ValidationError(f"节点 {key} 必须配置正确的唤醒事件")
         if node_type == "search_and_pull_resumes":
             if int(config.get("target_resume_count", 0) or 0) < 1 or int(config.get("max_scan_count", 0) or 0) < 1:
-                raise ValidationError(f"节点 {key} 必须配置拉取数量和最大扫描人数")
+                raise ValidationError(f"节点 {key} 必须配置目标合格简历数和 AI 最大分析份数")
         by_key[key] = node
     if not any(node["type"] in SOURCE_TYPES for node in nodes):
         raise ValidationError("流程必须包含候选人来源节点")

@@ -52,7 +52,7 @@ describe('RecruitmentResumesView', () => {
     expect(apiMock.mock.calls.some(([path]) => path.startsWith('recruitment/resumes/'))).toBe(false)
   })
 
-  it('renders PDF metadata and opens an inline preview', async () => {
+  it('renders PDF metadata and opens the large document viewer', async () => {
     const wrapper = mount(RecruitmentResumesView)
     await flushPromises()
 
@@ -68,9 +68,10 @@ describe('RecruitmentResumesView', () => {
     expect(wrapper.get('[data-test="download-1"]').findComponent(AppIcon).props('name')).toBe('download')
 
     await wrapper.get('[data-test="preview-1"]').trigger('click')
-    expect(wrapper.get('iframe').attributes('src')).toBe('/api/recruitment/resumes/1/file/')
-    expect(wrapper.get('iframe').attributes('title')).toBe('周晓宁的简历')
-    expect(wrapper.get('.recruitment-download-link').findComponent(AppIcon).props('name')).toBe('download')
+    expect(wrapper.get('[data-test="resume-document-viewer"]').exists()).toBe(true)
+    expect(wrapper.get('iframe').attributes('src')).toBe('/api/recruitment/resumes/1/file/#toolbar=0&navpanes=0&zoom=100')
+    expect(wrapper.get('iframe').attributes('title')).toBe('周晓宁的原始简历')
+    expect(wrapper.get('a[aria-label="下载原始简历"]').findComponent(AppIcon).props('name')).toBe('download')
   })
 
   it('offers Word requirement upload and a real standard generation action', async () => {
@@ -135,7 +136,7 @@ describe('RecruitmentResumesView', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('PNG 在线简历')
     await wrapper.get('[data-test="preview-8"]').trigger('click')
-    expect(wrapper.get('.recruitment-image-preview').attributes('src')).toBe('/api/recruitment/resumes/8/file/')
+    expect(wrapper.get('.resume-viewer-image').attributes('src')).toBe('/api/recruitment/resumes/8/file/')
     expect(wrapper.find('iframe').exists()).toBe(false)
   })
 

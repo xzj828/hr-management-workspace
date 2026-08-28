@@ -39,7 +39,10 @@ class BossAccount(models.Model):
     last_checked_at = models.DateTimeField(null=True, blank=True)
     daily_contact_limit = models.PositiveIntegerField(default=50)
     daily_search_limit = models.PositiveIntegerField(default=100)
-    daily_resume_view_limit = models.PositiveIntegerField(default=20)
+    # Zero means that the workbench only records usage and does not impose a
+    # local cap. BOSS-side quotas and risk controls are still enforced by the
+    # platform and the adapter.
+    daily_resume_view_limit = models.PositiveIntegerField(default=0)
     daily_message_limit = models.PositiveIntegerField(default=50)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OFFLINE)
     active = models.BooleanField(default=True)
@@ -873,6 +876,7 @@ class SearchCampaign(models.Model):
         DRAFT = "draft", "草稿"
         QUEUED = "queued", "已排队"
         RUNNING = "running", "运行中"
+        ANALYZING = "analyzing", "AI 分析中"
         PAUSED = "paused", "已暂停"
         SUCCEEDED = "succeeded", "已完成"
         FAILED = "failed", "失败"
@@ -880,8 +884,10 @@ class SearchCampaign(models.Model):
 
     class StopReason(models.TextChoices):
         NONE = "", "未停止"
-        TARGET_REACHED = "target_reached", "达到拉取数量"
-        SCAN_LIMIT = "scan_limit", "达到扫描上限"
+        TARGET_REACHED = "target_reached", "达到合格简历目标"
+        SCAN_LIMIT = "scan_limit", "达到 AI 分析上限"
+        CANDIDATES_EXHAUSTED = "candidates_exhausted", "候选简历不足"
+        ANALYSIS_FAILED = "analysis_failed", "AI 分析失败"
         QUOTA = "quota", "查看额度不足"
         PAYWALL = "paywall", "遇到付费墙"
         RISK_CONTROL = "risk_control", "验证码或风控"
@@ -901,12 +907,21 @@ class SearchCampaign(models.Model):
         related_name="search_campaigns",
     )
     automation_generation = models.PositiveIntegerField(null=True, blank=True)
+    standard = models.ForeignKey(
+        "JobStandardVersion",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="search_campaigns",
+    )
     source = models.CharField(max_length=24, choices=Source.choices)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT, db_index=True)
     target_resume_count = models.PositiveIntegerField(validators=[MinValueValidator(1)])
     max_scan_count = models.PositiveIntegerField(validators=[MinValueValidator(1)])
     scanned_count = models.PositiveIntegerField(default=0)
     pulled_resume_count = models.PositiveIntegerField(default=0)
+    qualified_resume_count = models.PositiveIntegerField(default=0)
+    analysis_failed_count = models.PositiveIntegerField(default=0)
     criteria = models.JSONField(default=dict, blank=True)
     stop_reason = models.CharField(max_length=32, choices=StopReason.choices, default=StopReason.NONE, blank=True)
     error_message = models.TextField(blank=True)
@@ -918,6 +933,57 @@ class SearchCampaign(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class SearchCampaignItem(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "等待 AI 分析"
+        STRUCTURING = "structuring", "简历结构化中"
+        SCORING = "scoring", "简历评分中"
+        WAITING_CONFIG = "waiting_config", "等待模型配置"
+        QUALIFIED = "qualified", "AI 建议进一步沟通"
+        NOT_QUALIFIED = "not_qualified", "AI 未建议进一步沟通"
+        FAILED = "failed", "AI 分析失败"
+        SKIPPED = "skipped", "达到目标后未分析"
+
+    campaign = models.ForeignKey(SearchCampaign, on_delete=models.PROTECT, related_name="items")
+    application = models.ForeignKey(JobApplication, on_delete=models.PROTECT, related_name="search_campaign_items")
+    resume = models.ForeignKey(Resume, on_delete=models.PROTECT, related_name="search_campaign_items")
+    sequence = models.PositiveIntegerField()
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING, db_index=True)
+    structure_task = models.ForeignKey(
+        "AiProcessingTask",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="search_campaign_structure_items",
+    )
+    score_task = models.ForeignKey(
+        "AiProcessingTask",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="search_campaign_score_items",
+    )
+    assessment = models.ForeignKey(
+        "ResumeAssessment",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="search_campaign_items",
+    )
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    analyzed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sequence", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["campaign", "resume"], name="unique_search_campaign_resume"),
+            models.UniqueConstraint(fields=["campaign", "sequence"], name="unique_search_campaign_sequence"),
+        ]
 
 
 class ApplicationStageHistory(models.Model):
@@ -1114,6 +1180,7 @@ class WorkflowRun(models.Model):
     error_message = models.TextField(blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
