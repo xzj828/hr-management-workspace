@@ -580,6 +580,34 @@ def _normalize_job_title(value):
     return " ".join(str(value or "").split())
 
 
+_TRANSIENT_CONVERSATION_LIST_ERROR = re.compile(
+    r"未找到 BOSS 沟通[“\"](?:全部|未读)[”\"]筛选"
+    r"|detached|execution context was destroyed|cannot find context with specified id"
+    r"|node with given id does not belong to the document|cannot adopt node|navigation",
+    re.I,
+)
+
+
+def _list_conversations_with_retry(runner, account, *, unread, job_title):
+    for attempt in range(3):
+        try:
+            return (
+                runner.conversations(
+                    account,
+                    unread=unread,
+                    **({"job_title": job_title} if job_title else {}),
+                ),
+                attempt,
+            )
+        except BossCliCancelled:
+            raise
+        except (BossCliError, BrowserConnectionError) as exc:
+            if attempt == 2 or not _TRANSIENT_CONVERSATION_LIST_ERROR.search(str(exc)):
+                raise
+            time.sleep(0.4)
+    raise AssertionError("unreachable")
+
+
 def _expected_conversation_job_titles(payload):
     expected = set()
     direct_title = _normalize_job_title(payload.get("job_title", ""))
@@ -607,15 +635,17 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
         }
     rows = []
     seen_external_ids = set()
+    list_retry_count = 0
     scopes = sorted(expected_job_titles) or [""]
     for job_title in scopes:
-        raw_rows = parse_conversation_list(
-            runner.conversations(
-                account,
-                unread=not backfill_conversations,
-                **({"job_title": job_title} if job_title else {}),
-            )
+        raw_output, retry_count = _list_conversations_with_retry(
+            runner,
+            account,
+            unread=not backfill_conversations,
+            job_title=job_title,
         )
+        list_retry_count += retry_count
+        raw_rows = parse_conversation_list(raw_output)
         for row in raw_rows:
             external_id = str(row.get("external_id", "")).strip()
             if external_id and external_id in seen_external_ids:
@@ -644,6 +674,7 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
     }
     checkpoint_stopped = False
     opened_count = 0
+    message_retry_count = 0
     message_failed_count = 0
     attachment_failed_count = 0
     for sequence, row in enumerate(eligible[:50], start=1):
@@ -673,8 +704,20 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
                 )
             else:
                 opened = runner.open_chat(account, row["name"])
-            row["messages"] = parse_chat_messages(opened.stdout)
-            opened_count += 1
+            messages = parse_chat_messages(opened.stdout)
+            if external_id and row.get("unread") and not messages:
+                # Opening an unread conversation consumes the unread marker.
+                # Re-read only the frozen stable identity; never rediscover by
+                # candidate name and never wait for a later unread poll.
+                message_retry_count += 1
+                opened = stable_open(
+                    account,
+                    external_id,
+                    job_title=str(row.get("job_title", "")).strip(),
+                    unread=False,
+                )
+                messages = parse_chat_messages(opened.stdout)
+            row["messages"] = messages
         except (BossCliError, BrowserConnectionError):
             row["sync_error"] = "会话消息读取失败"
             row["sync_error_code"] = "conversation_message_read_failed"
@@ -699,6 +742,13 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
                 row["attachment_sync_state"] = "unknown"
                 row["attachment_error_code"] = "conversation_attachment_read_failed"
                 attachment_failed_count += 1
+            if row.get("unread") and not row.get("messages") and not row.get("attachments"):
+                row.pop("messages", None)
+                row["sync_error"] = "会话消息读取失败"
+                row["sync_error_code"] = "conversation_message_read_failed"
+                message_failed_count += 1
+            else:
+                opened_count += 1
         if checkpoint is not None and not checkpoint("after_open_chat", sequence):
             checkpoint_stopped = True
             break
@@ -710,6 +760,8 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
             "discovered_count": len(rows),
             "eligible_count": min(len(eligible), 50),
             "opened_count": opened_count,
+            "list_retry_count": list_retry_count,
+            "message_retry_count": message_retry_count,
             "message_failed_count": message_failed_count,
             "attachment_failed_count": attachment_failed_count,
             "checkpoint_stopped": checkpoint_stopped,
