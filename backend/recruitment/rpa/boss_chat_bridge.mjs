@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
-import { isTransientDocumentError } from "./boss_chat_retry.mjs";
+import { isTransientDocumentError, uniqueVisibleLeafMatchIndex } from "./boss_chat_retry.mjs";
 
 const CHAT_URL = "https://www.zhipin.com/web/chat/index";
 const MIN_PORT = 53470;
@@ -158,20 +158,48 @@ async function selectScope(page, jobTitle, unread) {
   let filterApplied = false;
   for (let attempt = 0; attempt < 5 && !filterApplied; attempt += 1) {
     try {
-      filterApplied = await page.evaluate((expected) => {
+      const candidates = await page.evaluate((expected) => {
+        const visible = (element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden"
+            && rect.width > 0 && rect.height > 0;
+        };
+        const normalized = (value) => (value ?? "").replace(/\s+/g, "").trim();
         const items = Array.from(document.querySelectorAll(".chat-message-filter-left span"));
-        const matches = items.filter((item) => (item.textContent ?? "")
-          .replace(/\s+/g, "").includes(expected));
-        if (matches.length !== 1) return false;
-        const tab = matches[0];
-        const selected = /(active|selected|current|checked)/.test(String(tab.className ?? ""))
-          || tab.getAttribute("aria-selected") === "true"
-          || Boolean(tab.closest(".active, .selected, .current, .checked"));
-        if (!selected) {
-          tab.click();
-        }
-        return true;
+        return items.map((item) => ({
+          text: normalized(item.textContent),
+          visible: visible(item),
+          hasMatchingDescendant: Array.from(item.querySelectorAll("span"))
+            .some((child) => normalized(child.textContent) === expected && visible(child)),
+        }));
       }, filterLabel);
+      const matchIndex = uniqueVisibleLeafMatchIndex(candidates, filterLabel);
+      if (matchIndex < 0) {
+        filterApplied = false;
+      } else {
+        filterApplied = await page.evaluate(({ expected, index }) => {
+          const visible = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden"
+              && rect.width > 0 && rect.height > 0;
+          };
+          const normalized = (value) => (value ?? "").replace(/\s+/g, "").trim();
+          const items = Array.from(document.querySelectorAll(".chat-message-filter-left span"));
+          const tab = items[index];
+          if (!tab || !visible(tab) || normalized(tab.textContent) !== expected) return false;
+          if (Array.from(tab.querySelectorAll("span"))
+            .some((child) => normalized(child.textContent) === expected && visible(child))) return false;
+          const selected = /(active|selected|current|checked)/.test(String(tab.className ?? ""))
+            || tab.getAttribute("aria-selected") === "true"
+            || Boolean(tab.closest(".active, .selected, .current, .checked"));
+          if (!selected) {
+            tab.click();
+          }
+          return true;
+        }, { expected: filterLabel, index: matchIndex });
+      }
     } catch (error) {
       if (!isTransientDocumentError(error) || attempt === 4) throw error;
     }
@@ -183,7 +211,16 @@ async function selectScope(page, jobTitle, unread) {
     `(scope) => {
       const norm = (value) => (value ?? '').replace(/\\s+/g, ' ').trim();
       const tabs = Array.from(document.querySelectorAll('.chat-message-filter-left span'));
-      const tab = tabs.find((item) => norm(item.textContent).replace(/\s+/g, '').includes(scope.filter));
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden'
+          && rect.width > 0 && rect.height > 0;
+      };
+      const exact = (element) => norm(element.textContent).replace(/\\s+/g, '') === scope.filter;
+      const matchingTabs = tabs.filter((item) => visible(item) && exact(item)
+        && !Array.from(item.querySelectorAll('span')).some((child) => visible(child) && exact(child)));
+      const tab = matchingTabs.length === 1 ? matchingTabs[0] : null;
       const selected = tab && (
         /(active|selected|current|checked)/.test(String(tab.className ?? ''))
         || tab.getAttribute('aria-selected') === 'true'
