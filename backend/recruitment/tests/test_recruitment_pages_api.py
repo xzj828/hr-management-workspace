@@ -237,6 +237,16 @@ class RecruitmentPagesApiTests(APITestCase):
             ).status_code,
             403,
         )
+        self.assertEqual(
+            self.client.post(
+                "/api/recruitment/applications/bulk-archive/",
+                {"application_ids": [application.pk]},
+                format="json",
+            ).status_code,
+            403,
+        )
+        application.refresh_from_db()
+        self.assertIsNone(application.archived_at)
 
     def test_anonymous_user_cannot_read_resume_file(self):
         resume = Resume.objects.filter(is_demo=True).first()
@@ -389,3 +399,45 @@ class RecruitmentPagesApiTests(APITestCase):
         self.assertEqual(restored.status_code, 200)
         target.refresh_from_db()
         self.assertIsNone(target.archived_at)
+
+    def test_hr_can_bulk_archive_candidate_records_without_archiving_candidate_master(self):
+        target = JobApplication.objects.filter(is_demo=True).select_related("candidate", "job").first()
+        second_candidate = Candidate.objects.create(
+            identity_key="bulk-archive-second-candidate",
+            name="批量清除候选人",
+        )
+        same_job = JobApplication.objects.create(
+            candidate=second_candidate,
+            job=target.job,
+            owner=self.hr,
+            source="boss",
+        )
+        other_job = RecruitmentJob.objects.filter(is_demo=True).exclude(pk=target.job_id).first()
+        other_application = JobApplication.objects.create(
+            candidate=target.candidate,
+            job=other_job,
+            owner=self.hr,
+            source="demo",
+            is_demo=True,
+        )
+
+        response = self.client.post(
+            "/api/recruitment/applications/bulk-archive/",
+            {"application_ids": [target.pk, same_job.pk, 999999]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["archived_count"], 2)
+        self.assertEqual(response.data["skipped_count"], 1)
+        target.refresh_from_db()
+        same_job.refresh_from_db()
+        self.assertIsNotNone(target.archived_at)
+        self.assertIsNotNone(same_job.archived_at)
+        self.assertIsNone(target.candidate.archived_at)
+        self.assertTrue(Resume.objects.filter(application=target).exists())
+        self.assertTrue(JobApplication.objects.filter(pk=other_application.pk, archived_at__isnull=True).exists())
+        ranking = self.client.get(f"/api/recruitment/screening-results/?job={target.job_id}")
+        ranked_ids = {row["application"]["id"] for row in ranking.data["results"]}
+        self.assertNotIn(target.pk, ranked_ids)
+        self.assertNotIn(same_job.pk, ranked_ids)

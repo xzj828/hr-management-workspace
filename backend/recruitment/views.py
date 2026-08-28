@@ -1030,6 +1030,35 @@ class JobApplicationViewSet(
             queryset = queryset.filter(is_demo=True)
         return queryset
 
+    @action(detail=False, methods=["post"], url_path="bulk-archive")
+    def bulk_archive(self, request):
+        raw_ids = request.data.get("application_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise ValidationError({"application_ids": "请选择至少一条需要清除的候选人记录"})
+        if len(raw_ids) > 500:
+            raise ValidationError({"application_ids": "单次最多清除 500 条候选人记录"})
+        try:
+            application_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+        except (TypeError, ValueError):
+            raise ValidationError({"application_ids": "候选人记录 ID 格式不正确"})
+
+        applications = {
+            application.pk: application
+            for application in self.get_queryset().filter(pk__in=application_ids)
+        }
+        archived_ids = []
+        for application_id in application_ids:
+            application = applications.get(application_id)
+            if application is None:
+                continue
+            archive_object(instance=application, actor=request.user)
+            archived_ids.append(application_id)
+        return Response({
+            "archived_count": len(archived_ids),
+            "archived_ids": archived_ids,
+            "skipped_count": len(application_ids) - len(archived_ids),
+        })
+
 
 class ConversationActionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = ConversationAction.objects.select_related(

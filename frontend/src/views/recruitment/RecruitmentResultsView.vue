@@ -267,16 +267,16 @@ const displayedCandidateResults = computed(() => {
   const start = (candidatePage.value - 1) * candidatePageSize.value
   return candidateResults.value.slice(start, start + candidatePageSize.value)
 })
-const clearableResumeRows = computed(() => screeningResults.value.filter((row) => row.resume))
+const clearableCandidateRows = computed(() => screeningResults.value.filter((row) => row.application?.id))
 const clearableAttentionItems = computed(() => jobAttentions.value.filter((item) => item.status !== 'archived'))
 const clearableTaskRuns = computed(() => jobRuns.value.filter((run) => !run.archived_at))
-const activeClearTarget = computed(() => ({ attention: 'attentions', tasks: 'tasks', candidates: 'resumes' }[activeView.value] || ''))
+const activeClearTarget = computed(() => ({ attention: 'attentions', tasks: 'tasks', candidates: 'candidates' }[activeView.value] || ''))
 const activeClearCount = computed(() => ({
   attentions: clearableAttentionItems.value.length,
   tasks: clearableTaskRuns.value.length,
-  resumes: clearableResumeRows.value.length,
+  candidates: clearableCandidateRows.value.length,
 }[activeClearTarget.value] || 0))
-const activeClearLabel = computed(() => activeClearTarget.value === 'resumes' ? '一键清除简历' : '一键清除')
+const activeClearLabel = computed(() => activeClearTarget.value === 'candidates' ? '一键清除候选人' : '一键清除')
 const clearDialog = computed(() => ({
   attentions: {
     title: '一键清除人工事项',
@@ -292,11 +292,11 @@ const clearDialog = computed(() => ({
     note: '正在运行、等待人工或暂停中的任务会安全保留；历史结果和审计证据不会被物理删除。',
     actionLabel: '确认清除',
   },
-  resumes: {
-    title: '一键清除已保存简历',
-    name: `${currentJob.value?.title || '当前岗位'} · ${clearableResumeRows.value.length} 份简历`,
-    description: '将物理删除当前岗位所有已保存的简历原文件，并让这些简历退出当前排名。此操作不可恢复。',
-    note: '历史结构化结果、评分、HR 结论和审计记录仍会保留；正在处理的简历会安全跳过。',
+  candidates: {
+    title: '一键清除候选人记录',
+    name: `${currentJob.value?.title || '当前岗位'} · ${clearableCandidateRows.value.length} 条记录`,
+    description: '将当前岗位的全部候选人记录从候选人与简历列表中归档。',
+    note: '候选人主档、其他岗位的应聘、简历原文件、历史评分、流程和审计证据都会保留。',
     actionLabel: '确认清除',
   },
 }[clearTarget.value] || null))
@@ -717,7 +717,7 @@ function openBulkClear(target) {
   const count = {
     attentions: clearableAttentionItems.value.length,
     tasks: clearableTaskRuns.value.length,
-    resumes: clearableResumeRows.value.length,
+    candidates: clearableCandidateRows.value.length,
   }[target] || 0
   if (!count) return
   clearTarget.value = target
@@ -749,15 +749,15 @@ async function confirmBulkClear() {
         message: `已清除 ${result.archived_count || 0} 个已结束任务${result.skipped_count ? `，${result.skipped_count} 个运行中或受保护任务已保留` : ''}。`,
       }
     } else {
-      result = await api('recruitment/resumes/bulk-purge/', {
+      result = await api('recruitment/applications/bulk-archive/', {
         method: 'POST',
-        body: JSON.stringify({ resume_ids: clearableResumeRows.value.map((row) => row.resume.id) }),
+        body: JSON.stringify({ application_ids: clearableCandidateRows.value.map((row) => row.application.id) }),
       })
-      const released = Number(result.released_bytes || 0)
       operationNotice.value = {
-        tone: result.failed_count ? 'warning' : 'success',
-        message: `已清除 ${result.purged_count || 0} 份简历${released ? `，释放 ${formatFileSize(released)} 本地空间` : ''}${result.failed_count ? `；${result.failed_count} 份正在处理或删除失败，已安全保留` : ''}。`,
+        tone: result.skipped_count ? 'warning' : 'success',
+        message: `已清除 ${result.archived_count || 0} 条候选人记录${result.skipped_count ? `，${result.skipped_count} 条因不可访问而保留` : ''}。`,
       }
+      selectedApplicationIds.value = []
     }
     clearTarget.value = ''
     await loadResults()

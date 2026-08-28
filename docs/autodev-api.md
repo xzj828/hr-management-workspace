@@ -160,6 +160,7 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 | POST | `/api/recruitment/jobs/sync/` | boss_account + UUID request_id，幂等创建同步任务 |
 | 候选人只读 | `/api/recruitment/candidates[/<id>/]` | search, job, stage, is_demo |
 | 应聘 CRUD | `/api/recruitment/applications[/<id>/]` | job, stage, is_demo；阶段变更需原因 |
+| POST | `/api/recruitment/applications/bulk-archive/` | application_ids（1–500）；仅归档可写范围内的岗位应聘记录，返回 archived_count / skipped_count，保留候选人主档、其他岗位应聘、简历与审计证据 |
 | 发现结果只读 | `/api/recruitment/candidate-discoveries[/<id>/]` | account, job, source, imported |
 | POST | `.../candidate-discoveries/search/` | 推荐/关键词搜索，创建只读发现任务 |
 | POST | `.../candidate-discoveries/prepare-deep-match/` | 创建深度匹配确认快照 |

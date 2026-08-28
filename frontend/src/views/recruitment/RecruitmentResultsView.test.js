@@ -492,33 +492,33 @@ describe('RecruitmentResultsView', () => {
     expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('1 个运行中或受保护任务已保留')
   })
 
-  it('bulk clears saved resume files and refreshes the ranking', async () => {
+  it('bulk clears candidate records and refreshes the ranking', async () => {
     mockCompletePayload()
     const baseImplementation = apiMock.getMockImplementation()
     let cleared = false
     apiMock.mockImplementation((path, options) => {
-      if (path === 'recruitment/resumes/bulk-purge/') {
+      if (path === 'recruitment/applications/bulk-archive/') {
         cleared = true
-        return Promise.resolve({ purged_count: 1, purged_ids: [31], released_bytes: 4096, failed_count: 0, failures: [] })
+        return Promise.resolve({ archived_count: 1, archived_ids: [11], skipped_count: 0 })
       }
       if (path === 'recruitment/screening-results/?job=1' && cleared) {
-        return Promise.resolve(screeningPayload([{ ...screeningRow, resume: null, structure: null, assessment: null }]))
+        return Promise.resolve(screeningPayload([]))
       }
       return baseImplementation(path, options)
     })
     const { wrapper } = await mountView({ job: '1', view: 'candidates' })
     await flushPromises()
 
-    await wrapper.get('[data-test="clear-resumes"]').trigger('click')
-    expect(document.body.textContent).toContain('物理删除当前岗位所有已保存的简历原文件')
+    await wrapper.get('[data-test="clear-candidates"]').trigger('click')
+    expect(document.body.textContent).toContain('将当前岗位的全部候选人记录从候选人与简历列表中归档')
     document.body.querySelector('[data-test="confirm-archive"]').click()
     await flushPromises()
 
-    expect(apiMock).toHaveBeenCalledWith('recruitment/resumes/bulk-purge/', {
-      method: 'POST', body: JSON.stringify({ resume_ids: [31] }),
+    expect(apiMock).toHaveBeenCalledWith('recruitment/applications/bulk-archive/', {
+      method: 'POST', body: JSON.stringify({ application_ids: [11] }),
     })
-    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('释放 4.0 KB 本地空间')
-    expect(wrapper.get('tr[data-application-id="11"]').text()).toContain('暂无简历')
+    expect(wrapper.get('[data-test="operation-notice"]').text()).toContain('已清除 1 条候选人记录')
+    expect(wrapper.find('tr[data-application-id="11"]').exists()).toBe(false)
   })
 
   it('restores application, candidate, account, and resume-filter context from a legacy deep link', async () => {
