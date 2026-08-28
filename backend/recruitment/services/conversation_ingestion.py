@@ -3,12 +3,12 @@ import json
 from dataclasses import dataclass
 
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from recruitment.models import (
+    AutomationApproval,
     BossAccount,
     ConversationAction,
     ConversationMessage,
@@ -36,6 +36,62 @@ class ConversationDecision:
     message: ConversationMessage | None = None
     attention: object | None = None
 
+
+def _has_prior_greeting(*, application, state):
+    return (
+        state.messages.filter(direction=ConversationMessage.Direction.HR).exists()
+        or ConversationAction.objects.filter(
+            application=application,
+            action=ConversationAction.Action.GREET,
+            status=ConversationAction.Status.SUCCEEDED,
+        ).exists()
+    )
+
+
+def _request_resume_draft_is_valid(action, *, now):
+    approval = action.approval
+    if approval is None:
+        return False
+    if approval.status == AutomationApproval.Status.APPROVED:
+        return True
+    return (
+        approval.status == AutomationApproval.Status.DRAFT
+        and (approval.expires_at is None or approval.expires_at > now)
+    )
+
+
+def existing_resume_request_action(*, application, for_update=False, now=None):
+    """Return the latest request-resume attempt that blocks automatic re-creation.
+
+    A live draft blocks while its approval is still usable. Every action that
+    progressed beyond draft also blocks, including failed/cancelled attempts:
+    retrying those requires an explicit human operation, never another inbound
+    candidate message.
+    """
+    actions = ConversationAction.objects.filter(
+        application=application,
+        action=ConversationAction.Action.REQUEST_RESUME,
+    ).order_by("-created_at", "-id")
+    if for_update:
+        actions = actions.select_for_update()
+    else:
+        actions = actions.select_related("approval")
+    checked_at = now or timezone.now()
+    for action in actions:
+        if action.status != ConversationAction.Status.DRAFT:
+            return action
+        if _request_resume_draft_is_valid(action, now=checked_at):
+            return action
+    return None
+
+
+def _has_confirmed_resume(*, application, state=None):
+    if application.resumes.filter(archived_at__isnull=True).exists():
+        return True
+    messages = state.messages if state is not None else ConversationMessage.objects.filter(
+        conversation_state__application=application,
+    )
+    return messages.filter(attachments__original_name__iendswith=".pdf").exists()
 
 def _sent_at(value):
     parsed = parse_datetime(str(value or ""))
@@ -178,6 +234,7 @@ def _queue_resume_request(
     source_message,
     automation_plan_revision=None,
     automation_generation=None,
+    create_attentions=True,
 ):
     from recruitment.services.communications import (
         _identity_snapshot,
@@ -208,18 +265,29 @@ def _queue_resume_request(
         ):
             return None
 
+    application = (
+        JobApplication.objects.select_for_update()
+        .select_related("candidate", "job")
+        .get(pk=application.pk, job__boss_account=account)
+    )
+    if _has_confirmed_resume(application=application):
+        return None
+    if existing_resume_request_action(application=application, for_update=True) is not None:
+        return None
+
     target = _identity_snapshot(application, account)
     if not target.get("external_id") and not target.get("fingerprint"):
-        ensure_attention(
-            attention_type="identity_ambiguous",
-            title=f"{application.candidate.name} 缺少可验证的 BOSS 身份",
-            idempotency_key=f"resume-request-identity:{source_message.pk}",
-            account=account,
-            job=application.job,
-            application=application,
-            detail={"message_id": source_message.pk},
-            priority=20,
-        )
+        if create_attentions:
+            ensure_attention(
+                attention_type="identity_ambiguous",
+                title=f"{application.candidate.name} 缺少可验证的 BOSS 身份",
+                idempotency_key=f"resume-request-identity:{source_message.pk}",
+                account=account,
+                job=application.job,
+                application=application,
+                detail={"message_id": source_message.pk},
+                priority=20,
+            )
         return None
     try:
         approval = prepare_communication(
@@ -249,16 +317,17 @@ def _queue_resume_request(
             )
         return approval
     except (PermissionDenied, ValidationError) as exc:
-        ensure_attention(
-            attention_type="resume_request_failed",
-            title=f"{application.candidate.name} 自动求简历未能排队",
-            idempotency_key=f"resume-request-failed:{source_message.pk}",
-            account=account,
-            job=application.job,
-            application=application,
-            detail={"message_id": source_message.pk, "error": str(exc)},
-            priority=20,
-        )
+        if create_attentions:
+            ensure_attention(
+                attention_type="resume_request_failed",
+                title=f"{application.candidate.name} 自动求简历未能排队",
+                idempotency_key=f"resume-request-failed:{source_message.pk}",
+                account=account,
+                job=application.job,
+                application=application,
+                detail={"message_id": source_message.pk, "error": str(exc)},
+                priority=20,
+            )
         return None
 
 
@@ -292,9 +361,7 @@ def process_pending_messages(
             state.messages.filter(pk__in=[item.pk for item in pending]).update(processed_at=timezone.now())
         return ConversationDecision(MessageIntent.IGNORE)
 
-    has_resume = application.resumes.filter(archived_at__isnull=True).exists() or state.messages.filter(
-        attachments__original_name__iendswith=".pdf"
-    ).exists()
+    has_resume = _has_confirmed_resume(application=application, state=state)
     latest = candidate_messages[-1]
     latest_payload = latest.raw_payload if isinstance(latest.raw_payload, dict) else {}
     if latest_payload.get("attachment_sync_state") == "unknown":
@@ -303,6 +370,31 @@ def process_pending_messages(
         return ConversationDecision(MessageIntent.IGNORE, message=latest)
     intent = classify_candidate_message(latest.content, has_resume_attachment=has_resume)
     attention = None
+    existing_request = (
+        existing_resume_request_action(application=application)
+        if intent == MessageIntent.REQUEST_RESUME
+        else None
+    )
+    if existing_request is not None:
+        if existing_request.status == ConversationAction.Status.SUCCEEDED and create_attentions:
+            attention, _ = ensure_attention(
+                attention_type="other",
+                title=f"{application.candidate.name} 已求过简历但继续沟通，尚未收到简历",
+                idempotency_key=f"resume-request-follow-up:{existing_request.pk}",
+                account=account,
+                job=application.job,
+                application=application,
+                workflow_run=workflow_run,
+                automation_plan_revision=automation_plan_revision,
+                automation_generation=automation_generation,
+                detail={
+                    "message_id": latest.pk,
+                    "conversation_action_id": str(existing_request.pk),
+                    "reason": "resume_already_requested",
+                },
+                priority=30,
+            )
+        intent = MessageIntent.IGNORE
     if intent == MessageIntent.OBSERVING and create_attentions:
         attention, _ = ensure_attention(
             attention_type="observing_candidate",
@@ -326,7 +418,7 @@ def process_pending_messages(
     latest.processed_at = now
     latest.save(update_fields=["raw_payload", "processed_at"])
     if schedule_actions and actor is not None and intent == MessageIntent.REQUEST_RESUME:
-        first_contact = not state.messages.filter(direction=ConversationMessage.Direction.HR).exists()
+        first_contact = not _has_prior_greeting(application=application, state=state)
         transaction.on_commit(
             lambda: _queue_resume_request(
                 application=application,
@@ -337,6 +429,7 @@ def process_pending_messages(
                 source_message=latest,
                 automation_plan_revision=automation_plan_revision,
                 automation_generation=automation_generation,
+                create_attentions=create_attentions,
             )
         )
     return ConversationDecision(intent=intent, message=latest, attention=attention)
@@ -368,14 +461,6 @@ def recover_unfulfilled_resume_requests(
     ):
         return 0
 
-    now = timezone.now()
-    blocking_statuses = [
-        ConversationAction.Status.APPROVED,
-        ConversationAction.Status.PENDING,
-        ConversationAction.Status.RUNNING,
-        ConversationAction.Status.WAITING_HUMAN,
-        ConversationAction.Status.SUCCEEDED,
-    ]
     applications = (
         JobApplication.objects.select_for_update()
         .select_related("candidate", "job")
@@ -388,20 +473,9 @@ def recover_unfulfilled_resume_requests(
     )
     recovered = 0
     for application in applications:
-        if application.resumes.filter(archived_at__isnull=True).exists():
+        if _has_confirmed_resume(application=application):
             continue
-        effective_action_exists = ConversationAction.objects.filter(
-            application=application,
-            action=ConversationAction.Action.REQUEST_RESUME,
-        ).filter(
-            Q(status__in=blocking_statuses)
-            | Q(
-                status=ConversationAction.Status.DRAFT,
-                approval__status="draft",
-                approval__expires_at__gt=now,
-            )
-        ).exists()
-        if effective_action_exists:
+        if existing_resume_request_action(application=application, for_update=True) is not None:
             continue
 
         state = application.conversation_state
@@ -418,7 +492,7 @@ def recover_unfulfilled_resume_requests(
         payload = latest_candidate_message.raw_payload
         if not isinstance(payload, dict) or payload.get("intent") != str(MessageIntent.REQUEST_RESUME):
             continue
-        first_contact = not state.messages.filter(direction=ConversationMessage.Direction.HR).exists()
+        first_contact = not _has_prior_greeting(application=application, state=state)
         approval = _queue_resume_request(
             application=application,
             account=locked_plan.job.boss_account,

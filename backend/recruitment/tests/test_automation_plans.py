@@ -496,7 +496,7 @@ class AutomationPlanApiTests(APITestCase):
             404,
         )
 
-    def test_passive_plan_recovers_processed_reply_after_old_generation_action_was_cancelled(self):
+    def test_passive_plan_does_not_retry_cancelled_request_after_new_generation(self):
         response = self._start(kind="passive_resume")
         self.assertEqual(response.status_code, 201, response.data)
         plan = RecruitmentAutomationPlan.objects.select_related("current_revision").get(job=self.job)
@@ -531,31 +531,21 @@ class AutomationPlanApiTests(APITestCase):
 
         plan.control_generation += 1
         plan.save(update_fields=["control_generation", "updated_at"])
-        self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 1)
-        current = AutomationApproval.objects.get(
-            automation_plan_revision=plan.current_revision,
-            automation_generation=plan.control_generation,
-            action=AutomationApproval.Action.REQUEST_RESUME,
-        )
-        self.assertEqual(current.status, AutomationApproval.Status.APPROVED)
-        self.assertEqual(current.payload["message"], "您好，方便发送一份简历吗？")
-        self.assertTrue(current.payload["items"][0]["first_contact"])
-        self.assertTrue(ExecutionBatch.objects.filter(approval=current).exists())
-        self.assertTrue(RpaTask.objects.filter(approval=current).exists())
-        status_response = self.client.get(
-            f"/api/recruitment/automation-plans/?job={self.job.pk}"
-        )
-        self.assertEqual(status_response.status_code, 200)
-        self.assertEqual(status_response.data["results"][0]["effective_state"], "running")
         self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 0)
-
-        current.status = AutomationApproval.Status.APPROVED
-        current.save(update_fields=["status"])
-        current.conversation_actions.update(status=ConversationAction.Status.SUCCEEDED)
-        plan.control_generation += 1
-        plan.save(update_fields=["control_generation", "updated_at"])
-        self.assertEqual(recover_unfulfilled_resume_requests(plan=plan, actor=self.user), 0)
-        self.assertFalse(AutomationApproval.objects.filter(automation_generation=plan.control_generation).exists())
+        self.assertFalse(
+            AutomationApproval.objects.filter(
+                automation_plan_revision=plan.current_revision,
+                automation_generation=plan.control_generation,
+                action=AutomationApproval.Action.REQUEST_RESUME,
+            ).exists()
+        )
+        self.assertEqual(
+            ConversationAction.objects.filter(
+                application=application,
+                action=ConversationAction.Action.REQUEST_RESUME,
+            ).count(),
+            1,
+        )
 
     def test_passive_plan_start_authorization_skips_both_followup_confirmations(self):
         response = self._start(kind="passive_resume")
