@@ -3,11 +3,58 @@ import hashlib
 import json
 
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from attendance.models import AccountProfile
-from recruitment.models import BossAccount, MessageSyncPolicy, RpaTask
+from recruitment.models import (
+    BossAccount,
+    CandidateExternalIdentity,
+    JobApplication,
+    MessageSyncPolicy,
+    Resume,
+    RpaTask,
+)
 from recruitment.rpa.tasks import RpaRuntimeUnavailable, create_task
+
+
+def _add_waiting_resume_rechecks(*, account, plan_scopes):
+    job_ids = [int(value) for value in plan_scopes if str(value).isdigit()]
+    active_resumes = Resume.objects.filter(
+        application_id=OuterRef("pk"),
+        archived_at__isnull=True,
+    )
+    applications = list(
+        JobApplication.objects.filter(
+            job_id__in=job_ids,
+            stage=JobApplication.Stage.WAITING_RESUME,
+            archived_at__isnull=True,
+        )
+        .annotate(has_active_resume=Exists(active_resumes))
+        .filter(has_active_resume=False)
+        .values("job_id", "candidate_id")
+        .order_by("job_id", "candidate_id")
+    )
+    identity_by_candidate = {}
+    for identity in (
+        CandidateExternalIdentity.objects.filter(
+            boss_account=account,
+            candidate_id__in=[item["candidate_id"] for item in applications],
+        )
+        .exclude(external_id="")
+        .order_by("candidate_id", "-last_seen_at", "-id")
+        .values("candidate_id", "external_id")
+    ):
+        identity_by_candidate.setdefault(identity["candidate_id"], identity["external_id"])
+    for application in applications:
+        external_id = identity_by_candidate.get(application["candidate_id"])
+        scope = plan_scopes.get(str(application["job_id"]))
+        if not external_id or not isinstance(scope, dict):
+            continue
+        values = scope.setdefault("recheck_external_ids", [])
+        if external_id not in values and len(values) < 50:
+            values.append(external_id)
+    return plan_scopes
 
 
 @transaction.atomic
@@ -36,6 +83,7 @@ def schedule_due_conversation_syncs(*, now=None):
             policy.enabled = False
             policy.save(update_fields=["enabled", "updated_at"])
             continue
+        plan_scopes = _add_waiting_resume_rechecks(account=account, plan_scopes=plan_scopes)
         due_at = (policy.last_scheduled_at or policy.created_at) + timedelta(minutes=policy.interval_minutes)
         if due_at > current:
             continue

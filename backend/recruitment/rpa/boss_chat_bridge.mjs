@@ -480,23 +480,49 @@ async function waitForOutgoing(page, request) {
 }
 
 async function sendText(page, request) {
+  let stage = "verify_before_type";
+  try {
   await verifySelected(page, request);
   const message = requireText(request.message, "发送内容", 1000);
   const previousCount = Number.parseInt(request.previous_count, 10);
   if (!Number.isInteger(previousCount) || previousCount < 0) throw new Error("发送回执基线无效");
-  const editor = await page.$("#boss-chat-editor-input");
-  if (!editor) throw new Error("未找到 BOSS 聊天输入框");
-  await editor.click();
+  stage = "find_editor";
+  const editorTarget = await page.evaluate(() => {
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden"
+        && rect.width > 0 && rect.height > 0;
+    };
+    const editors = Array.from(document.querySelectorAll("#boss-chat-editor-input")).filter(visible);
+    if (editors.length !== 1) return null;
+    editors[0].scrollIntoView({ block: "nearest", inline: "nearest" });
+    const rect = editors[0].getBoundingClientRect();
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + Math.min(rect.height / 2, 24);
+    const hit = document.elementFromPoint(x, y);
+    if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight
+        || !(hit instanceof Element) || (hit !== editors[0] && !editors[0].contains(hit))) return null;
+    return { x, y };
+  });
+  if (!editorTarget) throw new Error("未找到唯一可见的 BOSS 聊天输入框");
+  stage = "focus_editor";
+  await page.mouse.click(editorTarget.x, editorTarget.y);
+  stage = "clear_editor";
   await page.keyboard.down("Control");
   await page.keyboard.press("KeyA");
   await page.keyboard.up("Control");
   await page.keyboard.press("Backspace");
-  await editor.type(message, { delay: 35 });
+  stage = "type_message";
+  await page.keyboard.type(message, { delay: 35 });
   // BOSS no longer consistently treats Enter as a submit action. Freeze the
   // approved identity again after typing, then require exactly one visible,
   // enabled send control and repeat the identity check in the same browser
   // evaluation immediately before the external click.
+  stage = "verify_after_type";
   await verifySelected(page, request);
+  stage = "snapshot_send_controls";
   const controls = await page.evaluate(() => {
     const visible = (element) => {
       if (!(element instanceof HTMLElement)) return false;
@@ -514,12 +540,11 @@ async function sendText(page, request) {
         enabled: control instanceof HTMLElement
           && !/disabled|forbid|ban/i.test(className)
           && control.getAttribute("disabled") === null,
-        x: control instanceof HTMLElement ? control.getBoundingClientRect().x + control.getBoundingClientRect().width / 2 : 0,
-        y: control instanceof HTMLElement ? control.getBoundingClientRect().y + control.getBoundingClientRect().height / 2 : 0,
       };
     });
   });
   const controlIndex = uniqueVisibleEnabledControlIndex(controls);
+  stage = "verify_send_control";
   const clickTarget = controlIndex >= 0 && await page.evaluate(({ index, externalId, jobTitle }) => {
     const norm = (value) => (value ?? "").replace(/\s+/g, " ").trim();
     const visible = (element) => {
@@ -540,8 +565,14 @@ async function sendText(page, request) {
     const className = `${String(container?.className ?? "")} ${String(control?.className ?? "")}`;
     if (!visible(container) || !visible(input) || !visible(control)
         || /disabled|forbid|ban/i.test(className) || control.getAttribute("disabled") !== null) return null;
+    control.scrollIntoView({ block: "nearest", inline: "nearest" });
     const rect = control.getBoundingClientRect();
-    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight
+        || !(hit instanceof Element) || (hit !== control && !control.contains(hit))) return null;
+    return { x, y };
   }, {
     index: controlIndex,
     externalId: String(request.external_id ?? ""),
@@ -551,13 +582,60 @@ async function sendText(page, request) {
   // Dispatch the click through the browser input domain. Calling the site's
   // Vue handler from Runtime.callFunctionOn can keep that protocol command
   // pending even after the UI handled the click, producing a false timeout.
-  await page.mouse.click(clickTarget.x, clickTarget.y);
-  const receipt = await waitForOutgoing(page, {
-    ...request,
-    message,
-    previous_count: previousCount,
-  });
-  return receipt;
+  const responseTasks = [];
+  const onResponse = (response) => {
+    if (response.request().method() !== "POST") return;
+    try {
+      const pathName = new URL(response.url()).pathname;
+      responseTasks.push((async () => {
+        const body = await response.json().catch(() => null);
+        return {
+          path: pathName,
+          status: response.status(),
+          code: body && Object.hasOwn(body, "code") ? body.code : null,
+        };
+      })());
+    } catch {
+      // Ignore malformed browser resource URLs.
+    }
+  };
+  page.on("response", onResponse);
+  let receipt;
+  let stableReceipt = false;
+  try {
+    stage = "click_send_control";
+    await page.mouse.click(clickTarget.x, clickTarget.y);
+    stage = "verify_outgoing_receipt";
+    receipt = await waitForOutgoing(page, {
+      ...request,
+      message,
+      previous_count: previousCount,
+    });
+    // BOSS renders an optimistic bubble before a rejected send can disappear.
+    // Require the exact outgoing message to remain after the server response
+    // window instead of accepting the first transient DOM mutation.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    stage = "verify_stable_outgoing_receipt";
+    const stableCount = (await currentMessages(page)).filter((item) => (
+      item.direction === "hr" && normalize(item.content) === message
+    )).length;
+    stableReceipt = stableCount > previousCount;
+  } finally {
+    page.off("response", onResponse);
+  }
+  const responses = await Promise.all(responseTasks);
+  if (!stableReceipt) {
+    const observed = responses.map((item) => `${item.path}:${item.status}:${String(item.code)}`).join(",") || "none";
+    throw new Error(`BOSS 消息发送回执未稳定保留（POST=${observed}）`);
+  }
+  return {
+    ...receipt,
+    response_paths: responses.map((item) => `${item.path}:${item.status}:${String(item.code)}`),
+  };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`BOSS 消息发送阶段 ${stage}：${detail}`);
+  }
 }
 
 async function requestResume(page, request) {
@@ -575,7 +653,7 @@ async function requestResume(page, request) {
     };
     const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
     return Array.from(document.querySelectorAll(".exchange-tooltip"))
-      .some((tip) => visible(tip) && norm(tip.textContent).includes("索取简历"));
+      .some((tip) => visible(tip) && /(?:索取|请求)简历/.test(norm(tip.textContent)));
   });
   const availability = modalAlreadyOpen ? { found: true, available: true } : await page.evaluate(() => {
     const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
@@ -597,12 +675,17 @@ async function requestResume(page, request) {
     const disabled = /disabled|forbid|ban/i.test(className)
       || button?.getAttribute("disabled") !== null;
     const control = button instanceof HTMLElement ? button : target;
+    control.scrollIntoView({ block: "nearest", inline: "nearest" });
     const rect = control.getBoundingClientRect();
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
     return {
       found: true,
-      available: !disabled,
-      x: rect.x + rect.width / 2,
-      y: rect.y + rect.height / 2,
+      available: !disabled && x >= 0 && x < window.innerWidth && y >= 0 && y < window.innerHeight
+        && hit instanceof Element && (hit === control || control.contains(hit)),
+      x,
+      y,
     };
   });
   if (!availability.found) throw new Error("未找到 BOSS“求简历”按钮");
@@ -621,7 +704,7 @@ async function requestResume(page, request) {
       };
       const norm = (value) => (value ?? '').replace(/\\s+/g, '').trim();
       return Array.from(document.querySelectorAll('.exchange-tooltip')).some((tip) =>
-        visible(tip) && norm(tip.textContent).includes('索取简历')
+        visible(tip) && /(?:索取|请求)简历/.test(norm(tip.textContent))
           && Boolean(tip.querySelector('.btn-box .boss-btn-primary'))
       );
     }`,
@@ -661,8 +744,10 @@ async function requestResume(page, request) {
     window.__ximingResumeObserver.observe(document.body, { childList: true, subtree: true });
   });
   await new Promise((resolve) => setTimeout(resolve, 350));
-  await verifySelected(page, request);
-  const confirmTarget = await page.evaluate(() => {
+  let confirmTarget = null;
+  for (let attempt = 0; attempt < 6 && !confirmTarget; attempt += 1) {
+    await verifySelected(page, request);
+    confirmTarget = await page.evaluate(() => {
     const visible = (element) => {
       if (!(element instanceof HTMLElement)) return false;
       const style = window.getComputedStyle(element);
@@ -671,7 +756,7 @@ async function requestResume(page, request) {
     };
     const norm = (value) => (value ?? "").replace(/\s+/g, "").trim();
     const tips = Array.from(document.querySelectorAll(".exchange-tooltip"))
-      .filter((tip) => visible(tip) && norm(tip.textContent).includes("索取简历"));
+      .filter((tip) => visible(tip) && /(?:索取|请求)简历/.test(norm(tip.textContent)));
     if (tips.length !== 1) return null;
     const primary = tips[0].querySelector(
       ".btn-box .boss-btn-primary.boss-btn, .btn-box .boss-btn-primary",
@@ -679,8 +764,15 @@ async function requestResume(page, request) {
     if (!(primary instanceof HTMLElement) || !norm(primary.textContent).includes("确定")) return null;
     primary.scrollIntoView({ block: "center", inline: "nearest" });
     const rect = primary.getBoundingClientRect();
-    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-  });
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight
+        || !(hit instanceof Element) || (hit !== primary && !primary.contains(hit))) return null;
+    return { x, y };
+    });
+    if (!confirmTarget) await new Promise((resolve) => setTimeout(resolve, 150));
+  }
   if (!confirmTarget) {
     page.off("response", onResponse);
     throw new Error("点击前无法唯一定位 BOSS 求简历确认按钮");
@@ -727,7 +819,7 @@ async function requestResume(page, request) {
       };
       const norm = (value) => (value ?? '').replace(/\\s+/g, '').trim();
       const modalOpen = Array.from(document.querySelectorAll('.exchange-tooltip'))
-        .some((tip) => visible(tip) && norm(tip.textContent).includes('索取简历'));
+        .some((tip) => visible(tip) && /(?:索取|请求)简历/.test(norm(tip.textContent)));
       return !modalOpen;
     }`,
     { timeout: 12_000 },
@@ -795,11 +887,43 @@ async function downloadAttachments(page, browser, request) {
     });
     if (cardCount < 0) throw new Error("未找到当前 BOSS 聊天消息区");
     const downloaded = [];
+    const downloadFailures = [];
     for (let index = 0; index < Math.min(cardCount, 10); index += 1) {
       const previousNames = new Set(await readdir(directory));
-      // Re-query the live message DOM for each click. BOSS may replace the
-      // whole chat list after a card action, invalidating retained handles.
-      const clicked = await page.evaluate((targetIndex) => {
+      const previewAlreadyOpen = await page.evaluate(() => {
+        const visible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden"
+            && rect.width > 0 && rect.height > 0;
+        };
+        return Array.from(document.querySelectorAll(".dialog-wrap.active .attachment-resume-btns"))
+          .some(visible);
+      });
+      if (!previewAlreadyOpen) {
+        await verifySelected(page, request);
+        // Re-query the live message DOM for each click. BOSS may replace the
+        // whole chat list after a card action, invalidating retained handles.
+        const previewTarget = await page.evaluate((targetIndex) => {
+          const visible = (element) => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden"
+              && rect.width > 0 && rect.height > 0;
+          };
+          const pointFor = (control) => {
+            if (!(control instanceof HTMLElement) || !visible(control)) return null;
+            control.scrollIntoView({ block: "nearest", inline: "nearest" });
+            const rect = control.getBoundingClientRect();
+            const x = rect.x + rect.width / 2;
+            const y = rect.y + rect.height / 2;
+            const hit = document.elementFromPoint(x, y);
+            if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight
+                || !(hit instanceof Element) || (hit !== control && !control.contains(hit))) return null;
+            return { x, y };
+          };
         const lists = Array.from(document.querySelectorAll(".chat-message-list")).filter((element) => {
           const style = window.getComputedStyle(element);
           const rect = element.getBoundingClientRect();
@@ -812,20 +936,80 @@ async function downloadAttachments(page, browser, request) {
         ));
         const messageItem = cards[targetIndex]?.closest(".message-item");
         const button = messageItem?.querySelector(".message-card-buttons .card-btn");
-        if (!(button instanceof HTMLElement)) return false;
-        button.click();
-        return true;
-      }, index);
-      if (!clicked) continue;
+          return pointFor(button);
+        }, index);
+        if (!previewTarget) continue;
+        await page.mouse.click(previewTarget.x, previewTarget.y);
+      }
       try {
+        await page.waitForFunction(
+          `Array.from(document.querySelectorAll('.dialog-wrap.active .attachment-resume-btns'))
+            .some((element) => {
+              const style = window.getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return style.display !== 'none' && style.visibility !== 'hidden'
+                && rect.width > 0 && rect.height > 0
+                && Array.from(element.querySelectorAll('use')).some((icon) =>
+                  [icon.getAttribute('href'), icon.getAttribute('xlink:href')]
+                    .includes('#icon-attacthment-download')
+                );
+            })`,
+          { timeout: 12_000 },
+        );
+        await verifySelected(page, request);
+        const downloadTarget = await page.evaluate(() => {
+          const visible = (element) => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden"
+              && rect.width > 0 && rect.height > 0;
+          };
+          const controls = Array.from(document.querySelectorAll(
+            ".dialog-wrap.active .attachment-resume-btns .icon-content",
+          )).filter((element) => visible(element) && Array.from(element.querySelectorAll("use"))
+            .some((icon) => [icon.getAttribute("href"), icon.getAttribute("xlink:href")]
+              .includes("#icon-attacthment-download")));
+          if (controls.length !== 1) return null;
+          const control = controls[0];
+          control.scrollIntoView({ block: "nearest", inline: "nearest" });
+          const rect = control.getBoundingClientRect();
+          const x = rect.x + rect.width / 2;
+          const y = rect.y + rect.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight
+              || !(hit instanceof Element) || (hit !== control && !control.contains(hit))) return null;
+          return { x, y };
+        });
+        if (!downloadTarget) throw new Error("未找到唯一可见的 BOSS 附件简历下载控件");
+        await page.mouse.click(downloadTarget.x, downloadTarget.y);
         const filename = await waitForDownloadedPdf(directory, previousNames, 8_000);
         const filePath = path.join(directory, filename);
         const details = await stat(filePath);
         downloaded.push({ path: filePath, filename: path.basename(filename), file_size: details.size });
-      } catch {
-        // A non-download card or an already unavailable attachment is skipped;
-        // the caller can continue polling for a later candidate response.
+      } catch (error) {
+        downloadFailures.push(error instanceof Error ? error.message : String(error));
+      } finally {
+        const closeTarget = await page.evaluate(() => {
+          const visible = (element) => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden"
+              && rect.width > 0 && rect.height > 0;
+          };
+          const controls = Array.from(document.querySelectorAll(".dialog-wrap.active .close-btn"))
+            .filter(visible);
+          if (controls.length !== 1) return null;
+          const rect = controls[0].getBoundingClientRect();
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        });
+        if (closeTarget) await page.mouse.click(closeTarget.x, closeTarget.y);
       }
+    }
+    if (cardCount > 0 && downloaded.length === 0) {
+      const detail = downloadFailures.filter(Boolean).join("；") || "附件卡片未生成下载文件";
+      throw new Error(`BOSS 附件简历下载失败：${detail}`);
     }
     return downloaded;
   } finally {
@@ -1114,8 +1298,21 @@ async function execute(page, browser, request, packageRoot) {
       return { receipt: await sendText(page, request) };
     case "request_resume": {
       let greeting = null;
-      if (request.first_contact) greeting = await sendText(page, request);
-      const requested = await requestResume(page, request);
+      if (request.first_contact) {
+        try {
+          greeting = await sendText(page, request);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(`BOSS 求简历阶段 greeting_send：${detail}`);
+        }
+      }
+      let requested;
+      try {
+        requested = await requestResume(page, request);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`BOSS 求简历阶段 native_request：${detail}`);
+      }
       return {
         receipt: {
           ...requested,

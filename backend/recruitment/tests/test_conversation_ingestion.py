@@ -119,6 +119,62 @@ class ConversationIngestionTests(TestCase):
         self.assertEqual(ConversationMessage.objects.count(), 2)
         self.assertEqual(self.application.conversation_state.cursor, "m2")
 
+    def test_late_attachment_enriches_existing_message_idempotently(self):
+        text_only = {
+            "direction": "candidate",
+            "content": "方家乐简历.pdf",
+            "sent_at": "2026-08-25T09:00:00+08:00",
+            "attachment_sync_state": "unknown",
+        }
+        first = ingest_conversation(
+            application=self.application,
+            account=self.account,
+            messages=[text_only],
+        )
+        with_attachment = {
+            **text_only,
+            "attachment_sync_state": "ready",
+            "attachments": [
+                {
+                    "filename": "方家乐简历.pdf",
+                    "content_type": "application/pdf",
+                    "file_size": 932839,
+                }
+            ],
+        }
+
+        second = ingest_conversation(
+            application=self.application,
+            account=self.account,
+            messages=[with_attachment],
+        )
+        with_hash = {
+            **with_attachment,
+            "attachments": [
+                {
+                    **with_attachment["attachments"][0],
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+        third = ingest_conversation(
+            application=self.application,
+            account=self.account,
+            messages=[with_hash],
+        )
+
+        self.assertEqual(first.created_messages, 1)
+        self.assertEqual(second.created_messages, 0)
+        self.assertEqual(second.created_attachments, 1)
+        self.assertEqual(third.created_messages, 0)
+        self.assertEqual(third.created_attachments, 0)
+        self.assertEqual(ConversationMessage.objects.count(), 1)
+        message = ConversationMessage.objects.get()
+        self.assertEqual(message.attachments.count(), 1)
+        self.assertEqual(message.attachments.get().file_size, 932839)
+        self.assertEqual(message.attachments.get().sha256, "a" * 64)
+        self.assertEqual(message.raw_payload["attachment_sync_state"], "ready")
+
     def test_processes_latest_candidate_intent_and_creates_observation_attention(self):
         ingest_conversation(
             application=self.application,

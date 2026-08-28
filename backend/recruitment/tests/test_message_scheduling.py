@@ -8,6 +8,10 @@ from django.utils import timezone
 from attendance.models import AccountProfile
 from recruitment.models import (
     BossAccount,
+    Candidate,
+    CandidateDiscovery,
+    CandidateExternalIdentity,
+    JobApplication,
     MessageSyncPolicy,
     RecruitmentAutomationPlan,
     RecruitmentAutomationPlanRevision,
@@ -84,6 +88,31 @@ class MessageSchedulingTests(TestCase):
         self.assertEqual(second, [])
         self.assertEqual(RpaTask.objects.get().action, RpaTask.Action.SYNC_CONVERSATIONS)
         self.assertTrue(RpaTask.objects.get().request_payload["scheduled"])
+
+    def test_due_policy_rechecks_stable_waiting_resume_application(self):
+        now = timezone.now()
+        plan = self.create_running_passive_plan()
+        candidate = Candidate.objects.create(identity_key="waiting-resume", name="同名候选人")
+        JobApplication.objects.create(
+            candidate=candidate,
+            job=plan.job,
+            source="boss",
+            stage=JobApplication.Stage.WAITING_RESUME,
+        )
+        CandidateExternalIdentity.objects.create(
+            boss_account=self.account,
+            candidate=candidate,
+            external_id="stable-waiting-resume",
+            fingerprint="f" * 64,
+            identity_quality=CandidateDiscovery.IdentityQuality.PLATFORM,
+        )
+        policy = MessageSyncPolicy.objects.create(boss_account=self.account, interval_minutes=5)
+        MessageSyncPolicy.objects.filter(pk=policy.pk).update(last_scheduled_at=now - timedelta(minutes=6))
+
+        [task] = schedule_due_conversation_syncs(now=now)
+
+        scope = task.request_payload["passive_plan_scopes"][str(plan.job_id)]
+        self.assertEqual(scope["recheck_external_ids"], ["stable-waiting-resume"])
 
     def test_due_policy_is_left_due_when_runtime_is_offline(self):
         now = timezone.now()

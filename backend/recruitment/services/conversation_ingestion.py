@@ -149,17 +149,30 @@ def ingest_conversation(*, application, account, messages, cursor=""):
             "conversation_state": state,
             "fingerprint": fingerprint,
         }
-        message, created = ConversationMessage.objects.get_or_create(
-            **lookup,
-            defaults={
-                "external_id": external_id,
-                "fingerprint": fingerprint,
-                "direction": direction,
-                "content": str(item.get("content", "")),
-                "sent_at": _sent_at(item.get("sent_at")),
-                "raw_payload": item,
-            },
-        )
+        message = None
+        if not external_id and item.get("attachments"):
+            # Attachment discovery can lag behind the text message. Match the
+            # exact pre-attachment fingerprint before creating anything so a
+            # later verified download enriches the original message instead of
+            # creating a second candidate message.
+            without_attachments = {**item, "attachments": []}
+            message = ConversationMessage.objects.filter(
+                conversation_state=state,
+                fingerprint=_fingerprint(without_attachments),
+            ).first()
+        if message is None:
+            message = ConversationMessage.objects.filter(**lookup).first()
+        created = message is None
+        if created:
+            message = ConversationMessage.objects.create(
+                conversation_state=state,
+                external_id=external_id,
+                fingerprint=fingerprint,
+                direction=direction,
+                content=str(item.get("content", "")),
+                sent_at=_sent_at(item.get("sent_at")),
+                raw_payload=item,
+            )
         if not created:
             # A previous read may have preserved the text while attachment
             # verification was unknown. A later verified read clears only that
@@ -174,25 +187,68 @@ def ingest_conversation(*, application, account, messages, cursor=""):
                 raw_payload.pop("attachment_error_code", None)
                 message.raw_payload = raw_payload
                 message.save(update_fields=["raw_payload"])
-            continue
-        created_messages += 1
-        if direction == ConversationMessage.Direction.CANDIDATE:
-            created_candidate_messages.append(message)
-        last_preview = message.content[:500]
-        has_candidate_reply = has_candidate_reply or direction == ConversationMessage.Direction.CANDIDATE
+        else:
+            created_messages += 1
+            if direction == ConversationMessage.Direction.CANDIDATE:
+                created_candidate_messages.append(message)
+            last_preview = message.content[:500]
+            has_candidate_reply = has_candidate_reply or direction == ConversationMessage.Direction.CANDIDATE
         for attachment in item.get("attachments", []):
             if not isinstance(attachment, dict):
                 continue
-            MessageAttachment.objects.create(
-                message=message,
-                external_id=str(attachment.get("external_id", ""))[:200],
-                original_name=str(attachment.get("filename", "附件"))[:255],
-                content_type=str(attachment.get("content_type", ""))[:100],
-                file_size=max(0, int(attachment.get("file_size", 0) or 0)),
-                sha256=str(attachment.get("sha256", ""))[:64],
-                source_payload=attachment,
-            )
-            created_attachments += 1
+            attachment_external_id = str(attachment.get("external_id", ""))[:200]
+            attachment_sha256 = str(attachment.get("sha256", ""))[:64]
+            original_name = str(attachment.get("filename", "附件"))[:255]
+            file_size = max(0, int(attachment.get("file_size", 0) or 0))
+            existing_attachment = None
+            if attachment_external_id:
+                attachment_lookup = {
+                    "message": message,
+                    "external_id": attachment_external_id,
+                }
+            elif attachment_sha256:
+                attachment_lookup = {
+                    "message": message,
+                    "sha256": attachment_sha256,
+                }
+            else:
+                attachment_lookup = {
+                    "message": message,
+                    "external_id": "",
+                    "sha256": "",
+                    "original_name": original_name,
+                    "file_size": file_size,
+                }
+            if attachment_sha256 and not attachment_external_id:
+                existing_attachment = MessageAttachment.objects.filter(**attachment_lookup).first()
+                if existing_attachment is None:
+                    existing_attachment = MessageAttachment.objects.filter(
+                        message=message,
+                        external_id="",
+                        sha256="",
+                        original_name=original_name,
+                        file_size=file_size,
+                    ).first()
+                    if existing_attachment is not None:
+                        existing_attachment.sha256 = attachment_sha256
+                        existing_attachment.content_type = str(attachment.get("content_type", ""))[:100]
+                        existing_attachment.source_payload = attachment
+                        existing_attachment.save(update_fields=["sha256", "content_type", "source_payload"])
+            if existing_attachment is None:
+                _, attachment_created = MessageAttachment.objects.get_or_create(
+                    **attachment_lookup,
+                    defaults={
+                        "external_id": attachment_external_id,
+                        "original_name": original_name,
+                        "content_type": str(attachment.get("content_type", ""))[:100],
+                        "file_size": file_size,
+                        "sha256": attachment_sha256,
+                        "source_payload": attachment,
+                    },
+                )
+            else:
+                attachment_created = False
+            created_attachments += int(attachment_created)
 
     state.cursor = str(cursor or state.cursor)[:300]
     state.last_message_preview = last_preview

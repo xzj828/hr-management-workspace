@@ -645,19 +645,50 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
             job_title=job_title,
         )
         list_retry_count += retry_count
-        raw_rows = parse_conversation_list(raw_output)
-        for row in raw_rows:
+        discovered_rows = [(row, False) for row in parse_conversation_list(raw_output)]
+        scope_details = next((
+            item for item in (payload.get("passive_plan_scopes") or {}).values()
+            if isinstance(item, dict)
+            and _normalize_job_title(item.get("job_title", "")) == job_title
+        ), {})
+        recheck_ids = {
+            str(value).strip()
+            for value in scope_details.get("recheck_external_ids", [])
+            if str(value).strip()
+        } if isinstance(scope_details, dict) else set()
+        if recheck_ids and not backfill_conversations:
+            all_output, retry_count = _list_conversations_with_retry(
+                runner,
+                account,
+                unread=False,
+                job_title=job_title,
+            )
+            list_retry_count += retry_count
+            discovered_rows.extend(
+                (row, True)
+                for row in parse_conversation_list(all_output)
+                if str(row.get("external_id", "")).strip() in recheck_ids
+            )
+        for row, recheck_requested in discovered_rows:
             external_id = str(row.get("external_id", "")).strip()
             if external_id and external_id in seen_external_ids:
-                raise BossCliError("同一 BOSS 会话稳定 ID 命中多个职位筛选")
+                existing = next(item for item in rows if item.get("external_id") == external_id)
+                if _normalize_job_title(existing.get("job_title", "")) != _normalize_job_title(row.get("job_title", "")):
+                    raise BossCliError("同一 BOSS 会话稳定 ID 命中多个职位筛选")
+                existing["unread"] = bool(existing.get("unread") or row.get("unread"))
+                existing["recheck_requested"] = bool(
+                    existing.get("recheck_requested") or recheck_requested
+                )
+                continue
             if external_id:
                 seen_external_ids.add(external_id)
+            row["recheck_requested"] = recheck_requested
             rows.append(row)
     incoming = Path(settings.MEDIA_ROOT) / "rpa-incoming"
     eligible = []
     skipped = 0
     for row in rows:
-        if not row.get("unread") and not (
+        if not row.get("unread") and not row.get("recheck_requested") and not (
             backfill_conversations and row.get("selected")
         ):
             row["sync_error"] = "会话已读，未打开"
@@ -678,7 +709,7 @@ def execute_sync_conversations(task, account, runner, checkpoint=None):
     message_failed_count = 0
     attachment_failed_count = 0
     for sequence, row in enumerate(eligible[:50], start=1):
-        if name_counts[row["name"]] != 1:
+        if not str(row.get("external_id", "")).strip() and name_counts[row["name"]] != 1:
             row["sync_error"] = "同名候选人不唯一，未打开会话"
             row["sync_error_code"] = "conversation_identity_ambiguous"
             skipped += 1

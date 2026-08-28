@@ -262,6 +262,45 @@ class WorkerEngineTests(SimpleTestCase):
         self.assertEqual(len(runner.opened), 2)
 
     @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
+    def test_waiting_resume_recheck_opens_exact_read_conversation(self, inventory):
+        inventory.return_value.download_resume_attachments.return_value = []
+
+        class Runner:
+            def __init__(self):
+                self.list_calls = []
+                self.opened = []
+
+            def conversations(self, account, unread=False, job_title=""):
+                self.list_calls.append((job_title, unread))
+                if unread:
+                    return ""
+                return (
+                    "1. 同名候选人｜产品经理｜external_id:target-stable｜已读\n"
+                    "2. 同名候选人｜产品经理｜external_id:other-stable｜已读"
+                )
+
+            def open_chat_by_external_id(self, account, external_id, *, job_title="", unread=False):
+                self.opened.append((external_id, job_title, unread))
+                return SimpleNamespace(stdout="完整聊天消息：\n[candidate] 已发送简历.pdf")
+
+        runner = Runner()
+        outcome = execute_sync_conversations(
+            {"request_payload": {"passive_plan_scopes": {
+                "7": {
+                    "job_title": "产品经理",
+                    "recheck_external_ids": ["target-stable"],
+                },
+            }}},
+            CliAccountConfig("edge.exe", "profile", 53470),
+            runner,
+        )
+
+        self.assertEqual(runner.list_calls, [("产品经理", True), ("产品经理", False)])
+        self.assertEqual(runner.opened, [("target-stable", "产品经理", False)])
+        self.assertEqual(outcome["result"]["eligible_count"], 1)
+        self.assertTrue(outcome["result"]["conversations"][0]["recheck_requested"])
+
+    @patch("recruitment.management.commands.run_rpa_worker.BrowserInventory")
     def test_bootstrap_backfill_opens_read_conversations_only_for_selected_job(self, inventory):
         inventory.return_value.download_resume_attachments.return_value = []
 
