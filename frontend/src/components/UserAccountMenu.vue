@@ -73,7 +73,7 @@ function choose(action) {
     >
       <span class="avatar">{{ initial }}</span>
       <span class="account-menu__name">{{ displayName }}</span>
-      <AppIcon class="account-menu__chevron" name="chevron-down" :size="15" />
+      <AppIcon class="account-menu__chevron" name="chevron-down" :size="18" />
     </button>
     <div v-if="open" ref="panel" class="account-menu__panel" role="menu" @keydown="onMenuKeydown">
       <div class="account-menu__identity">

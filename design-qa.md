@@ -54,6 +54,110 @@ final result: passed
 
 ---
 
+# Model Switcher Proportion QA — 2026-08-29
+
+- source visual truth: `C:/Users/ADMINI~1/AppData/Local/Temp/codex-clipboard-99c8289e-ad99-4d68-9957-ea27f559d0fb.png`, with the user-directed transformation “比例太小，改大一点”
+- browser-rendered implementation: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-model-switcher-implementation.png`
+- focused implementation crop: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-model-switcher-crop.png`
+- combined before/after comparison: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-model-switcher-comparison.png`
+- responsive evidence: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-model-switcher-mobile.png`
+- browser: Codex in-app Browser
+- source pixels: 482 × 220 focused crop; its original CSS viewport and density are unavailable
+- implementation capture: 1265 × 712 px from a 1487 × 1058 CSS desktop viewport override; focused crop 665 × 340 px
+- comparison normalization: the two focused crops are enlarged independently for legibility, so proportion is judged against the adjacent trigger, avatar, account label, and top-bar height rather than false pixel-for-pixel equivalence
+- state: recruitment administration page, one active saved model, model selector open
+
+## Full-view comparison evidence
+
+The browser-rendered desktop view shows the enlarged selector integrated into the existing top bar without covering the account control or clipping the administration content. Runtime measurements confirm a 251.44 × 48 px trigger, 420 px menu width, 68 px model row, 59 px footer, and 16 px menu title. The 390 × 844 supplemental pass keeps the menu itself inside the available workspace and all model text and footer actions visible.
+
+## Focused comparison evidence
+
+`design-qa-model-switcher-comparison.png` places the supplied compact state and the rendered enlarged state in one comparison input. Relative to the same avatar and account controls, the revised trigger has more presence, the menu has a wider reading measure, the model row has a larger click target, and the footer actions are no longer visually compressed. The menu remains right-aligned to its trigger and preserves the original information hierarchy.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing application font stack and weights are preserved. Trigger text is 15 px, secondary trigger text 12 px, menu title 16 px, and model/status/footer text 12–14 px, replacing the former 9–13 px compressed hierarchy.
+- Spacing and layout rhythm: trigger height increases from 40 to 48 px, menu width from 360 to 420 px, option height from 53 to 68 px, footer height to 59 px, and radius from 13 to 16 px. Internal gaps, padding, close target, and icons grow together rather than enlarging only the container.
+- Colors and visual tokens: white surface, teal active treatment, slate text, muted secondary copy, border, focus ring, hover state, and shadow all reuse the existing design system.
+- Image quality and asset fidelity: the target contains no raster illustration. Existing `AppIcon` library icons are retained and enlarged; no placeholder, emoji, handcrafted SVG, CSS drawing, or generated asset is introduced.
+- Copy and content: “切换模型”“选择模型”“只影响之后创建的 AI 任务”“当前使用”“新增自定义模型” and “编辑当前模型” remain unchanged.
+- Interaction and accessibility: open, Escape close with focus return, active radio semantics, and the “新增自定义模型” drawer were exercised. The browser console reported zero errors.
+
+## Comparison history
+
+1. Source baseline — blocked:
+   - P2: the 40 px trigger and 9–13 px internal type were visibly undersized beside the enlarged top navigation and 42–50 px account avatar;
+   - P2: the 360 px menu, 53 px model row, and compressed footer made the whole selector read as a smaller-density component than the surrounding shell.
+2. Fix:
+   - enlarged the trigger, icons, typography, panel width, row height, close target, footer actions, radius, spacing, and shadow as one coherent scale change;
+   - kept the existing responsive placement, focus behavior, semantic roles, tokens, copy, and data flow unchanged.
+3. Final browser pass — passed:
+   - no clipping or overlap in the desktop comparison target;
+   - the 390 px supplemental check kept all menu-owned content visible;
+   - 285 frontend tests and the production build passed, and the deployed local service returned HTTP 200.
+
+## Findings
+
+No actionable P0, P1, or P2 findings remain for the model-switcher enlargement.
+
+final result: passed
+
+---
+
+# Account Menu Proportion QA — 2026-08-29
+
+- source visual truth: `C:/Users/ADMINI~1/AppData/Local/Temp/codex-clipboard-d5dafceb-a634-49da-a84c-bf315d460dd5.png`, with the user-directed transformation “这个也要同样放大”
+- browser-rendered implementation: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-account-menu-implementation.png`
+- focused implementation crop: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-account-menu-crop.png`
+- combined before/after comparison: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-account-menu-comparison.png`
+- responsive evidence: `C:/Users/Administrator/Desktop/hr-management-workspace-master/design-qa-account-menu-mobile.png`
+- browser: Codex in-app Browser
+- source pixels: 162 × 207 focused crop; its original CSS viewport and density are unavailable
+- implementation pixels: 1472 × 1047 from a 1487 × 1058 CSS desktop viewport override; focused crop 272 × 310 px
+- comparison normalization: focused crops are enlarged independently for legibility; proportion is judged against the shared avatar, account label, chevron, and top-bar height
+- state: recruitment administration page, administrator account menu open
+
+## Full-view comparison evidence
+
+The rendered desktop view keeps the account menu aligned to the right edge of its trigger and visually balanced with the enlarged model switcher. Runtime measurements confirm a 190 × 48 px desktop trigger, 240 × 190.19 px panel, 48 px action rows, 15 px account and identity names, 12 px role copy, and 14 px action labels. The panel does not cover the model switcher or clip against the viewport edge.
+
+## Focused comparison evidence
+
+`design-qa-account-menu-comparison.png` places the supplied compact state and the browser-rendered enlarged state together. Relative to the same avatar, the revised panel has a wider reading measure, more generous identity spacing, larger action text, taller click targets, a larger radius, and stronger but consistent elevation. Copy order and information hierarchy remain unchanged.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing application font stack and weights are preserved. The trigger and identity name use 15 px, role copy uses 12 px, and menu actions use 14 px instead of the former 10–12 px compressed hierarchy.
+- Spacing and layout rhythm: desktop trigger width increases from 170 to 190 px, height from 40 to 48 px, panel width from 190 to 240 px, action rows from 36 to 48 px, and radius from 11 to 15 px. Identity padding, inter-line gap, menu padding, chevron, and shadow grow together.
+- Colors and visual tokens: white surface, slate text, muted role copy, border, focus/hover treatment, and shadow continue to use the existing shell tokens.
+- Image quality and asset fidelity: the menu contains no raster imagery. The avatar remains the existing text identity mark and the chevron remains the existing `AppIcon`; no new placeholder or custom graphic is introduced.
+- Copy and content: account name, role, “新增自定义模型”, and “退出登录” remain unchanged and data-driven.
+- Interaction and accessibility: menu open, first-item focus, Escape close with focus return, and semantic menu/menuitem structure were exercised. The browser console reported zero errors.
+- Responsive behavior: at 390 × 844 the account trigger compacts to 42 × 48 px, the 240 px panel stays within x=135–375, and the page has zero horizontal overflow attributable to the top-bar actions.
+
+## Comparison history
+
+1. Source baseline — blocked:
+   - P2: the 40 px trigger, 190 px panel, 36 px rows, and 10–12 px text were visibly undersized beside the enlarged top navigation and avatar.
+2. First fix:
+   - enlarged the desktop trigger, panel, typography, chevron, identity padding, action rows, radius, spacing, and shadow as one coherent scale change.
+3. Responsive correction:
+   - P2: the enlarged desktop minimum width initially left 17 px of horizontal overflow at the 390 px check;
+   - restored a 42 px avatar-only trigger and reduced the narrow top-bar action gap, producing zero horizontal overflow while preserving the 48 px control height and full-size menu.
+4. Final browser pass — passed:
+   - desktop and 390 px menu content remained visible without clipping;
+   - Escape restored the closed state and the browser console stayed error-free;
+   - 285 frontend tests, the production build, and the deployed local HTTP 200 health check passed.
+
+## Findings
+
+No actionable P0, P1, or P2 findings remain for the account-menu enlargement.
+
+final result: passed
+
+---
+
 # Large Resume Document Viewer QA — 2026-08-28
 
 - source visual truth: `C:/Users/ADMINI~1/AppData/Local/Temp/codex-clipboard-a75b47aa-9a5b-4351-95db-d6774f92a771.png`

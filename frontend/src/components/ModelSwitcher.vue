@@ -110,13 +110,13 @@ onBeforeUnmount(() => {
 <template>
   <div ref="root" :class="['model-switcher', { 'model-switcher--compact': compact }]">
     <button ref="trigger" class="model-switcher__trigger" type="button" :aria-label="compact ? '切换模型' : undefined" :aria-controls="menuId" :aria-expanded="String(open)" aria-haspopup="dialog" @click.stop="toggle">
-      <AppIcon :name="compact ? 'headset' : 'sparkles'" :size="compact ? 15 : 17" />
+      <AppIcon :name="compact ? 'headset' : 'sparkles'" :size="compact ? 15 : 20" />
       <span v-if="!compact">切换模型</span>
       <small v-if="!compact">{{ activeLabel }}</small>
-      <AppIcon v-if="!compact" name="chevron-down" :size="14" />
+      <AppIcon v-if="!compact" name="chevron-down" :size="16" />
     </button>
     <div v-if="open" :id="menuId" class="model-switcher__menu" role="dialog" aria-label="选择模型">
-      <header><div><strong>选择模型</strong><small>只影响之后创建的 AI 任务</small></div><button type="button" aria-label="关闭模型菜单" @click="closeAndFocusTrigger"><AppIcon name="close" :size="15" /></button></header>
+      <header><div><strong>选择模型</strong><small>只影响之后创建的 AI 任务</small></div><button type="button" aria-label="关闭模型菜单" @click="closeAndFocusTrigger"><AppIcon name="close" :size="18" /></button></header>
       <div v-if="credentials.loading" class="model-switcher__state" aria-live="polite">正在读取模型…</div>
       <template v-else>
         <p v-if="credentials.error" class="model-switcher__error" role="alert">{{ credentials.error }} <button type="button" @click="load">重试</button></p>
@@ -135,7 +135,7 @@ onBeforeUnmount(() => {
             @keydown.home.prevent="focusOption(0)"
             @keydown.end.prevent="focusOption(credentials.profiles.length - 1)"
           >
-            <i :class="{ 'is-active': profile.is_active }"><AppIcon v-if="profile.is_active" name="check-circle" :size="16" /></i>
+            <i :class="{ 'is-active': profile.is_active }"><AppIcon v-if="profile.is_active" name="check-circle" :size="19" /></i>
             <span><strong>{{ profile.name }}</strong><small>{{ profile.model }}</small></span>
             <em v-if="profile.is_active">当前使用</em>
             <em v-else-if="String(credentials.switchingId) === String(profile.id)">切换中…</em>
@@ -144,7 +144,7 @@ onBeforeUnmount(() => {
         <div v-else-if="!credentials.error" class="model-switcher__empty"><strong>尚未配置模型</strong><p>添加一个兼容模型后，可在这里快速切换。</p></div>
       </template>
       <footer>
-        <button class="model-switcher__add" type="button" @click="openCreate"><AppIcon name="plus" :size="16" />新增自定义模型</button>
+        <button class="model-switcher__add" type="button" @click="openCreate"><AppIcon name="plus" :size="18" />新增自定义模型</button>
         <button v-if="credentials.activeProfile" class="model-switcher__edit" type="button" @click="openEdit(credentials.activeProfile)">编辑当前模型</button>
       </footer>
     </div>
@@ -155,39 +155,40 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .model-switcher { position: relative; }
-.model-switcher__trigger { min-height: 40px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; color: var(--slate); background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.model-switcher__trigger { min-height: 48px; display: inline-flex; align-items: center; gap: 9px; padding: 7px 12px; color: var(--slate); background: transparent; border: 0; border-radius: 11px; cursor: pointer; }
 .model-switcher__trigger:hover,.model-switcher__trigger[aria-expanded="true"] { color: var(--teal-dark); background: #f3f8f7; }
 .model-switcher__trigger:focus-visible,.model-switcher__options > button:focus-visible,.model-switcher__menu footer button:focus-visible,.model-switcher__menu header button:focus-visible { outline: 3px solid rgba(15, 159, 143, .22); outline-offset: 2px; }
-.model-switcher__trigger > span { font-size: 12px; font-weight: 800; }
-.model-switcher__trigger > small { max-width: 90px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.model-switcher__trigger > span { font-size: 15px; font-weight: 800; }
+.model-switcher__trigger > small { max-width: 112px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .model-switcher--compact .model-switcher__trigger { width: 32px; min-height: 32px; justify-content: center; padding: 0; border-radius: 7px; color: #526176; }
-.model-switcher__menu { position: absolute; z-index: 70; top: calc(100% + 9px); right: 0; width: min(360px, calc(100vw - 24px)); overflow: hidden; color: var(--slate); background: #fff; border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 18px 45px rgba(15, 23, 42, .15); }
-.model-switcher__menu > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 15px 16px 12px; border-bottom: 1px solid var(--line); }
-.model-switcher__menu header div { display: grid; gap: 3px; }
-.model-switcher__menu header strong { color: var(--ink); font-size: 13px; }
-.model-switcher__menu header small { color: var(--muted); font-size: 10px; }
-.model-switcher__menu header button { display: grid; place-items: center; padding: 3px; color: var(--muted); background: transparent; border: 0; cursor: pointer; }
-.model-switcher__state,.model-switcher__empty { padding: 28px 18px; text-align: center; }
-.model-switcher__state { color: var(--muted); font-size: 11px; }
-.model-switcher__empty strong { color: var(--ink); font-size: 12px; }
-.model-switcher__empty p { margin: 5px 0 0; color: var(--muted); font-size: 10px; }
-.model-switcher__error { margin: 10px 12px; padding: 9px 10px; color: #a43f49; background: #fff3f3; border-radius: 8px; font-size: 10px; }
+.model-switcher__menu { position: absolute; z-index: 70; top: calc(100% + 11px); right: 0; width: min(420px, calc(100vw - 24px)); overflow: hidden; color: var(--slate); background: #fff; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 48px rgba(15, 23, 42, .16); }
+.model-switcher__menu > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 20px 16px; border-bottom: 1px solid var(--line); }
+.model-switcher__menu header div { display: grid; gap: 5px; }
+.model-switcher__menu header strong { color: var(--ink); font-size: 16px; }
+.model-switcher__menu header small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.model-switcher__menu header button { width: 32px; min-width: 32px; height: 32px; display: grid; place-items: center; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.model-switcher__menu header button:hover { color: var(--slate); background: #f3f6f8; }
+.model-switcher__state,.model-switcher__empty { padding: 34px 22px; text-align: center; }
+.model-switcher__state { color: var(--muted); font-size: 14px; }
+.model-switcher__empty strong { color: var(--ink); font-size: 15px; }
+.model-switcher__empty p { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.model-switcher__error { margin: 12px 14px; padding: 12px; color: #a43f49; background: #fff3f3; border-radius: 10px; font-size: 13px; line-height: 1.45; }
 .model-switcher__error button { margin-left: 5px; color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; }
-.model-switcher__options { max-height: 280px; overflow-y: auto; padding: 6px; }
-.model-switcher__options > button { width: 100%; min-height: 53px; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px 10px; color: var(--slate); background: transparent; border: 0; border-radius: 8px; text-align: left; cursor: pointer; }
+.model-switcher__options { max-height: 360px; overflow-y: auto; padding: 8px; }
+.model-switcher__options > button { width: 100%; min-height: 68px; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 13px; color: var(--slate); background: transparent; border: 0; border-radius: 11px; text-align: left; cursor: pointer; }
 .model-switcher__options > button:hover:not(:disabled) { background: #f3f8f7; }
 .model-switcher__options > button:disabled { cursor: wait; }
-.model-switcher__options i { width: 17px; height: 17px; display: grid; place-items: center; color: #b5c0c7; border: 1px solid #cbd5dc; border-radius: 50%; }
+.model-switcher__options i { width: 20px; height: 20px; display: grid; place-items: center; color: #b5c0c7; border: 1px solid #cbd5dc; border-radius: 50%; }
 .model-switcher__options i.is-active { color: var(--teal-dark); border: 0; }
-.model-switcher__options span { display: grid; gap: 2px; min-width: 0; }
+.model-switcher__options span { display: grid; gap: 3px; min-width: 0; }
 .model-switcher__options strong,.model-switcher__options small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-switcher__options strong { color: var(--ink); font-size: 11px; }
-.model-switcher__options small { color: var(--muted); font-size: 9px; }
-.model-switcher__options em { color: var(--teal-dark); font-size: 9px; font-style: normal; font-weight: 700; white-space: nowrap; }
-.model-switcher__menu > footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: #fbfcfc; }
-.model-switcher__menu footer button { border: 0; cursor: pointer; }
-.model-switcher__add { display: inline-flex; align-items: center; gap: 5px; color: var(--teal-dark); background: transparent; font-size: 10px; font-weight: 800; }
-.model-switcher__edit { color: var(--muted); background: transparent; font-size: 9px; }
+.model-switcher__options strong { color: var(--ink); font-size: 14px; }
+.model-switcher__options small { color: var(--muted); font-size: 12px; }
+.model-switcher__options em { color: var(--teal-dark); font-size: 12px; font-style: normal; font-weight: 700; white-space: nowrap; }
+.model-switcher__menu > footer { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 16px; border-top: 1px solid var(--line); background: #fbfcfc; }
+.model-switcher__menu footer button { min-height: 40px; border: 0; border-radius: 8px; cursor: pointer; }
+.model-switcher__add { display: inline-flex; align-items: center; gap: 7px; padding: 0 4px; color: var(--teal-dark); background: transparent; font-size: 13px; font-weight: 800; }
+.model-switcher__edit { padding: 0 4px; color: var(--muted); background: transparent; font-size: 12px; }
 .model-switcher__announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 @media (max-width: 760px) {
   .model-switcher__trigger > small { display: none; }

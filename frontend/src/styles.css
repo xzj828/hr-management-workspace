@@ -129,8 +129,8 @@ a { color: inherit; text-decoration: none; }
 .shell--recruitment-dashboard .top-navigation { gap: 30px; }
 .shell--recruitment-dashboard .top-navigation__link { gap: 8px; font-size: 16px; }
 .shell--recruitment-dashboard .topbar__actions { gap: 17px; }
-.shell--recruitment-dashboard .model-switcher__trigger { min-width: 178px; justify-content: space-between; }
-.shell--recruitment-dashboard .account-menu__trigger { min-width: 170px; justify-content: space-between; }
+.shell--recruitment-dashboard .model-switcher__trigger { min-width: 208px; justify-content: space-between; }
+.shell--recruitment-dashboard .account-menu__trigger { min-width: 190px; justify-content: space-between; }
 .shell--recruitment-dashboard .avatar { width: 40px; height: 40px; border-radius: 12px; font-size: 15px; }
 .page-container.page-container--recruitment-dashboard { max-width: none; margin: 0; padding: 33px 24px 19px 37px; }
 .shell--recruitment-admin {
@@ -258,8 +258,8 @@ a { color: inherit; text-decoration: none; }
   height: clamp(24px, 1.4vw, 28px);
 }
 .shell:not(.shell--collapsed) .topbar__actions { gap: clamp(17px, 1.15vw, 24px); }
-.shell:not(.shell--collapsed) .model-switcher__trigger { min-width: 178px; justify-content: space-between; }
-.shell:not(.shell--collapsed) .account-menu__trigger { min-width: 170px; justify-content: space-between; }
+.shell:not(.shell--collapsed) .model-switcher__trigger { min-width: 208px; justify-content: space-between; }
+.shell:not(.shell--collapsed) .account-menu__trigger { min-width: 190px; justify-content: space-between; }
 .shell:not(.shell--collapsed) .avatar {
   width: clamp(42px, 2.55vw, 50px);
   height: clamp(42px, 2.55vw, 50px);
@@ -628,15 +628,15 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
 .remember-row input:focus-visible { outline: 3px solid rgba(15,159,143,.22); outline-offset: 2px; }
 
 .account-menu { position: relative; }
-.account-menu__trigger { min-height: 40px; display: flex; align-items: center; gap: 9px; padding: 0; color: var(--ink); background: transparent; border: 0; }
+.account-menu__trigger { min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 0; color: var(--ink); background: transparent; border: 0; }
 .account-menu__trigger:focus-visible,.account-menu__panel button:focus-visible { outline: 3px solid rgba(15,159,143,.22); outline-offset: 2px; }
-.account-menu__name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
+.account-menu__name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 700; }
 .account-menu__chevron { color: #94a3b8; }
-.account-menu__panel { position: absolute; right: 0; top: calc(100% + 8px); width: 190px; overflow: hidden; padding: 6px; background: #fff; border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 16px 42px rgba(15,23,42,.14); }
-.account-menu__identity { display: flex; flex-direction: column; padding: 10px 11px; border-bottom: 1px solid var(--line); }
-.account-menu__identity strong { color: var(--ink); font-size: 12px; }
-.account-menu__identity span { margin-top: 3px; color: var(--muted); font-size: 10px; }
-.account-menu__panel button { width: 100%; min-height: 36px; display: flex; align-items: center; padding: 0 11px; color: var(--slate); background: transparent; border: 0; border-radius: 7px; font-size: 11px; text-align: left; }
+.account-menu__panel { position: absolute; right: 0; top: calc(100% + 11px); width: 240px; overflow: hidden; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 20px 48px rgba(15,23,42,.16); }
+.account-menu__identity { display: flex; flex-direction: column; padding: 14px 15px 13px; border-bottom: 1px solid var(--line); }
+.account-menu__identity strong { color: var(--ink); font-size: 15px; }
+.account-menu__identity span { margin-top: 5px; color: var(--muted); font-size: 12px; }
+.account-menu__panel button { width: 100%; min-height: 48px; display: flex; align-items: center; padding: 0 15px; color: var(--slate); background: transparent; border: 0; border-radius: 9px; font-size: 14px; text-align: left; }
 .account-menu__panel button:hover, .account-menu__panel button:focus-visible { color: var(--ink); background: #f3f6f8; outline: none; }
 
 .recruitment-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
@@ -710,9 +710,11 @@ select:focus, .field-label input:focus, .field-label textarea:focus { border-col
   .collapse-button { display: none; }
   .topbar { padding: 0 18px; gap: 14px; }
   .top-navigation { gap: 20px; }
+  .shell:not(.shell--collapsed) .topbar__actions { gap: 8px; }
   .recruitment-job-context__trigger { width: 178px; }
   .recruitment-job-context--global small { display: none; }
   .account-menu__name, .account-menu__chevron { display: none; }
+  .shell:not(.shell--collapsed) .account-menu__trigger { min-width: 42px; justify-content: center; }
   .page-container { padding: 22px 20px 34px; }
   .import-grid, .settings-grid { grid-template-columns: 1fr; }
   .login-page { grid-template-columns: 1fr; }
