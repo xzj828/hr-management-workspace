@@ -100,7 +100,7 @@ from .services.discovery import import_discoveries
 from .services.workflows import enable_version
 from .services.account_status import apply_account_observation
 from .services.dashboard import build_recruitment_dashboard
-from .services.lifecycle import LifecycleConflict, archive_object, restore_object
+from .services.lifecycle import ACTIVE_TASK_STATUSES, LifecycleConflict, archive_object, restore_object
 from .services.job_documents import create_document, create_document_version, set_current_version
 from .services.ai_tasks import (
     enqueue_job_standard,
@@ -1941,6 +1941,20 @@ class RpaTaskViewSet(ArchivableViewSetMixin, viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         response_status = status.HTTP_200_OK if getattr(serializer.instance, "_was_existing", False) else status.HTTP_201_CREATED
         return Response(serializer.data, status=response_status, headers=headers)
+
+    @action(detail=False, methods=["post"], url_path="archive-all")
+    @serialize_sqlite_lifecycle
+    @transaction.atomic
+    def archive_all(self, request):
+        tasks = list(self.get_queryset().select_for_update().order_by("created_at", "pk"))
+        active_tasks = [task for task in tasks if task.status in ACTIVE_TASK_STATUSES]
+        archived_tasks = [task for task in tasks if task.status not in ACTIVE_TASK_STATUSES]
+        for task in archived_tasks:
+            archive_object(instance=task, actor=request.user)
+        return Response({
+            "archived_count": len(archived_tasks),
+            "skipped_count": len(active_tasks),
+        })
 
     @action(detail=True, methods=["post"])
     @transaction.atomic

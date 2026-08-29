@@ -451,7 +451,7 @@ describe('RecruitmentAdminView', () => {
 
     const viewRecord = wrapper.findAll('button').find((button) => button.text() === '查看记录')
     await viewRecord.trigger('click')
-    const archiveRecord = wrapper.findAll('button').find((button) => button.text() === '归档任务记录')
+    const archiveRecord = wrapper.findAll('button').find((button) => button.text() === '删除任务记录')
     await archiveRecord.trigger('click')
     await wrapper.get('[data-test="confirm-archive"]').trigger('click')
     await flushPromises()
@@ -461,6 +461,56 @@ describe('RecruitmentAdminView', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('已归档自动化任务')
     expect(wrapper.text()).toContain('北京招聘账号')
+  })
+
+  it('deletes a terminal task directly from the row after confirmation', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    const task = { id: 'done-row', boss_account: 1, account_name: account.name, action: 'sync_positions', status: 'succeeded', created_at: '2026-08-25T09:00:00Z', events: [] }
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/rpa-tasks/' && !options.method) return Promise.resolve({ results: [task] })
+      if (path === 'recruitment/rpa-tasks/done-row/archive/' && options.method === 'POST') return Promise.resolve({ ...task, archived_at: '2026-08-25T10:00:00Z' })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-diagnostics"]').trigger('click')
+
+    const deleteButton = wrapper.findAll('button').find((button) => button.text() === '删除')
+    await deleteButton.trigger('click')
+    expect(wrapper.text()).toContain('删除自动化任务')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/rpa-tasks/done-row/archive/', { method: 'POST' })
+    expect(wrapper.text()).toContain('暂无自动化任务')
+  })
+
+  it('deletes all terminal tasks in one request and keeps active tasks visible', async () => {
+    baseApi({ ready: true, workerOnline: true })
+    const fallback = apiMock.getMockImplementation()
+    const terminalTask = { id: 'done-bulk', boss_account: 1, account_name: account.name, action: 'sync_positions', status: 'succeeded', created_at: '2026-08-25T09:00:00Z', events: [] }
+    const activeTask = { id: 'active-bulk', boss_account: 1, account_name: account.name, action: 'check_status', status: 'running', created_at: '2026-08-25T09:01:00Z', events: [] }
+    const cancellingTask = { id: 'cancelling-bulk', boss_account: 1, account_name: account.name, action: 'sync_conversations', status: 'cancel_requested', created_at: '2026-08-25T09:02:00Z', events: [] }
+    apiMock.mockImplementation((path, options = {}) => {
+      if (path === 'recruitment/rpa-tasks/' && !options.method) return Promise.resolve({ results: [terminalTask, activeTask, cancellingTask] })
+      if (path === 'recruitment/rpa-tasks/archive-all/' && options.method === 'POST') return Promise.resolve({ archived_count: 1, skipped_count: 2 })
+      return fallback(path, options)
+    })
+    wrapper = mount(RecruitmentAdminView, { global: { stubs: { teleport: true, WorkflowCanvas: true, ModelProfileDrawer: true } } })
+    await flushPromises()
+    await wrapper.get('[data-test="admin-tab-diagnostics"]').trigger('click')
+
+    await wrapper.get('[data-test="delete-all-tasks"]').trigger('click')
+    expect(wrapper.text()).toContain('1 条可删除记录')
+    await wrapper.get('[data-test="confirm-archive"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMock).toHaveBeenCalledWith('recruitment/rpa-tasks/archive-all/', { method: 'POST' })
+    expect(wrapper.text()).toContain('2 条活动任务已保留')
+    expect(wrapper.text()).toContain('立即检查')
+    expect(wrapper.text()).toContain('同步沟通状态')
+    expect(wrapper.text()).not.toContain('同步职位')
   })
 
   it('treats workflow restore as committed even when the follow-up list refresh fails', async () => {

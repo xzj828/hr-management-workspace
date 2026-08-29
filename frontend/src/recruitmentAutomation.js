@@ -24,6 +24,7 @@ export const taskStatusLabels = {
   pending: '等待执行',
   leased: 'Worker 已领取',
   running: '正在执行',
+  cancel_requested: '正在取消',
   waiting_human: '等待人工处理',
   succeeded: '已完成',
   failed: '执行失败',

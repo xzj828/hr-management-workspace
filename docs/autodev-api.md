@@ -203,6 +203,8 @@ Plan 关联的 WorkflowRun、SearchCampaign、RpaTask 和系统托管 WorkflowVe
 | GET/POST | `/api/recruitment/rpa-tasks[/<id>/]` | 创建白名单任务或查看详情 |
 | POST | `/api/recruitment/rpa-tasks/<id>/cancel/` | 取消待执行任务 |
 | POST | `/api/recruitment/rpa-tasks/<id>/retry/` | 显式重试失败任务，生成新任务 |
+| POST | `/api/recruitment/rpa-tasks/<id>/archive/` | 可恢复删除单条非运行中任务；保留事件、证据与审计记录 |
+| POST | `/api/recruitment/rpa-tasks/archive-all/` | 一次归档当前用户范围内的全部非运行中任务；返回归档数与跳过的活跃任务数 |
 | GET | `/api/recruitment/automation/summary/` | Worker、CLI、完成数和账号状态 |
 
 ### 流程编排与运行

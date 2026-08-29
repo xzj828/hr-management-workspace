@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { availableActions, loginStatusLabel } from './recruitmentAutomation'
+import { availableActions, loginStatusLabel, taskStatusLabels } from './recruitmentAutomation'
 
 
 describe('recruitment automation policy', () => {
@@ -17,5 +17,9 @@ describe('recruitment automation policy', () => {
   test('keeps independent status checks available while an account task is active', () => {
     expect(availableActions({ active: true, has_active_task: true })).toEqual(['check_status'])
     expect(availableActions({ active: false, has_active_task: false })).toEqual([])
+  })
+
+  test('uses a readable label while a task is cancelling', () => {
+    expect(taskStatusLabels.cancel_requested).toBe('正在取消')
   })
 })

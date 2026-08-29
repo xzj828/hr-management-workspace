@@ -93,7 +93,7 @@ const accountRuntimeBlocker = computed(() => {
   if (!workerOnline.value) return '本机自动化服务未运行，无法打开隔离浏览器。请运行项目根目录的“启动考勤系统.cmd”，再返回本页。'
   return 'BOSS CLI 未就绪，无法打开隔离浏览器。请重新启动完整系统；如果仍未恢复，请到“系统诊断”查看详情。'
 })
-const activeTaskStatuses = new Set(['pending', 'leased', 'running'])
+const activeTaskStatuses = new Set(['pending', 'leased', 'running', 'cancel_requested'])
 const activeTasksByAccount = computed(() => Object.fromEntries(
   tasks.value
     .filter((task) => activeTaskStatuses.has(task.status))
@@ -119,6 +119,7 @@ const archivedWorkflowRows = computed(() => archivedWorkflows.value.map((templat
   return { template, version: latest || null }
 }))
 const displayedTasks = computed(() => archiveView.diagnostics ? archivedTasks.value : tasks.value)
+const archivableTaskCount = computed(() => tasks.value.filter((task) => !activeTaskStatuses.has(task.status)).length)
 const lifecycleDialog = computed(() => {
   const target = lifecycleTarget.value
   if (!target) return null
@@ -148,10 +149,15 @@ const lifecycleDialog = computed(() => {
     description: `将删除该模型的 API 地址和加密保存的 Key，操作不可恢复。${item.is_active ? '删除当前模型后，新建 AI 任务将等待配置，直到你切换或新增模型。' : ''}`,
     actionLabel: '永久删除配置', note: '历史结果及已经绑定模型快照的任务不会删除。',
   }
+  if (target.kind === 'task-bulk') return {
+    title: '一键删除自动化任务', name: `${archivableTaskCount.value} 条可删除记录`,
+    description: '所有已结束或等待人工处理的任务将从最近记录移入已归档；事件、执行证据和审计记录继续保留。',
+    actionLabel: '确认一键删除', note: '排队中、运行中或正在取消的任务不会被删除，也不会被重复取消。',
+  }
   return {
-    title: '归档自动化任务', name: `${actionLabels[item.action] || item.action} · ${taskStatusLabels[item.status] || item.status}`,
+    title: '删除自动化任务', name: `${actionLabels[item.action] || item.action} · ${taskStatusLabels[item.status] || item.status}`,
     description: '任务将从最近记录移入已归档；事件、执行证据和审计记录继续保留。',
-    actionLabel: '确认归档记录', note: '归档不会重新执行、取消或改变任务结果。',
+    actionLabel: '确认删除', note: '删除不会重新执行、取消或改变任务结果，可在“已归档”中恢复。',
   }
 })
 const diagnostics = computed(() => [
@@ -692,11 +698,20 @@ async function confirmLifecycle() {
     } else if (kind === 'model') {
       await credentials.deleteProfile(item.id)
       modelActionMessage.value = `“${item.name}”已永久删除，加密保存的 API Key 已擦除。`
+    } else if (kind === 'task-bulk') {
+      latestAppliedRuntimeSequence = ++runtimeRequestSequence
+      const result = await api('recruitment/rpa-tasks/archive-all/', { method: 'POST' })
+      tasks.value = tasks.value.filter((entry) => activeTaskStatuses.has(entry.status))
+      const skippedCount = Number(result.skipped_count || 0)
+      setNotice(skippedCount ? 'attention' : 'success', skippedCount
+        ? `已删除 ${result.archived_count} 条任务记录；${skippedCount} 条活动任务已保留。`
+        : `已删除 ${result.archived_count} 条任务记录，事件和执行证据已保留。`)
     } else {
+      latestAppliedRuntimeSequence = ++runtimeRequestSequence
       await api(`recruitment/rpa-tasks/${item.id}/archive/`, { method: 'POST' })
       tasks.value = tasks.value.filter((entry) => String(entry.id) !== String(item.id))
       if (String(selectedTask.value?.id) === String(item.id)) selectedTask.value = null
-      setNotice('success', '自动化任务已归档，事件和执行证据已保留。')
+      setNotice('success', '自动化任务已删除，事件和执行证据已保留，可在“已归档”中恢复。')
     }
     lifecycleTarget.value = null
     assignDefaultAccount()
@@ -1115,13 +1130,23 @@ onUnmounted(() => {
         <div class="admin-table-shell">
           <header>
             <div><strong>{{ archiveView.diagnostics ? '已归档自动化任务' : '最近自动化任务' }}</strong><small>状态、错误和事件均来自服务端审计记录</small></div>
-            <span>{{ displayedTasks.length }} 条</span>
+            <div class="task-table-actions">
+              <span>{{ displayedTasks.length }} 条</span>
+              <button
+                v-if="!archiveView.diagnostics"
+                class="admin-button admin-button--danger-quiet"
+                data-test="delete-all-tasks"
+                type="button"
+                :disabled="!archivableTaskCount || lifecycleSaving"
+                @click="requestLifecycle('task-bulk', null)"
+              >一键删除</button>
+            </div>
           </header>
           <div v-if="archiveView.diagnostics && archiveLoading.diagnostics" class="admin-empty admin-empty--compact"><strong>正在读取归档任务…</strong></div>
           <div v-else-if="archiveView.diagnostics && archiveError.diagnostics" class="admin-empty admin-empty--compact" role="alert"><strong>归档任务加载失败</strong><p>{{ archiveError.diagnostics }}</p><button class="admin-button admin-button--quiet" type="button" @click="loadArchived('diagnostics')">重新加载归档任务</button></div>
           <div v-else-if="displayedTasks.length" class="admin-table-scroll">
             <table>
-              <thead><tr><th>账号</th><th>动作</th><th>状态</th><th>创建时间</th><th></th></tr></thead>
+              <thead><tr><th>账号</th><th>动作</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
               <tbody>
                 <tr v-for="task in displayedTasks" :key="task.id">
                   <td><strong>{{ task.account_name }}</strong></td>
@@ -1131,6 +1156,7 @@ onUnmounted(() => {
                   <td>
                     <button class="admin-link" type="button" @click="selectedTask = task">查看记录</button>
                     <button v-if="archiveView.diagnostics" class="admin-link" type="button" :disabled="actionBusy[`restore:task:${task.id}`]" @click="restoreLifecycle('task', task)">{{ actionBusy[`restore:task:${task.id}`] ? '恢复中…' : '恢复' }}</button>
+                    <button v-else-if="!activeTaskStatuses.has(task.status)" class="admin-link admin-link--danger" type="button" :aria-label="`删除任务 ${actionLabels[task.action] || task.action}`" @click="requestLifecycle('task', task)">删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -1166,7 +1192,7 @@ onUnmounted(() => {
       <p v-else class="admin-empty admin-empty--compact">暂无更多事件</p>
       <template v-if="!archiveView.diagnostics && !activeTaskStatuses.has(selectedTask.status)" #footer>
         <button class="secondary-button" type="button" @click="selectedTask = null">关闭</button>
-        <button class="danger-button" type="button" @click="requestLifecycle('task', selectedTask)">归档任务记录</button>
+        <button class="danger-button" type="button" @click="requestLifecycle('task', selectedTask)">删除任务记录</button>
       </template>
     </ModalPanel>
 
@@ -1596,6 +1622,9 @@ onUnmounted(() => {
 .admin-link { min-height: var(--admin-control-height-compact); padding: 0 var(--admin-space-1); border: 0; background: none; color: var(--admin-brand-dark); font: inherit; font-size: var(--admin-control); font-weight: 700; cursor: pointer; white-space: nowrap; }
 .admin-link:disabled { opacity: .5; cursor: not-allowed; }
 .admin-link--danger { color: var(--admin-danger); }
+.task-table-actions { display: flex !important; grid-auto-flow: column; align-items: center; gap: var(--admin-space-3) !important; }
+.admin-button--danger-quiet { min-height: 30px; padding: 0 12px; color: var(--admin-danger); border-color: var(--admin-danger-line); background: var(--admin-danger-soft); }
+.admin-button--danger-quiet:not(:disabled):hover { color: #b42323; border-color: color-mix(in srgb, var(--admin-danger) 38%, transparent); background: color-mix(in srgb, var(--admin-danger) 12%, var(--admin-surface)); }
 
 .workflow-list { overflow: hidden; }
 .workflow-list > article { min-height: var(--admin-row-min); gap: var(--admin-space-4); padding: var(--admin-space-3) var(--admin-space-5); border-bottom: 1px solid var(--admin-line); }

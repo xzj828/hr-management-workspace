@@ -51,7 +51,6 @@ No actionable P0, P1, or P2 findings remain.
 - P3: report wording is intentionally data-driven and will differ from the mock candidate copy while preserving the same length and layout.
 
 final result: passed
-
 ---
 
 # Model Switcher Proportion QA — 2026-08-29
@@ -357,5 +356,59 @@ The final desktop captures make the candidate copy reduction, 18 px crown icons,
 ## Findings
 
 No actionable P0, P1, or P2 findings remain.
+
+final result: passed
+
+---
+
+# Design QA — 最近自动化任务删除
+
+**Source visual truth**
+
+- Path: `C:\Users\ADMINI~1\AppData\Local\Temp\codex-clipboard-fdcbb624-a673-4a36-85cd-0ba488d1d988.png`
+- Pixels: 1340 × 398.
+- State: 最近自动化任务表格，3 条已完成记录，无删除控件。
+
+**Rendered implementation**
+
+- Page: `http://127.0.0.1:8770/recruitment/admin?section=diagnostics`，使用最终生产构建与生产数据库的隔离副本验证。
+- Screenshot: `C:\Users\Administrator\Desktop\hr-management-workspace-master\outputs\automation-task-delete-table-viewport.png`
+- Pixels: 1325 × 791；CSS viewport override: 1340 × 800；device scale factor: 1。
+- Single-delete confirmation: `C:\Users\Administrator\Desktop\hr-management-workspace-master\outputs\automation-task-single-delete-confirm.png`
+- Bulk-delete confirmation: `C:\Users\Administrator\Desktop\hr-management-workspace-master\outputs\automation-task-bulk-delete-confirm.png`
+- State: 最近任务，167 条终态记录；另行注入 1 条运行中任务和 1 条正在取消任务验证保护逻辑。
+
+**Comparison evidence**
+
+- Side-by-side focused comparison: `C:\Users\Administrator\Desktop\hr-management-workspace-master\outputs\automation-task-delete-comparison.png`（2340 × 426）。
+- Full-view evidence: 实现截图覆盖实际应用 Shell、系统诊断摘要和任务表格；未出现溢出、遮挡或操作列截断。
+- Focused region: 从实现截图按任务卡片区域裁切 976 × 398，与 1340 × 398 的来源组件截图并排比较。来源是独立内容裁片，实现是应用内内容区域，因此保留各自自然宽度，不进行密度拉伸。
+
+**Findings**
+
+- No P0/P1/P2 findings.
+- Fonts and typography: 标题、说明、表头、正文和状态徽标延续现有字号、字重与行高；新增按钮层级清晰。
+- Spacing and layout rhythm: 原 5 列结构保留，末列明确命名为“操作”；“查看记录 / 删除”在 42px 高操作目标内对齐，一键删除按钮未挤压标题或数量。
+- Colors and visual tokens: 删除控件复用现有危险色与软背景 token；表格背景、分隔线、状态色未漂移。
+- Image quality and asset fidelity: 本区域无图片资产；现有本地图标与应用 Shell 未被替换。
+- Copy and content: 原账号、动作、状态、时间及“查看记录”完整保留；新增“删除 / 一键删除”与可恢复、保留审计、跳过运行中任务的说明一致。
+- Accessibility and interaction: 行级删除带任务动作的可访问名称；确认层为 dialog；运行中任务只显示“查看记录”；一键确认显示可删除数量；浏览器控制台无 error/warn。
+
+**Interaction checks**
+
+- 单条“删除”打开确认层，取消后不改变记录。
+- “一键删除”打开确认层并显示 167 条可删除记录，取消后不改变记录。
+- 隔离副本新增 `running` 与 `cancel_requested` 任务后，两行都不显示删除按钮；批量可删除数仍为 167，并明确活动任务不会删除或重复取消。
+- 最终确认未在浏览器中执行，避免改动真实或克隆的业务记录；提交路径由前端 Vitest 与 Django API 集成测试覆盖。
+
+**Comparison history**
+
+- Pass 1: 发现 P2 文案问题：`cancel_requested` 在表格中直接显示内部枚举；删除保护正确，但不符合 HR 可读状态要求。
+- Fix: 在共享任务状态映射中增加“正在取消”，并补充单元测试；批量确认说明同步覆盖正在取消状态。
+- Pass 2: 最终浏览器截图中运行中与正在取消行均只显示“查看记录”，状态为中文可读文案；批量确认显示 167 条可删除记录，控制台无 error/warn。无剩余 P0/P1/P2。
+
+**Follow-up polish**
+
+- 无阻塞项。
 
 final result: passed

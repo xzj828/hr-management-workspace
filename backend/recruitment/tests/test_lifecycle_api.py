@@ -99,6 +99,60 @@ class RecruitmentLifecycleApiTests(TestCase):
         task.refresh_from_db()
         self.assertIsNotNone(task.archived_at)
 
+    def test_all_terminal_tasks_can_be_archived_in_one_request_while_active_tasks_remain(self):
+        terminal_tasks = [
+            RpaTask.objects.create(
+                boss_account=self.account,
+                action=RpaTask.Action.CHECK_STATUS,
+                status=status,
+                created_by=self.hr,
+            )
+            for status in (RpaTask.Status.SUCCEEDED, RpaTask.Status.FAILED)
+        ]
+        active_task = RpaTask.objects.create(
+            boss_account=self.account,
+            action=RpaTask.Action.CHECK_STATUS,
+            status=RpaTask.Status.RUNNING,
+            created_by=self.hr,
+        )
+
+        response = self.client.post("/api/recruitment/rpa-tasks/archive-all/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data, {"archived_count": 2, "skipped_count": 1})
+        for task in terminal_tasks:
+            task.refresh_from_db()
+            self.assertIsNotNone(task.archived_at)
+        active_task.refresh_from_db()
+        self.assertIsNone(active_task.archived_at)
+
+    def test_archive_all_tasks_only_changes_records_in_the_users_account_scope(self):
+        visible_task = RpaTask.objects.create(
+            boss_account=self.account,
+            action=RpaTask.Action.CHECK_STATUS,
+            status=RpaTask.Status.SUCCEEDED,
+            created_by=self.hr,
+        )
+        hidden_account = BossAccount.objects.create(
+            name="其他账号", browser_profile="other-account", cdp_port=53551,
+        )
+        hidden_account.authorized_users.add(self.other)
+        hidden_task = RpaTask.objects.create(
+            boss_account=hidden_account,
+            action=RpaTask.Action.CHECK_STATUS,
+            status=RpaTask.Status.SUCCEEDED,
+            created_by=self.other,
+        )
+
+        response = self.client.post("/api/recruitment/rpa-tasks/archive-all/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data, {"archived_count": 1, "skipped_count": 0})
+        visible_task.refresh_from_db()
+        hidden_task.refresh_from_db()
+        self.assertIsNotNone(visible_task.archived_at)
+        self.assertIsNone(hidden_task.archived_at)
+
     def test_draft_workflow_version_can_be_deleted_but_enabled_version_cannot(self):
         deleted = self.client.delete(f"/api/recruitment/workflow-versions/{self.version.pk}/")
         self.assertEqual(deleted.status_code, 204, getattr(deleted, "data", None))
